@@ -10,7 +10,7 @@ FROM registry.redhat.io/rhel9/python-312:latest
 
 USER 0
 
-COPY --from=ghcr.io/astral-sh/uv:0.9.24 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.8 /uv /usr/local/bin/uv
 
 # Enable EPEL for ripgrep
 RUN dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
