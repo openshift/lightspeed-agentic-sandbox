@@ -4,13 +4,6 @@ lockfileVendor: redhat
 arches:
 - arch: aarch64
   packages:
-  - url: http://ftp.iij.ad.jp/pub/linux/Fedora/epel/9/Everything/aarch64/Packages/t/tini-0.19.0-5.el9.aarch64.rpm
-    repoid: epel
-    size: 22568
-    checksum: sha256:486454b6e2e84c96850a12038b5e70348bb85da0266332e203acd967fd91db90
-    name: tini
-    evr: 0.19.0-5.el9
-    sourcerpm: tini-0.19.0-5.el9.src.rpm
   - url: https://cdn-ubi.redhat.com/content/public/ubi/dist/ubi9/9/aarch64/appstream/os/Packages/b/bind-libs-9.16.23-34.el9_7.2.aarch64.rpm
     repoid: ubi-9-for-aarch64-appstream-rpms
     size: 1258934
@@ -1135,13 +1128,6 @@ arches:
   module_metadata: []
 - arch: x86_64
   packages:
-  - url: http://ftp.iij.ad.jp/pub/linux/Fedora/epel/9/Everything/x86_64/Packages/t/tini-0.19.0-5.el9.x86_64.rpm
-    repoid: epel
-    size: 22793
-    checksum: sha256:1cedbdf9afa27bf03ee70681ff9b8bd68d681a48050d6d35d69014964f90ce2b
-    name: tini
-    evr: 0.19.0-5.el9
-    sourcerpm: tini-0.19.0-5.el9.src.rpm
   - url: https://cdn-ubi.redhat.com/content/public/ubi/dist/ubi9/9/x86_64/appstream/os/Packages/b/bind-libs-9.16.23-34.el9_7.2.x86_64.rpm
     repoid: ubi-9-for-x86_64-appstream-rpms
     size: 1308196

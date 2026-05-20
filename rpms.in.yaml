@@ -22,7 +22,6 @@ packages:
   - gzip
   - python3.12
   - python3.12-pip
-  - tini
 contentOrigin:
-  repofiles: ["./ubi.repo", "./epel.repo"]
+  repofiles: ["./ubi.repo"]
 arches: [x86_64, aarch64]
