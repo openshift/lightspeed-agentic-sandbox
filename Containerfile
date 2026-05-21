@@ -95,22 +95,6 @@ RUN ln -s /app/node_modules/@anthropic-ai/claude-code/bin/claude.exe /usr/local/
 COPY --from=origincli /usr/bin/oc /usr/bin/oc
 RUN ln -s /usr/bin/oc /usr/bin/kubectl
 
-# Install generic-fetched binaries (ripgrep).
-# In hermetic builds these are at /cachi2/output/deps/generic/.
-# In non-hermetic builds fall back to fetching from the network.
-COPY artifacts.lock.yaml ./
-RUN ARCH=$(uname -m) && \
-    GENERIC_DIR="/cachi2/output/deps/generic" && \
-    if [ -d "$GENERIC_DIR" ]; then \
-        tar -xzf "$GENERIC_DIR/ripgrep-${ARCH}.tar.gz" --strip-components=1 -C /usr/local/bin --wildcards '*/rg' && \
-        chmod +x /usr/local/bin/rg; \
-    else \
-        echo "WARN: generic deps dir not found, fetching from network (non-hermetic)" && \
-        RG_ARCH=$([ "$ARCH" = "aarch64" ] && echo "aarch64-unknown-linux-gnu" || echo "x86_64-unknown-linux-musl") && \
-        curl -sL "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-${RG_ARCH}.tar.gz" | \
-            tar -xz --strip-components=1 -C /usr/local/bin --wildcards '*/rg' && \
-        chmod +x /usr/local/bin/rg; \
-    fi
 
 # Copy application source and metadata
 COPY --from=builder /app/src ./src
