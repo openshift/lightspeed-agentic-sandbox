@@ -1,9 +1,30 @@
-# Lightspeed Agentic Sandbox -- Specifications
+# Lightspeed Agentic Sandbox — Specifications
 
-These specs define the requirements, behaviors, and architecture for the lightspeed-agentic-sandbox. They are organized into two layers:
+These specs define the behavioral rules and codebase navigation for the lightspeed-agentic-sandbox, a multi-provider agent runtime that runs inside ephemeral Kubernetes pods for OpenShift Lightspeed.
 
-- **[`what/`](what/)** -- Behavioral rules: WHAT the system must do. Technology-neutral, testable assertions.
-- **[`how/`](how/)** -- Architecture specs: HOW the current implementation is structured. Module boundaries, data flow, SDK integration.
+## Structure
+
+| Layer | Path | Purpose |
+|---|---|---|
+| **what/** | `.ai/spec/what/` | Behavioral rules. What the system must do. Implementation-agnostic. |
+| **how/** | `.ai/spec/how/` | Codebase navigation. How the code is organized. Implementation-specific. |
+
+### what/ — Behavioral Specifications
+
+| Spec | Description |
+|------|-------------|
+| [system-overview.md](what/system-overview.md) | System role, component inventory, lifecycle, integration boundaries |
+| [run-api.md](what/run-api.md) | POST /run endpoint: request/response shapes, context prefix, timeouts, error handling |
+| [provider-contract.md](what/provider-contract.md) | AgentProvider ABC, event model, structured output, thin-adapter principle, skills delegation |
+| [configuration.md](what/configuration.md) | Environment variables, provider selection, model resolution, container layout, build system |
+| [health-probes.md](what/health-probes.md) | Liveness (`/health`) and readiness (`/ready`) endpoints, failure mode audit, probe configuration |
+
+### how/ — Architecture Specifications
+
+| Spec | Description |
+|------|-------------|
+| [project-structure.md](how/project-structure.md) | Module map, entry points, naming conventions, dependency organization |
+| [provider-architecture.md](how/provider-architecture.md) | Per-provider SDK wrappers (Claude/Gemini/OpenAI), data flow, key abstractions, container build |
 
 ## Scope
 
@@ -11,22 +32,37 @@ These specs cover the **lightspeed-agentic-sandbox** Python agent runtime only. 
 
 ## Audience
 
-AI agents (Claude). Specs optimize for precision, unambiguous rules, and machine-parseable structure.
+AI agents. Content is optimized for precision and machine consumption.
 
 ## Quick Start
 
-| I want to... | Read |
-|--------------|------|
+| Task | Start here |
+|---|---|
+| Understand the system | `what/system-overview.md` |
 | Understand the /run API | `what/run-api.md` |
 | Add or modify a provider | `what/provider-contract.md` + `how/provider-architecture.md` |
 | Understand env vars and deployment | `what/configuration.md` |
-| Navigate the codebase | `how/provider-architecture.md` |
+| Navigate the codebase | `how/project-structure.md` |
+| Understand health probes | `what/health-probes.md` |
+
+## Cross-Reference
+
+| what/ | how/ |
+|---|---|
+| `what/system-overview.md` | `how/project-structure.md` |
+| `what/run-api.md` | `how/provider-architecture.md` (data flow section) |
+| `what/provider-contract.md` | `how/provider-architecture.md` |
+| `what/configuration.md` | `how/provider-architecture.md` (container build, implementation notes) |
+| `what/health-probes.md` | `how/project-structure.md` (health.py entry) |
 
 ## Conventions
 
-- `[PLANNED: OLS-XXXX]` markers indicate existing rules about to change
-- Environment variable names reference the actual env var (e.g., `LIGHTSPEED_PROVIDER`)
-- Internal constants are stated as behavioral rules without numeric values
+- **Rule numbering:** behavioral rules are numbered sequentially within each what/ file.
+- **Planned changes:** unimplemented behavior is marked with `[PLANNED]` or `[PLANNED: OLS-XXXX]` inline next to the rule it affects.
+- **Environment variables:** reference the actual env var (e.g., `LIGHTSPEED_PROVIDER`).
+- **Constraints:** component-specific and cross-cutting constraints go in the relevant what/ file's Constraints section, co-located with behavioral rules. Development conventions go in CLAUDE.md.
+- **Authority:** what/ specs are authoritative for behavior. how/ specs are authoritative for implementation. When they conflict, what/ wins.
+- **When to create a new file vs. extend an existing one:** if the new concern has its own lifecycle, configuration surface, and can be understood independently, it gets its own file. If it's a capability added to an existing component, it goes in that component's file.
 
 ## Project Context
 

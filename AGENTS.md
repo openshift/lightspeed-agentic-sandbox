@@ -57,19 +57,19 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
-## Behavioral Specs
+## Specs
 
-Before changing code, read the relevant spec in `.ai/spec/`:
+All specifications live in `.ai/spec/`. Start with [`.ai/spec/README.md`](.ai/spec/README.md) for project overview, reading order, and structure guide. Human-readable architecture overview: [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
+Before changing code, read the relevant spec:
 
 | Working on | Read |
 |---|---|
-| Provider adapters | [provider-contract.md](.ai/spec/provider-contract.md) |
-| /run endpoint | [query-api.md](.ai/spec/query-api.md) |
-| Deployment, env vars, or defaults | [configuration.md](.ai/spec/configuration.md) |
-
-Specs capture invariants, design decisions, and known quirks that the code
-cannot express about itself. The code and this file cover the "how" — specs
-cover the "why" and the "must."
+| System overview, integration boundaries | [system-overview.md](.ai/spec/what/system-overview.md) |
+| Provider adapters | [provider-contract.md](.ai/spec/what/provider-contract.md) |
+| /run endpoint | [run-api.md](.ai/spec/what/run-api.md) |
+| Deployment, env vars, or defaults | [configuration.md](.ai/spec/what/configuration.md) |
+| Health probes | [health-probes.md](.ai/spec/what/health-probes.md) |
 
 ### Component Specs
 
@@ -78,9 +78,9 @@ its rules. Use this table to navigate from component → spec → executable tes
 
 | Spec | Description | Feature files |
 |---|---|---|
-| [query-api.md](.ai/spec/query-api.md) | `/run` endpoint: parsing, timeouts, context prefix, streaming | [structured_output.feature](tests/e2e/features/structured_output.feature) |
-| [provider-contract.md](.ai/spec/provider-contract.md) | Provider adapter rules: events, structured output, thin-adapter principle | [structured_output.feature](tests/e2e/features/structured_output.feature) |
-| [configuration.md](.ai/spec/configuration.md) | Provider selection, model resolution, skills directory, env vars | [structured_output.feature](tests/e2e/features/structured_output.feature) (implicit) |
+| [run-api.md](.ai/spec/what/run-api.md) | `/run` endpoint: parsing, timeouts, context prefix, streaming | [structured_output.feature](tests/e2e/features/structured_output.feature) |
+| [provider-contract.md](.ai/spec/what/provider-contract.md) | Provider adapter rules: events, structured output, thin-adapter principle | [structured_output.feature](tests/e2e/features/structured_output.feature) |
+| [configuration.md](.ai/spec/what/configuration.md) | Provider selection, model resolution, skills directory, env vars | [structured_output.feature](tests/e2e/features/structured_output.feature) (implicit) |
 
 ## Quick Commands
 
@@ -173,7 +173,7 @@ starts, with no network access during the build itself.
 | `rpms.in.yaml` | System RPM package list | Edit manually |
 | `rpms.lock.yaml` | Resolved RPM lockfile | `make rpm-lockfile` |
 | `ubi.repo` | UBI 9 repo definitions for RPM resolution | Rarely changes |
-| `artifacts.lock.yaml` | External binaries (oc, ripgrep, dumb-init) | Edit manually, update checksums |
+| `artifacts.lock.yaml` | External binaries (oc, ripgrep) | Edit manually, update checksums |
 | `package.json` / `package-lock.json` | npm deps (claude-code CLI) | `npm install --package-lock-only` |
 
 ### Bumping dependencies

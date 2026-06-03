@@ -62,7 +62,7 @@ Cross-references: how options are consumed in code → `how/provider-architectur
 
 16. **Python load path.** Runtime sets process environment so application source under `/app` and installed site-packages are on `PYTHONPATH` as defined in the image.
 
-17. **Hermetic / Konflux build inputs.** Release images are built with network isolation after prefetch: per-architecture Python requirements files with hashes, RPM lockfile input, generic binary lockfile for oc/kubectl/ripgrep/dumb-init, and npm lockfile for the Claude Code CLI. Regeneration of those artifacts is via the project automation commands (see implementation notes in `how/provider-architecture.md`).
+17. **Hermetic / Konflux build inputs.** Release images are built with network isolation after prefetch: per-architecture Python requirements files with hashes, RPM lockfile input, generic binary lockfile for oc/kubectl/ripgrep, and npm lockfile for the Claude Code CLI. Regeneration of those artifacts is via the project automation commands (see implementation notes in `how/provider-architecture.md`).
 
 18. **Non-hermetic fallback.** When prefetch directories are absent, the container build recipe may fetch selected binaries from external URLs for developer builds.
 

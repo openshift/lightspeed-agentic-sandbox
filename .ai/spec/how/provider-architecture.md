@@ -49,6 +49,6 @@ Cross-references: behavioral rules → `what/run-api.md`, `what/provider-contrac
 - **Claude skills layout:** `_ensure_skills_link` creates `.claude/skills` with symlinks to child dirs of the skill root, preferring writable cwd else temp workspace; module-level cache keyed by cwd string.
 - **Gemini bash:** Monkey-patches `run_async` to force confirmation and shell wrapping via `shlex.quote`.
 - **OpenAI init:** One-time verbose logging and tracing disable.
-- **Containerfile:** Multi-stage build — builder installs hashed requirements into target site-packages and installs Claude Code via npm (`npm ci` under cachi2 or global install fallback); runtime copies site-packages, `node_modules`, app `src`, sets user `agent`, `dumb-init` entrypoint, Uvicorn CMD on port 8080.
+- **Containerfile:** Multi-stage build — builder installs hashed requirements into target site-packages and installs Claude Code via npm (`npm ci` under cachi2 or global install fallback); runtime copies site-packages, `node_modules`, app `src`, sets user `agent`, `tini` entrypoint, Uvicorn CMD on port 8080.
 - **Makefile:** `uv sync` targets, `requirements` generates hashed per-arch requirements; `rpm-lockfile` regenerates RPM lock via fedora tool image; `image` builds local container.
 - **Tests / evals:** HTTP clients target `POST /v1/agent/run` (see `tests/` and `evals/`).
