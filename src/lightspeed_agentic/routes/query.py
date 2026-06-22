@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
 
@@ -19,6 +19,9 @@ from lightspeed_agentic.routes.models import RunRequest, RunResponse
 from lightspeed_agentic.tools import DEFAULT_ALLOWED_TOOLS
 from lightspeed_agentic.tracing import get_tracer, parse_traceparent
 from lightspeed_agentic.types import AgentProvider, ProviderQueryOptions
+
+if TYPE_CHECKING:
+    from lightspeed_agentic.config import McpServerConfig
 
 logger = logging.getLogger("lightspeed_agentic")
 
@@ -64,6 +67,7 @@ def register_query_routes(
     max_turns: int,
     default_timeout_ms: int,
     audit_enabled: bool = False,
+    mcp_servers: tuple[McpServerConfig, ...] = (),
 ) -> None:
     async def run_endpoint(req: RunRequest, request: Request) -> RunResponse:
         timeout = req.timeout_ms if req.timeout_ms is not None else default_timeout_ms
@@ -95,6 +99,20 @@ def register_query_routes(
         )
 
         try:
+            result = provider.query(
+                ProviderQueryOptions(
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    model=model,
+                    max_turns=max_turns,
+                    max_budget_usd=5.0,
+                    allowed_tools=DEFAULT_ALLOWED_TOOLS,
+                    cwd=skills_dir,
+                    output_schema=req.outputSchema,
+                    mcp_servers=mcp_servers,
+                )
+            )
+
             text = ""
             cost = 0.0
             input_tokens = 0

@@ -8,11 +8,15 @@ Usage:
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter
 
 from lightspeed_agentic.routes.query import register_query_routes
 from lightspeed_agentic.types import DEFAULT_MODEL, AgentProvider
+
+if TYPE_CHECKING:
+    from lightspeed_agentic.config import McpServerConfig
 
 _MODEL_ENV_VARS = {
     "claude": "ANTHROPIC_MODEL",
@@ -53,6 +57,7 @@ def build_router(
     max_turns: int = 200,
     default_timeout_ms: int = 300_000,
     audit_enabled: bool = False,
+    mcp_servers: tuple[McpServerConfig, ...] = (),
 ) -> APIRouter:
     resolved_model = _resolve_router_model(provider.name, model)
 
@@ -65,5 +70,6 @@ def build_router(
         max_turns=max_turns,
         default_timeout_ms=default_timeout_ms,
         audit_enabled=audit_enabled,
+        mcp_servers=mcp_servers,
     )
     return router

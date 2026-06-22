@@ -128,6 +128,7 @@ src/lightspeed_agentic/
 | Skills | Native `skills="all"` | Native `SkillToolset` | Native `Skills` capability |
 | Structured output | `output_format` JSON schema | Native response schema path | `output_type` wrapper |
 | Streaming | Partial message stream events | `StreamingMode.SSE` | `Runner.run_streamed()` |
+| MCP servers | `mcp_servers` dict on `ClaudeAgentOptions` | `McpToolset` with `StreamableHTTPConnectionParams` | `MCPServerStreamableHttp` instances |
 
 Keep provider adapters thin. The SDK should own tool execution and skill
 discovery; shared path logic belongs in `tools.py`, not in duplicated provider
@@ -229,6 +230,7 @@ The Konflux pipeline will prefetch the new versions on the next PR.
 | `LIGHTSPEED_PROVIDER_REGION` | Cloud region (Vertex, Bedrock) |
 | `LIGHTSPEED_PROVIDER_API_VERSION` | API version (Azure) |
 | `LIGHTSPEED_SKILLS_DIR` | Skills root mounted by the FastAPI app, default `/app/skills` |
+| `LIGHTSPEED_MCP_SERVERS` | Optional JSON array of MCP server configs: `[{"name":"…","url":"…","headers":{}}]` |
 | `ANTHROPIC_MODEL` | Default Claude model for query routes |
 | `GEMINI_MODEL` | Default Gemini model for query routes |
 | `OPENAI_MODEL` | Default OpenAI model for query routes |

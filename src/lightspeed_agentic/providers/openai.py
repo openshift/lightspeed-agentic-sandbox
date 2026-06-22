@@ -212,6 +212,17 @@ class OpenAIProvider(AgentProvider):
 
         manifest = _build_manifest(options.cwd)
 
+        mcp_server_instances: list[Any] = []
+        if options.mcp_servers:
+            from agents.mcp import MCPServerStreamableHttp
+
+            for server in options.mcp_servers:
+                params: dict[str, Any] = {"url": server.url}
+                if server.headers:
+                    params["headers"] = server.headers
+                mcp_srv = MCPServerStreamableHttp(name=server.name, params=params)
+                mcp_server_instances.append(mcp_srv)
+
         agent_kwargs: dict[str, Any] = {
             "name": "lightspeed",
             "instructions": options.system_prompt,
@@ -219,45 +230,49 @@ class OpenAIProvider(AgentProvider):
             "capabilities": capabilities,
             "default_manifest": manifest,
         }
+        if mcp_server_instances:
+            agent_kwargs["mcp_servers"] = mcp_server_instances
 
         if options.output_schema:
             agent_kwargs["output_type"] = _RawJsonSchema(options.output_schema)
 
         agent = SandboxAgent(**agent_kwargs)
 
-        run_config = RunConfig(
-            sandbox=SandboxRunConfig(
-                client=UnixLocalSandboxClient(),
-            ),
-        )
+        for srv in mcp_server_instances:
+            await srv.connect()
 
-        result = Runner.run_streamed(
-            agent,
-            options.prompt,
-            max_turns=options.max_turns,
-            run_config=run_config,
-        )
+        try:
+            run_config = RunConfig(
+                sandbox=SandboxRunConfig(
+                    client=UnixLocalSandboxClient(),
+                ),
+            )
 
-        async for event in result.stream_events():
-            if isinstance(event, RawResponsesStreamEvent):
-                if isinstance(event.data, ResponseTextDeltaEvent) and event.data.delta:
-                    yield TextDeltaEvent(text=event.data.delta)
-            elif isinstance(event, RunItemStreamEvent):
-                if isinstance(event.item, ToolCallItem):
-                    raw = event.item.raw_item
-                    name = (
-                        getattr(raw, "name", None)
-                        or (raw.get("name") if isinstance(raw, dict) else "")
-                        or ""
-                    )
-                    args = getattr(raw, "arguments", None) or ""
-                    yield ToolCallEvent(name=name, input=args[:TOOL_INPUT_MAX_CHARS])
-                elif isinstance(event.item, ToolCallOutputItem):
-                    yield ToolResultEvent(
-                        output=stringify(event.item.output)[:TOOL_OUTPUT_MAX_CHARS]
-                    )
+            result = Runner.run_streamed(
+                agent,
+                options.prompt,
+                max_turns=options.max_turns,
+                run_config=run_config,
+            )
 
-        yield ContentBlockStopEvent()
+            async for event in result.stream_events():
+                if isinstance(event, RawResponsesStreamEvent):
+                    if isinstance(event.data, ResponseTextDeltaEvent) and event.data.delta:
+                        yield TextDeltaEvent(text=event.data.delta)
+                elif isinstance(event, RunItemStreamEvent):
+                    if isinstance(event.item, ToolCallItem):
+                        raw = event.item.raw_item
+                        name = (
+                            getattr(raw, "name", None)
+                            or (raw.get("name") if isinstance(raw, dict) else "")
+                            or ""
+                        )
+                        args = getattr(raw, "arguments", None) or ""
+                        yield ToolCallEvent(name=name, input=args[:TOOL_INPUT_MAX_CHARS])
+                    elif isinstance(event.item, ToolCallOutputItem):
+                        yield ToolResultEvent(
+                            output=stringify(event.item.output)[:TOOL_OUTPUT_MAX_CHARS]
+                        )
 
         usage = result.context_wrapper.usage
 
@@ -267,3 +282,18 @@ class OpenAIProvider(AgentProvider):
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
         )
+            yield ContentBlockStopEvent()
+
+            usage = getattr(result, "usage", None) or {}
+            input_tokens = getattr(usage, "input_tokens", 0)
+            output_tokens = getattr(usage, "output_tokens", 0)
+
+            yield ResultEvent(
+                text=stringify(result.final_output),
+                cost_usd=0,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+        finally:
+            for srv in mcp_server_instances:
+                await srv.cleanup()

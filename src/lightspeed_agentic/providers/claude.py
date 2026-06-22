@@ -87,17 +87,32 @@ class ClaudeProvider(AgentProvider):
                 "schema": options.output_schema,
             }
 
+        mcp_servers: dict[str, object] | None = None
+        allowed_tools = list(options.allowed_tools)
+        if options.mcp_servers:
+            mcp_servers = {
+                server.name: {
+                    "type": "http",
+                    "url": server.url,
+                    **({"headers": server.headers} if server.headers else {}),
+                }
+                for server in options.mcp_servers
+            }
+            for server in options.mcp_servers:
+                allowed_tools.append(f"mcp__{server.name}__*")
+
         sdk_options = ClaudeAgentOptions(
             model=options.model,
             max_turns=options.max_turns,
             max_budget_usd=options.max_budget_usd,
             system_prompt=options.system_prompt,
-            allowed_tools=options.allowed_tools,
+            allowed_tools=allowed_tools,
             permission_mode="bypassPermissions",
             cwd=effective_cwd,
             skills="all",
             include_partial_messages=True,
             output_format=output_format,
+            mcp_servers=mcp_servers,
         )
 
         _tool_name = ""

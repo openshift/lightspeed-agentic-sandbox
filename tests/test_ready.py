@@ -9,8 +9,9 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from lightspeed_agentic.config import ResolvedSDK
+from lightspeed_agentic.config import McpServerConfig, ResolvedSDK
 from lightspeed_agentic.health import (
+    check_mcp_endpoints,
     check_provider_endpoint,
     check_provider_env,
     probe_provider_endpoint,
@@ -210,3 +211,94 @@ def test_run_readiness_checks_all_ok(monkeypatch: pytest.MonkeyPatch) -> None:
         ok, checks = run_readiness_checks(_OPENAI_DIRECT)
     assert ok is True
     assert checks == {"provider_env": "ok", "provider_endpoint": "ok"}
+
+
+# --- R3: MCP endpoint reachability ---
+
+_MCP_SERVERS = (
+    McpServerConfig(name="jira", url="https://mcp-jira.example.com/sse"),
+    McpServerConfig(name="github", url="https://mcp-github.example.com/"),
+)
+
+
+def test_check_mcp_endpoints_all_ok() -> None:
+    with patch("lightspeed_agentic.health.probe_provider_endpoint", return_value="ok"):
+        results = check_mcp_endpoints(_MCP_SERVERS)
+    assert results == {"mcp_jira": "ok", "mcp_github": "ok"}
+
+
+def test_check_mcp_endpoints_one_failing() -> None:
+    def _side_effect(url: str, *_: object) -> str:
+        if "jira" in url:
+            return "error: connection refused"
+        return "ok"
+
+    with patch("lightspeed_agentic.health.probe_provider_endpoint", side_effect=_side_effect):
+        results = check_mcp_endpoints(_MCP_SERVERS)
+    assert results["mcp_jira"].startswith("error: ")
+    assert results["mcp_github"] == "ok"
+
+
+def test_check_mcp_endpoints_empty() -> None:
+    assert check_mcp_endpoints(()) == {}
+
+
+def test_run_readiness_checks_with_mcp_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    sdk_with_mcp = ResolvedSDK(
+        "openai",
+        ("OPENAI_API_KEY",),
+        "https://api.openai.com/",
+        mcp_servers=_MCP_SERVERS,
+    )
+    with patch("lightspeed_agentic.health.probe_provider_endpoint", return_value="ok"):
+        ok, checks = run_readiness_checks(sdk_with_mcp)
+    assert ok is True
+    assert "mcp_jira" in checks
+    assert "mcp_github" in checks
+
+
+def test_run_readiness_checks_with_mcp_failing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    sdk_with_mcp = ResolvedSDK(
+        "openai",
+        ("OPENAI_API_KEY",),
+        "https://api.openai.com/",
+        mcp_servers=_MCP_SERVERS,
+    )
+
+    def _side_effect(url: str, *_: object) -> str:
+        if "jira" in url:
+            return "error: timeout"
+        return "ok"
+
+    with patch("lightspeed_agentic.health.probe_provider_endpoint", side_effect=_side_effect):
+        ok, checks = run_readiness_checks(sdk_with_mcp)
+    assert ok is False
+    assert checks["mcp_jira"].startswith("error: ")
+
+
+@pytest.mark.asyncio
+async def test_ready_route_with_mcp_failing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    sdk_with_mcp = ResolvedSDK(
+        "openai",
+        ("OPENAI_API_KEY",),
+        "https://api.openai.com/",
+        mcp_servers=(_MCP_SERVERS[0],),
+    )
+
+    def _fail_mcp(url: str, *_: object) -> str:
+        if "jira" in url:
+            return "error: connection refused"
+        return "ok"
+
+    app = FastAPI()
+    register_ready_route(app, sdk=sdk_with_mcp)
+    with patch("lightspeed_agentic.health.probe_provider_endpoint", side_effect=_fail_mcp):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/ready")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["status"] == "error"
+    assert body["checks"]["mcp_jira"].startswith("error: ")

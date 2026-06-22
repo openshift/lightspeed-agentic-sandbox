@@ -48,6 +48,7 @@ router = build_router(
     skills_dir=os.environ.get("LIGHTSPEED_SKILLS_DIR", "/app/skills"),
     model=startup_model,
     audit_enabled=audit_enabled,
+    mcp_servers=sdk.mcp_servers,
 )
 app.include_router(router, prefix="/v1/agent")
 

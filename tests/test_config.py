@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
 
-from lightspeed_agentic.config import resolve_sdk
+from lightspeed_agentic.config import resolve_mcp_servers, resolve_sdk
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +46,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "AZURE_OPENAI_ENDPOINT",
         "AZURE_OPENAI_API_VERSION",
         "AWS_REGION",
+        "LIGHTSPEED_MCP_SERVERS",
     ]:
         monkeypatch.delenv(var, raising=False)
 
@@ -227,3 +229,80 @@ def test_unknown_provider(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(ValueError, match="Unknown provider"):
         resolve_sdk()
+
+
+# --- MCP server resolution ---
+
+
+def test_mcp_servers_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    assert resolve_mcp_servers() == ()
+
+
+def test_mcp_servers_empty_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("LIGHTSPEED_MCP_SERVERS", "  ")
+    assert resolve_mcp_servers() == ()
+
+
+def test_mcp_servers_valid(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv(
+        "LIGHTSPEED_MCP_SERVERS",
+        '[{"url": "https://mcp.example.com/sse", "name": "jira"},'
+        ' {"url": "https://mcp2.example.com/", "name": "github", "headers": {"x-api-key": "k"}}]',
+    )
+    servers = resolve_mcp_servers()
+    assert len(servers) == 2
+    assert servers[0].name == "jira"
+    assert servers[0].url == "https://mcp.example.com/sse"
+    assert servers[0].headers == {}
+    assert servers[1].name == "github"
+    assert servers[1].headers == {"x-api-key": "k"}
+
+
+def test_mcp_servers_invalid_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("LIGHTSPEED_MCP_SERVERS", "not json")
+    with pytest.raises(json.JSONDecodeError):
+        resolve_mcp_servers()
+
+
+def test_mcp_servers_not_array(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("LIGHTSPEED_MCP_SERVERS", '{"url": "x", "name": "y"}')
+    with pytest.raises(ValueError, match="must be a JSON array"):
+        resolve_mcp_servers()
+
+
+def test_mcp_servers_missing_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("LIGHTSPEED_MCP_SERVERS", '[{"url": "https://x.com"}]')
+    with pytest.raises(ValueError, match="missing required 'name'"):
+        resolve_mcp_servers()
+
+
+def test_mcp_servers_missing_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("LIGHTSPEED_MCP_SERVERS", '[{"name": "test"}]')
+    with pytest.raises(ValueError, match="missing required 'url'"):
+        resolve_mcp_servers()
+
+
+def test_resolve_sdk_populates_mcp_servers(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("LIGHTSPEED_PROVIDER", "anthropic")
+    monkeypatch.setenv(
+        "LIGHTSPEED_MCP_SERVERS",
+        '[{"url": "https://mcp.example.com", "name": "test"}]',
+    )
+    sdk = resolve_sdk()
+    assert len(sdk.mcp_servers) == 1
+    assert sdk.mcp_servers[0].name == "test"
+
+
+def test_resolve_sdk_no_mcp_servers(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("LIGHTSPEED_PROVIDER", "anthropic")
+    sdk = resolve_sdk()
+    assert sdk.mcp_servers == ()

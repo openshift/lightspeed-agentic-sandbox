@@ -8,8 +8,10 @@ SDK reads internally. Called once at startup before provider construction.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import os
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,43 @@ def _llm_credentials_path() -> str:
     """Operator mount path; override for local e2e host mode when /var/run is not writable."""
     override = os.environ.get("LIGHTSPEED_LLM_CREDENTIALS_PATH", "").strip()
     return override or LLM_CREDENTIALS_PATH
+
+
+@dataclasses.dataclass(frozen=True)
+class McpServerConfig:
+    """A single MCP server endpoint configured by the operator."""
+
+    name: str
+    url: str
+    headers: dict[str, str] = dataclasses.field(default_factory=dict)
+
+
+def resolve_mcp_servers() -> tuple[McpServerConfig, ...]:
+    """Parse LIGHTSPEED_MCP_SERVERS env var into validated configs."""
+    raw = os.environ.get("LIGHTSPEED_MCP_SERVERS", "").strip()
+    if not raw:
+        return ()
+
+    entries: list[Any] = json.loads(raw)
+    if not isinstance(entries, list):
+        raise ValueError("LIGHTSPEED_MCP_SERVERS must be a JSON array")
+
+    servers: list[McpServerConfig] = []
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ValueError(f"LIGHTSPEED_MCP_SERVERS[{i}] must be an object")
+        name = entry.get("name")
+        url = entry.get("url")
+        if not name or not isinstance(name, str):
+            raise ValueError(f"LIGHTSPEED_MCP_SERVERS[{i}] missing required 'name' string")
+        if not url or not isinstance(url, str):
+            raise ValueError(f"LIGHTSPEED_MCP_SERVERS[{i}] missing required 'url' string")
+        headers = entry.get("headers", {})
+        if not isinstance(headers, dict):
+            raise ValueError(f"LIGHTSPEED_MCP_SERVERS[{i}] 'headers' must be an object")
+        servers.append(McpServerConfig(name=name, url=url, headers=headers))
+
+    return tuple(servers)
 
 
 _DEFAULT_VERTEX_REGION = "us-east5"
@@ -33,6 +72,7 @@ class ResolvedSDK:
     name: str  # "claude", "gemini", "openai"
     expected_envs: tuple[str, ...]  # credential env vars expected from envFrom
     probe_url: str  # R2 reachability probe base URL
+    mcp_servers: tuple[McpServerConfig, ...] = ()
 
 
 def _setenv(key: str, value: str) -> None:
@@ -194,5 +234,15 @@ def resolve_sdk() -> ResolvedSDK:
                 "Supported: anthropic, vertex, openai, azure, bedrock"
             )
 
-    logger.info("Resolved LIGHTSPEED_PROVIDER=%s → SDK=%s", provider, sdk.name)
+    mcp_servers = resolve_mcp_servers()
+    if mcp_servers:
+        sdk = dataclasses.replace(sdk, mcp_servers=mcp_servers)
+        logger.info(
+            "Resolved LIGHTSPEED_PROVIDER=%s → SDK=%s (MCP servers: %s)",
+            provider,
+            sdk.name,
+            ", ".join(s.name for s in mcp_servers),
+        )
+    else:
+        logger.info("Resolved LIGHTSPEED_PROVIDER=%s → SDK=%s", provider, sdk.name)
     return sdk

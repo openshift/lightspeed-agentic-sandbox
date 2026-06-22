@@ -17,6 +17,7 @@ Cross-references: how options are consumed in code → `how/provider-architectur
     | `LIGHTSPEED_PROVIDER_PROJECT` | When provider=`vertex` | Cloud project ID |
     | `LIGHTSPEED_PROVIDER_REGION` | When provider=`vertex` or `bedrock` | Cloud region |
     | `LIGHTSPEED_PROVIDER_API_VERSION` | When provider=`azure` | API version |
+    | `LIGHTSPEED_MCP_SERVERS` | No | JSON array of MCP server configs: `[{"name":"…","url":"…","headers":{}}]` |
 
     Credentials are mounted via `envFrom` (all secret keys as env vars) AND as files at `/var/run/secrets/llm-credentials/`.
 
@@ -73,7 +74,9 @@ Cross-references: how options are consumed in code → `how/provider-architectur
 
 18. **Non-hermetic fallback.** When prefetch directories are absent, the container build recipe may fetch selected binaries from external URLs for developer builds.
 
-19. **System packages — minimum expectations.** Runtime image includes Bash, Git, OpenShift CLI (`oc`), Kubernetes CLI (`kubectl`), ripgrep, Node.js (Claude Code CLI), and supporting OS utilities for debugging and archives per the container recipe.
+19. **MCP server configuration.** `LIGHTSPEED_MCP_SERVERS` is an optional JSON-encoded array of MCP server endpoint configs. Each entry MUST have `name` (string) and `url` (string); `headers` (object) is optional. When set, `resolve_mcp_servers()` parses and validates the entries at startup. The resulting `McpServerConfig` tuple is carried on `ResolvedSDK.mcp_servers` and passed through to `ProviderQueryOptions.mcp_servers`. Each provider maps these to its SDK's native MCP integration (Claude: `ClaudeAgentOptions.mcp_servers` dict; Gemini: `McpToolset` with `StreamableHTTPConnectionParams`; OpenAI: `MCPServerStreamableHttp` instances). Only streamable HTTP transport is supported. Health probes (R3) check reachability of each configured MCP endpoint.
+
+20. **System packages — minimum expectations.** Runtime image includes Bash, Git, OpenShift CLI (`oc`), Kubernetes CLI (`kubectl`), ripgrep, Node.js (Claude Code CLI), and supporting OS utilities for debugging and archives per the container recipe.
 
 ## Configuration Surface
 
@@ -88,6 +91,7 @@ Cross-references: how options are consumed in code → `how/provider-architectur
 | `LIGHTSPEED_PROVIDER_API_VERSION` | API version from operator (see rule 1). |
 | `ANTHROPIC_MODEL`, `GEMINI_MODEL`, `OPENAI_MODEL` | Internal: SDK-specific model vars. Set by configuration mapping (rule 2), not operator. |
 | `LIGHTSPEED_SKILLS_DIR` | Skill root and provider working directory default. |
+| `LIGHTSPEED_MCP_SERVERS` | Optional JSON array of MCP server endpoint configs (see rule 19). |
 | `ANTHROPIC_API_KEY` | Claude SDK credential (from credentials secret envFrom). |
 | `GOOGLE_API_KEY`, `GEMINI_API_KEY` | Google GenAI credential (from credentials secret envFrom). |
 | `OPENAI_API_KEY` | OpenAI SDK credential (from credentials secret envFrom). |

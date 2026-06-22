@@ -88,8 +88,6 @@ class GeminiProvider(AgentProvider):
 
         bash.run_async = _auto_confirm_run  # type: ignore[method-assign]
 
-        # TODO: investigate more ADK built-in tools:
-        # load_artifacts, load_memory, computer_use, file_search, mcp_servers
         is_vertex = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").upper() == "TRUE"
         tools: list[Any] = [bash]
         # Vertex AI rejects mixing search tools (google_search, url_context)
@@ -102,6 +100,19 @@ class GeminiProvider(AgentProvider):
         skill_toolset = self._cached_skills[options.cwd]
         if skill_toolset is not None:
             tools.append(skill_toolset)
+
+        if options.mcp_servers:
+            from google.adk.tools.mcp_tool.mcp_session_manager import (
+                StreamableHTTPConnectionParams,
+            )
+            from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+
+            for server in options.mcp_servers:
+                conn = StreamableHTTPConnectionParams(
+                    url=server.url,
+                    headers=server.headers or None,
+                )
+                tools.append(McpToolset(connection_params=conn))
 
         if not options.output_schema:
             tools.append(exit_loop)

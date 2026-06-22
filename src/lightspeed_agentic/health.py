@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from lightspeed_agentic.config import ResolvedSDK
+from lightspeed_agentic.config import McpServerConfig, ResolvedSDK
 
 PROBE_TIMEOUT_SEC = 3.0
 
@@ -57,11 +57,24 @@ def check_provider_endpoint(probe_url: str) -> str:
     return probe_provider_endpoint(url)
 
 
+def check_mcp_endpoints(
+    servers: tuple[McpServerConfig, ...],
+    timeout: float = PROBE_TIMEOUT_SEC,
+) -> dict[str, str]:
+    """R3: probe each configured MCP server URL for reachability."""
+    results: dict[str, str] = {}
+    for server in servers:
+        results[f"mcp_{server.name}"] = probe_provider_endpoint(server.url, timeout)
+    return results
+
+
 def run_readiness_checks(sdk: ResolvedSDK) -> tuple[bool, dict[str, str]]:
     checks = {
         "provider_env": check_provider_env(sdk.expected_envs),
         "provider_endpoint": check_provider_endpoint(sdk.probe_url),
     }
+    if sdk.mcp_servers:
+        checks.update(check_mcp_endpoints(sdk.mcp_servers))
     return all(status == "ok" for status in checks.values()), checks
 
 
