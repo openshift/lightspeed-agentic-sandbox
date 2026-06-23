@@ -289,6 +289,102 @@ def test_mcp_servers_missing_url(monkeypatch: pytest.MonkeyPatch) -> None:
         resolve_mcp_servers()
 
 
+def test_mcp_servers_headers_list_with_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+) -> None:
+    """Operator-style headers: list of {name, source} objects."""
+    _clean_env(monkeypatch)
+    import lightspeed_agentic.config as cfg
+
+    token_file = tmp_path / "token"  # type: ignore[operator]
+    token_file.write_text("test-sa-token")
+    monkeypatch.setattr(cfg, "_SA_TOKEN_PATH", str(token_file))
+    monkeypatch.setenv(
+        "LIGHTSPEED_MCP_SERVERS",
+        json.dumps(
+            [
+                {
+                    "name": "k8s",
+                    "url": "http://mcp.local/mcp",
+                    "headers": [
+                        {"name": "kubernetes-authorization", "source": "ServiceAccountToken"}
+                    ],
+                }
+            ]
+        ),
+    )
+    servers = resolve_mcp_servers()
+    assert len(servers) == 1
+    assert servers[0].headers == {"kubernetes-authorization": "test-sa-token"}
+
+
+def test_mcp_servers_headers_list_with_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    """List-format headers with static value."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv(
+        "LIGHTSPEED_MCP_SERVERS",
+        json.dumps(
+            [
+                {
+                    "name": "k8s",
+                    "url": "http://mcp.local/mcp",
+                    "headers": [{"name": "x-api-key", "value": "my-key"}],
+                }
+            ]
+        ),
+    )
+    servers = resolve_mcp_servers()
+    assert servers[0].headers == {"x-api-key": "my-key"}
+
+
+def test_mcp_servers_headers_list_missing_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv(
+        "LIGHTSPEED_MCP_SERVERS",
+        json.dumps([{
+            "name": "k8s", "url": "http://x",
+            "headers": [{"source": "ServiceAccountToken"}],
+        }]),
+    )
+    with pytest.raises(ValueError, match="missing 'name'"):
+        resolve_mcp_servers()
+
+
+def test_mcp_servers_headers_list_missing_value_and_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv(
+        "LIGHTSPEED_MCP_SERVERS",
+        json.dumps([{"name": "k8s", "url": "http://x", "headers": [{"name": "h"}]}]),
+    )
+    with pytest.raises(ValueError, match="needs 'value' or 'source'"):
+        resolve_mcp_servers()
+
+
+def test_mcp_servers_headers_unknown_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv(
+        "LIGHTSPEED_MCP_SERVERS",
+        json.dumps([{
+            "name": "k8s", "url": "http://x",
+            "headers": [{"name": "h", "source": "Bogus"}],
+        }]),
+    )
+    with pytest.raises(ValueError, match="Unknown header source"):
+        resolve_mcp_servers()
+
+
+def test_mcp_servers_headers_invalid_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    monkeypatch.setenv(
+        "LIGHTSPEED_MCP_SERVERS",
+        json.dumps([{"name": "k8s", "url": "http://x", "headers": "bad"}]),
+    )
+    with pytest.raises(ValueError, match="must be an object or array"):
+        resolve_mcp_servers()
+
+
 def test_resolve_sdk_populates_mcp_servers(monkeypatch: pytest.MonkeyPatch) -> None:
     _clean_env(monkeypatch)
     monkeypatch.setenv("LIGHTSPEED_PROVIDER", "anthropic")

@@ -274,14 +274,6 @@ class OpenAIProvider(AgentProvider):
                             output=stringify(event.item.output)[:TOOL_OUTPUT_MAX_CHARS]
                         )
 
-        usage = result.context_wrapper.usage
-
-        yield ResultEvent(
-            text=stringify(result.final_output),
-            cost_usd=0,
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-        )
             yield ContentBlockStopEvent()
 
             usage = getattr(result, "usage", None) or {}

@@ -99,20 +99,6 @@ def register_query_routes(
         )
 
         try:
-            result = provider.query(
-                ProviderQueryOptions(
-                    prompt=prompt,
-                    system_prompt=system_prompt,
-                    model=model,
-                    max_turns=max_turns,
-                    max_budget_usd=5.0,
-                    allowed_tools=DEFAULT_ALLOWED_TOOLS,
-                    cwd=skills_dir,
-                    output_schema=req.outputSchema,
-                    mcp_servers=mcp_servers,
-                )
-            )
-
             text = ""
             cost = 0.0
             input_tokens = 0
@@ -136,6 +122,7 @@ def register_query_routes(
                             allowed_tools=DEFAULT_ALLOWED_TOOLS,
                             cwd=skills_dir,
                             output_schema=req.outputSchema,
+                            mcp_servers=mcp_servers,
                         )
                     )
                     async for event in result:

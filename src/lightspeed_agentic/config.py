@@ -16,6 +16,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 LLM_CREDENTIALS_PATH = "/var/run/secrets/llm-credentials"
+_SA_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"  # noqa: S105
 
 
 def _llm_credentials_path() -> str:
@@ -31,6 +32,51 @@ class McpServerConfig:
     name: str
     url: str
     headers: dict[str, str] = dataclasses.field(default_factory=dict)
+
+
+def _resolve_header_source(source: str) -> str:
+    """Resolve a dynamic header source to its value."""
+    if source == "ServiceAccountToken":
+        try:
+            with open(_SA_TOKEN_PATH) as f:
+                return f.read().strip()
+        except FileNotFoundError as err:
+            raise ValueError(
+                f"Header source 'ServiceAccountToken' requires {_SA_TOKEN_PATH}"
+            ) from err
+    raise ValueError(f"Unknown header source: {source!r}")
+
+
+def _resolve_headers(raw: Any, index: int) -> dict[str, str]:
+    """Accept headers as a dict or as the operator's list-of-objects format.
+
+    Dict format (static):  {"header-name": "value"}
+    List format (dynamic): [{"name": "header-name", "source": "ServiceAccountToken"}]
+    """
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list):
+        resolved: dict[str, str] = {}
+        for j, item in enumerate(raw):
+            if not isinstance(item, dict):
+                raise ValueError(
+                    f"LIGHTSPEED_MCP_SERVERS[{index}].headers[{j}] must be an object"
+                )
+            hdr_name = item.get("name")
+            if not hdr_name or not isinstance(hdr_name, str):
+                raise ValueError(
+                    f"LIGHTSPEED_MCP_SERVERS[{index}].headers[{j}] missing 'name'"
+                )
+            if "value" in item:
+                resolved[hdr_name] = str(item["value"])
+            elif "source" in item:
+                resolved[hdr_name] = _resolve_header_source(item["source"])
+            else:
+                raise ValueError(
+                    f"LIGHTSPEED_MCP_SERVERS[{index}].headers[{j}] needs 'value' or 'source'"
+                )
+        return resolved
+    raise ValueError(f"LIGHTSPEED_MCP_SERVERS[{index}] 'headers' must be an object or array")
 
 
 def resolve_mcp_servers() -> tuple[McpServerConfig, ...]:
@@ -53,9 +99,7 @@ def resolve_mcp_servers() -> tuple[McpServerConfig, ...]:
             raise ValueError(f"LIGHTSPEED_MCP_SERVERS[{i}] missing required 'name' string")
         if not url or not isinstance(url, str):
             raise ValueError(f"LIGHTSPEED_MCP_SERVERS[{i}] missing required 'url' string")
-        headers = entry.get("headers", {})
-        if not isinstance(headers, dict):
-            raise ValueError(f"LIGHTSPEED_MCP_SERVERS[{i}] 'headers' must be an object")
+        headers = _resolve_headers(entry.get("headers", {}), i)
         servers.append(McpServerConfig(name=name, url=url, headers=headers))
 
     return tuple(servers)
