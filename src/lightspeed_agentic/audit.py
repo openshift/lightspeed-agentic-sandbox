@@ -7,6 +7,9 @@ import sys
 from datetime import UTC, datetime
 from typing import Any
 
+from opentelemetry.context import Context
+from opentelemetry.trace import StatusCode
+
 from lightspeed_agentic.tracing import get_tracer
 from lightspeed_agentic.types import ProviderEvent
 
@@ -35,9 +38,19 @@ class AuditLogger:
         self._text_buffer: list[str] = []
         self._thinking_buffer: list[str] = []
         self._last_tool_name = "unknown"
+        self._last_tool_input = ""
         self._tool_span: Any = None
         self._tracer = get_tracer()
+        self._parent_context: Context | None = None
         self._emit("audit.agent.started", model=model, provider=provider)
+
+    def set_parent_context(self, ctx: Context) -> None:
+        """Set the parent span context for tool spans.
+
+        Must be called from within the agent.run span block so that
+        tool spans are correctly parented under agent.run.
+        """
+        self._parent_context = ctx
 
     def process_event(self, event: ProviderEvent) -> None:
         match event.type:
@@ -52,7 +65,17 @@ class AuditLogger:
                 if self._tool_span is not None:
                     self._tool_span.end()
                 self._last_tool_name = event.name or "unknown"
-                self._tool_span = self._tracer.start_span(f"tool.{self._last_tool_name}")
+                self._last_tool_input = event.input or ""
+                # Create tool span with explicit parent context so it's correctly
+                # parented under agent.run even in async code
+                self._tool_span = self._tracer.start_span(
+                    f"tool.{self._last_tool_name}",
+                    context=self._parent_context,
+                    attributes={
+                        "tool.name": self._last_tool_name,
+                        "tool.input": self._last_tool_input[:300],
+                    },
+                )
                 self._emit(
                     "audit.agent.tool.call", tool_name=self._last_tool_name, tool_input=event.input
                 )
@@ -64,6 +87,8 @@ class AuditLogger:
                     success=True,
                 )
                 if self._tool_span is not None:
+                    self._tool_span.set_attribute("tool.output", event.output[:500])
+                    self._tool_span.set_status(StatusCode.OK)
                     self._tool_span.end()
                     self._tool_span = None
             case "result":

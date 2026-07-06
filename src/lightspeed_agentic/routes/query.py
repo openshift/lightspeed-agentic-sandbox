@@ -13,6 +13,8 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
+from opentelemetry import context as otel_context
+
 from lightspeed_agentic.audit import AuditLogger, derive_phase
 from lightspeed_agentic.logging import EventLogger
 from lightspeed_agentic.routes.models import RunRequest, RunResponse
@@ -108,6 +110,9 @@ def register_query_routes(
                     context=trace_ctx,
                     attributes={"model": model, "provider": provider.name},
                 ):
+                    # Pass the current context to AuditLogger so tool spans
+                    # are correctly parented under agent.run
+                    audit_logger.set_parent_context(otel_context.get_current())
                     result = provider.query(
                         ProviderQueryOptions(
                             prompt=prompt,
