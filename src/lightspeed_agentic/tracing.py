@@ -76,23 +76,27 @@ def init_tracer() -> None:
                     headers.append((key.strip(), unquote(value.strip())))
 
         if protocol in ("grpc", ""):
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+                OTLPSpanExporter as GrpcExporter,
+            )
 
-            exporter = OTLPSpanExporter(
+            grpc_exporter = GrpcExporter(
                 endpoint=endpoint,
                 insecure=insecure,
                 headers=headers,
             )
+            _tracer_provider.add_span_processor(BatchSpanProcessor(grpc_exporter))
         else:
             # http/protobuf protocol
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                OTLPSpanExporter as HttpExporter,
+            )
 
-            exporter = OTLPSpanExporter(
+            http_exporter = HttpExporter(
                 endpoint=endpoint,
                 headers=dict(headers) if headers else None,
             )
-
-        _tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
+            _tracer_provider.add_span_processor(BatchSpanProcessor(http_exporter))
 
     trace.set_tracer_provider(_tracer_provider)
 
