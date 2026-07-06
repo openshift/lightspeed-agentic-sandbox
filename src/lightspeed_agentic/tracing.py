@@ -8,13 +8,14 @@ OTEL_* environment variables are respected:
 - OTEL_EXPORTER_OTLP_PROTOCOL: Protocol selection (grpc/http/protobuf)
 - OTEL_EXPORTER_OTLP_HEADERS: Custom headers (auth tokens)
 - OTEL_RESOURCE_ATTRIBUTES: Additional resource attributes
-- OTEL_TRACES_EXPORTER: Exporter selection (otlp/console/none)
+- OTEL_TRACES_EXPORTER: Exporter selection (otlp/none)
 """
 
 from __future__ import annotations
 
 import os
 import secrets
+from urllib.parse import unquote
 
 from opentelemetry import trace
 from opentelemetry.context import Context
@@ -64,7 +65,7 @@ def init_tracer() -> None:
         insecure_env = os.environ.get("OTEL_EXPORTER_OTLP_INSECURE", "").strip().lower()
         insecure = insecure_env == "true" if insecure_env else not endpoint.startswith("https")
 
-        # Parse custom headers
+        # Parse custom headers (values are URL-encoded per OTEL spec)
         headers_env = os.environ.get("OTEL_EXPORTER_OTLP_HEADERS", "").strip()
         headers: list[tuple[str, str]] | None = None
         if headers_env:
@@ -72,7 +73,7 @@ def init_tracer() -> None:
             for pair in headers_env.split(","):
                 if "=" in pair:
                     key, value = pair.split("=", 1)
-                    headers.append((key.strip(), value.strip()))
+                    headers.append((key.strip(), unquote(value.strip())))
 
         if protocol in ("grpc", ""):
             from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
