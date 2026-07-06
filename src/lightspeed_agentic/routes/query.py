@@ -12,7 +12,6 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Request
-
 from opentelemetry import context as otel_context
 
 from lightspeed_agentic.audit import AuditLogger, derive_phase
