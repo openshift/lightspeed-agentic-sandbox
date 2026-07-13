@@ -47,7 +47,7 @@ Returns HTTP 200 when all checks pass, HTTP 503 when any check fails. Not under 
 
 | Provider | Probe URL |
 |----------|----------|
-| `claude` | `https://api.anthropic.com/` |
+| `deepagents` | `https://api.anthropic.com/` (direct), Vertex AI regional endpoint, or Bedrock regional endpoint — resolved per backend path in `configuration.md` rule 2 |
 | `gemini` | `https://generativelanguage.googleapis.com/` |
 | `openai` | `OPENAI_BASE_URL` or `https://api.openai.com/` |
 

@@ -33,7 +33,7 @@ Implementation spec for compliance audit logging in the agentic sandbox. Parent 
 
 ### Provider-Specific Instrumentation
 
-7. **Claude** (`providers/claude.py`): Emit `audit.agent.text` from text content in `StreamEvent`. Emit `audit.agent.thinking` from `thinking_delta` events. Emit `audit.agent.tool.call` from `AssistantMessage` tool_use blocks. Emit `audit.agent.tool.result` from tool result messages. Emit `audit.agent.completed` from `ResultMessage`.
+7. **DeepAgents / Anthropic** (`providers/deepagents.py`): Emit `audit.agent.text` from `AIMessage` text content. Emit `audit.agent.thinking` from thinking blocks extracted from `AIMessage.content` (entries with `type="thinking"`). Emit `audit.agent.tool.call` from `AIMessage.tool_calls`. Emit `audit.agent.tool.result` from `ToolMessage` content. Emit `audit.agent.completed` when the stream ends, with token counts from accumulated `usage_metadata`.
 
 8. **OpenAI** (`providers/openai.py`): Emit `audit.agent.text` from `RawResponsesStreamEvent` text deltas (buffered per-message). Emit `audit.agent.tool.call` from `ToolCallItem` events. Emit `audit.agent.tool.result` from `ToolCallOutputItem` events. No thinking events (OpenAI does not expose reasoning). Emit `audit.agent.completed` when the stream ends.
 

@@ -14,7 +14,7 @@
 | `src/lightspeed_agentic/routes/__init__.py` | `build_router()` | Router factory: model resolution, default params, mounts query routes |
 | `src/lightspeed_agentic/routes/models.py` | `RunRequest`, `RunResponse` | Pydantic request/response models |
 | `src/lightspeed_agentic/routes/query.py` | `run_endpoint`, `_format_context_prefix()` | `POST /run` handler: context prefixing, timeout, JSON parse/fallback |
-| `src/lightspeed_agentic/providers/claude.py` | `ClaudeProvider` | Claude agent SDK adapter |
+| `src/lightspeed_agentic/providers/deepagents.py` | `DeepAgentsProvider` | DeepAgents (LangChain) adapter for Anthropic models |
 | `src/lightspeed_agentic/providers/gemini.py` | `GeminiProvider` | Google ADK adapter |
 | `src/lightspeed_agentic/providers/openai.py` | `OpenAIProvider` | OpenAI Agents SDK adapter |
 
@@ -29,7 +29,7 @@
 ## Naming Conventions
 
 - **Package:** `lightspeed_agentic` under `src/` (hatchling src-layout).
-- **Provider modules:** one file per provider in `providers/`, named after the vendor (`claude.py`, `gemini.py`, `openai.py`). Each exports a single `XProvider` class.
+- **Provider modules:** one file per provider in `providers/`, named after the SDK (`deepagents.py`, `gemini.py`, `openai.py`). Each exports a single `XProvider` class.
 - **Route modules:** `routes/` contains `models.py` (Pydantic shapes), `query.py` (endpoint registration), `__init__.py` (router builder).
 - **Test layout:** `tests/` mirrors source structure. `tests/e2e/` holds BDD feature files and step definitions. `evals/` is a separate integration test suite run in containers.
 
@@ -39,7 +39,7 @@ The project uses optional extras to gate provider SDKs:
 
 | Extra | Packages |
 |---|---|
-| `claude` | `claude-agent-sdk` |
+| `deepagents` | `deepagents`, `langchain-google-vertexai`, `langchain-aws` |
 | `gemini` | `google-adk` |
 | `openai` | `openai-agents` |
 | `all` | All three provider extras |
