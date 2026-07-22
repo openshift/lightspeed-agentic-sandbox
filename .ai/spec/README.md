@@ -18,6 +18,7 @@ These specs define the behavioral rules and codebase navigation for the lightspe
 | [provider-contract.md](what/provider-contract.md) | AgentProvider ABC, event model, structured output, thin-adapter principle, skills delegation |
 | [configuration.md](what/configuration.md) | Environment variables, provider selection, model resolution, container layout, build system |
 | [health-probes.md](what/health-probes.md) | Liveness (`/health`) and readiness (`/ready`) endpoints, failure mode audit, probe configuration |
+| [audit-logging.md](what/audit-logging.md) | OTel GenAI semantic conventions, span events for LLM calls and tool execution, compliance audit trail |
 | [e2e-testing.md](what/e2e-testing.md) | Container BDD harness: run modes, live vs unit split, OLS-3220 spike findings |
 
 ### how/ — Architecture Specifications
@@ -45,6 +46,7 @@ AI agents. Content is optimized for precision and machine consumption.
 | Understand env vars and deployment | `what/configuration.md` |
 | Navigate the codebase | `how/project-structure.md` |
 | Understand health probes | `what/health-probes.md` |
+| Understand audit logging | `what/audit-logging.md` |
 | Understand E2E testing | `what/e2e-testing.md` |
 
 ## Cross-Reference
