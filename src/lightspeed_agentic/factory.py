@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from lightspeed_agentic.types import AgentProvider
 
 
-def create_provider(name: str) -> AgentProvider:
+def create_provider(name: str, guardrails_config: Any | None = None) -> AgentProvider:
     match name:
         case "deepagents":
             from lightspeed_agentic.providers.deepagents import DeepAgentsProvider
 
-            return DeepAgentsProvider()
+            return DeepAgentsProvider(guardrails_config=guardrails_config)
         case "gemini":
             from lightspeed_agentic.providers.gemini import GeminiProvider
 

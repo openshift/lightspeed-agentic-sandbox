@@ -86,6 +86,7 @@ class ProviderQueryOptions:
     stream: bool = False
     mcp_servers: list[ResolvedMCPServer] = field(default_factory=list)
     reasoning_config: dict[str, Any] | None = None
+    target_namespaces: list[str] = field(default_factory=list)
 
 
 class AgentProvider(ABC):

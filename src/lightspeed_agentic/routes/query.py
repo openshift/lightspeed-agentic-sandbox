@@ -164,6 +164,11 @@ def register_query_routes(
                 nonlocal text, cost, input_tokens, output_tokens, reasoning_tokens, response_model
                 token = otel_context.attach(span_ctx)
                 try:
+                    target_ns = (
+                        req.context.get("targetNamespaces", [])
+                        if req.context
+                        else []
+                    )
                     result = provider.query(
                         ProviderQueryOptions(
                             prompt=prompt,
@@ -176,6 +181,7 @@ def register_query_routes(
                             output_schema=req.outputSchema,
                             mcp_servers=mcp_servers or [],
                             reasoning_config=reasoning_config,
+                            target_namespaces=target_ns,
                         )
                     )
                     event_logger = EventLogger("run")
