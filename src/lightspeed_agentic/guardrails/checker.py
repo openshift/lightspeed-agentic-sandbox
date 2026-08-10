@@ -20,9 +20,7 @@ class GuardrailsChecker:
     def __init__(self, config: GuardrailsConfig) -> None:
         self._config = config
 
-    async def check_tool_request(
-        self, command: str, context: GuardrailContext
-    ) -> CheckResult:
+    async def check_tool_request(self, command: str, context: GuardrailContext) -> CheckResult:
         start = time.monotonic()
         result = check_pre_execution(command, context)
         result = await self._maybe_escalate_pre(result, command, context)
@@ -72,9 +70,7 @@ class GuardrailsChecker:
 
         return await judge_tool_output(output, command, context, self._config)
 
-    def _log_check(
-        self, phase: str, command: str, result: CheckResult, elapsed: float
-    ) -> None:
+    def _log_check(self, phase: str, command: str, result: CheckResult, elapsed: float) -> None:
         cmd_preview = command[:120] if len(command) > 120 else command
         logger.info(
             "[guardrails] %s verdict=%s layer=%s confidence=%.2f elapsed=%.1fms cmd=%s reason=%s",

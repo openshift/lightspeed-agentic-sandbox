@@ -14,9 +14,7 @@ logger = logging.getLogger(__name__)
 # Pre-execution patterns
 # ---------------------------------------------------------------------------
 
-_EXFIL_COMMANDS = re.compile(
-    r"\b(curl|wget|nc|ncat|netcat)\b", re.IGNORECASE
-)
+_EXFIL_COMMANDS = re.compile(r"\b(curl|wget|nc|ncat|netcat)\b", re.IGNORECASE)
 
 _EXFIL_PIPE = re.compile(
     r"(cat|kubectl\s+get\s+secret|oc\s+get\s+secret).*\|.*"
