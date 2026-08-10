@@ -50,9 +50,17 @@ def _mock_deepagents_modules(
     mock_agents = MagicMock(structured_output=mock_structured_output)
     mock_langchain = MagicMock(agents=mock_agents)
 
+    mock_protocol = MagicMock()
+    mock_protocol.SandboxBackendProtocol = MagicMock()
+    mock_backends = MagicMock(
+        LocalShellBackend=MagicMock(return_value=mock_backend),
+        protocol=mock_protocol,
+    )
+
     modules: dict[str, Any] = {
         "deepagents": MagicMock(create_deep_agent=mock_create),
-        "deepagents.backends": MagicMock(LocalShellBackend=MagicMock(return_value=mock_backend)),
+        "deepagents.backends": mock_backends,
+        "deepagents.backends.protocol": mock_protocol,
         "langchain": mock_langchain,
         "langchain.agents": mock_agents,
         "langchain.agents.structured_output": mock_structured_output,
