@@ -38,7 +38,7 @@ Cross-references: HTTP mapping of prompts and timeouts → `run-api.md`. Env and
 
 16. **ProviderQueryOptions — `stream`.** When true, adapters that support partial streaming should yield deltas; when false, they may batch. The HTTP `POST /run` path does not set this flag from the request body.
 
-17. **ProviderQueryOptions — `mcp_servers`.** Optional list of `ResolvedMCPServer` values from `mcp.parse_mcp_servers()`. Each entry carries `name`, `url`, `timeout`, and `headers` as a list of `ResolvedMCPHeader` (`name`, `value`). Adapters MAY convert headers to a dict at the SDK boundary. When non-empty, adapters MUST wire these servers into their SDK's native MCP client mechanism (see rules 31–34). When empty or absent, no MCP servers are configured.
+17. **ProviderQueryOptions — `mcp_servers`.** Optional list of `ResolvedMCPServer` values from `mcp.parse_mcp_servers()`. Each entry carries `name`, `url`, `timeout`, optional `ca_file`, and `headers` as a list of `ResolvedMCPHeader` (`name`, `value`). Adapters MAY convert headers to a dict at the SDK boundary. When `ca_file` is present, adapters MUST supply the shared server-specific verified HTTP client factory to their SDK. When non-empty, adapters MUST wire these servers into their SDK's native MCP client mechanism (see rules 31–34). When empty or absent, no MCP servers are configured.
 
 18. **ProviderQueryOptions — `reasoning_config`.** Optional dict (JSON object). When present, adapters MUST map it to their SDK's native reasoning/thinking parameters. When absent or `None`, adapters MUST NOT set any reasoning parameters and SDK defaults apply. DeepAgents passes only the `thinking` key through to `ChatAnthropic*`. Gemini constructs `ThinkingConfig(**config)` and OpenAI constructs `Reasoning(**rc)` — extra keys are forwarded to the SDK constructors (not stripped by the adapter); invalid values fail at SDK/API invocation time.
 
@@ -68,11 +68,11 @@ Cross-references: HTTP mapping of prompts and timeouts → `run-api.md`. Env and
 
 31. **[Removed]** *(Claude adapter was removed in OLS-3500; MCP for Anthropic models is now handled by the DeepAgents adapter — see rule 34.)*
 
-32. **MCP — Gemini.** When `mcp_servers` is non-empty, the Gemini adapter MUST create `McpToolset` instances with `StreamableHTTPConnectionParams` for each server (including resolved headers) and add them to the agent's `tools` list alongside existing tools.
+32. **MCP — Gemini.** When `mcp_servers` is non-empty, the Gemini adapter MUST create `McpToolset` instances with `StreamableHTTPConnectionParams` for each server (including resolved headers and the server-specific HTTP client factory when configured) and add them to the agent's `tools` list alongside existing tools.
 
-33. **MCP — OpenAI.** When `mcp_servers` is non-empty, the OpenAI adapter MUST create `MCPServerStreamableHttp` instances for each server (with resolved headers) and pass them to the agent's `mcp_servers` parameter.
+33. **MCP — OpenAI.** When `mcp_servers` is non-empty, the OpenAI adapter MUST create `MCPServerStreamableHttp` instances for each server (with resolved headers and the server-specific HTTP client factory when configured) and pass them to the agent's `mcp_servers` parameter.
 
-34. **MCP — DeepAgents.** When `mcp_servers` is non-empty, the DeepAgents adapter MUST load MCP tools via `langchain-mcp-adapters` `MultiServerMCPClient` and pass them to `create_deep_agent(tools=...)` where they merge with built-in harness tools.
+34. **MCP — DeepAgents.** When `mcp_servers` is non-empty, the DeepAgents adapter MUST load MCP tools via `langchain-mcp-adapters` `MultiServerMCPClient`, including the server-specific HTTP client factory when configured, and pass them to `create_deep_agent(tools=...)` where they merge with built-in harness tools.
 
 35. **Reasoning — DeepAgents.** When `reasoning_config` is present, the DeepAgents adapter MUST pass the `thinking` key from the config to the `ChatAnthropic*` model constructor. The adapter does not interpret the config — it passes through to the LangChain model as-is.
 
