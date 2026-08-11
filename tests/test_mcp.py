@@ -323,7 +323,7 @@ class TestMCPHTTPClientFactory:
         assert isinstance(verify, ssl.SSLContext)
         assert verify.verify_mode == ssl.CERT_REQUIRED
         assert verify.check_hostname is True
-        assert client.call_args.kwargs["follow_redirects"] is True
+        assert client.call_args.kwargs["follow_redirects"] is False
 
 
 class TestGeminiAdapter:

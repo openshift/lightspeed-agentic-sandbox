@@ -126,7 +126,7 @@ def mcp_http_client_factory(
             timeout=timeout,
             auth=auth,
             verify=context,
-            follow_redirects=True,
+            follow_redirects=False,
         )
 
     return factory
