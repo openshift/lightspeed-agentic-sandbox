@@ -231,16 +231,20 @@ class OpenAIProvider(AgentProvider):
             self._client = AsyncOpenAI(base_url=os.environ.get("OPENAI_BASE_URL"))
         model = OpenAIResponsesModel(model=options.model, openai_client=self._client)
 
-        capabilities = [
+        capabilities: list[Any] = [
             Shell(),
             Filesystem(),
-            Skills(
-                lazy_from=LocalDirLazySkillSource(
-                    source=LocalDir(src=Path(options.cwd)),
-                ),
-                skills_path="skills/.agents",
-            ),
         ]
+        skills_agents_dir = Path(options.cwd) / "skills" / ".agents"
+        if skills_agents_dir.is_dir():
+            capabilities.append(
+                Skills(
+                    lazy_from=LocalDirLazySkillSource(
+                        source=LocalDir(src=Path(options.cwd)),
+                    ),
+                    skills_path="skills/.agents",
+                ),
+            )
 
         # Manifest root is cwd's parent (/app) so exec_command can reach the full workspace.
         manifest = _build_manifest(str(Path(options.cwd).parent))
