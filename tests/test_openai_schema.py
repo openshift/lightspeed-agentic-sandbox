@@ -311,6 +311,7 @@ async def test_skills_capability_omitted_when_no_skill_md(
     skills_caps = [c for c in capabilities if isinstance(c, Skills)]
     assert len(skills_caps) == 0
 
+
 class TestExecCommandShellCoercion:
     """OLS-3257: model sends shell:bool instead of shell:string."""
 
@@ -350,4 +351,3 @@ class TestExecCommandShellCoercion:
             assert captured == [expected]
         finally:
             ExecCommandTool.run = original_run
-
