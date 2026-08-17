@@ -539,6 +539,11 @@ class TestEventMapping:
         """MCP servers are passed to MultiServerMCPClient and tools merged into agent."""
         monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+        ca_client_factory = MagicMock()
+        monkeypatch.setattr(
+            "lightspeed_agentic.mcp.mcp_http_client_factory",
+            lambda _ca_file: ca_client_factory,
+        )
 
         mock_ai_message = MagicMock()
         mock_ai_message.type = "ai"
@@ -568,6 +573,7 @@ class TestEventMapping:
             url="http://mcp.example.com",
             timeout=30,
             headers=[ResolvedMCPHeader(name="Authorization", value="Bearer token")],
+            ca_file="/var/run/secrets/mcp-ca/ca.crt",
         )
 
         with _deepagents_provider(
@@ -582,6 +588,7 @@ class TestEventMapping:
         assert "test-server" in server_config
         assert server_config["test-server"]["url"] == "http://mcp.example.com"
         assert server_config["test-server"]["headers"]["Authorization"] == "Bearer token"
+        assert server_config["test-server"]["httpx_client_factory"] is ca_client_factory
         mock_mcp_client.get_tools.assert_awaited_once()
         mock_create.assert_called_once()
         create_kwargs = mock_create.call_args[1]

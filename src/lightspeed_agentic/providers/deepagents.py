@@ -203,17 +203,22 @@ class DeepAgentsProvider(AgentProvider):
         if options.mcp_servers:
             from langchain_mcp_adapters.client import MultiServerMCPClient
 
-            client = MultiServerMCPClient(
-                {
-                    server.name: {  # type: ignore[misc]
-                        "transport": "http",
-                        "url": server.url,
-                        "headers": {h.name: h.value for h in server.headers},
-                        "timeout": server.timeout,
-                    }
-                    for server in options.mcp_servers
+            from lightspeed_agentic.mcp import mcp_http_client_factory
+
+            server_configs: dict[str, dict[str, Any]] = {}
+            for server in options.mcp_servers:
+                config: dict[str, Any] = {
+                    "transport": "http",
+                    "url": server.url,
+                    "headers": {h.name: h.value for h in server.headers},
+                    "timeout": server.timeout,
                 }
-            )
+                client_factory = mcp_http_client_factory(server.ca_file)
+                if client_factory is not None:
+                    config["httpx_client_factory"] = client_factory
+                server_configs[server.name] = config
+
+            client = MultiServerMCPClient(server_configs)  # type: ignore[arg-type]
             mcp_tools = await client.get_tools()
 
         if mcp_tools:

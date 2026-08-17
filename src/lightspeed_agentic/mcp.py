@@ -9,9 +9,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import ssl
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 logger = logging.getLogger("lightspeed_agentic")
 
@@ -31,6 +35,7 @@ class ResolvedMCPServer:
     url: str
     timeout: int = 60
     headers: list[ResolvedMCPHeader] = field(default_factory=list)
+    ca_file: str | None = None
 
 
 def _resolve_header(header: dict[str, str]) -> ResolvedMCPHeader | None:
@@ -81,6 +86,52 @@ def _resolve_header(header: dict[str, str]) -> ResolvedMCPHeader | None:
     return None
 
 
+def _resolve_ca_file(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("caFile must be a non-empty absolute path")
+
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise ValueError("caFile must be an absolute path")
+    try:
+        resolved = path.resolve(strict=True)
+        if not resolved.is_file():
+            raise ValueError("caFile must reference a regular file")
+        context = ssl.create_default_context()
+        context.load_verify_locations(cafile=str(resolved))
+    except (OSError, ssl.SSLError) as exc:
+        raise ValueError("caFile is missing, unreadable, or invalid") from exc
+    return str(resolved)
+
+
+def mcp_http_client_factory(
+    ca_file: str | None,
+) -> Callable[..., httpx.AsyncClient] | None:
+    """Return an MCP HTTP client factory that adds a server-specific CA."""
+    if ca_file is None:
+        return None
+
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=ca_file)
+
+    def factory(
+        headers: dict[str, str] | None = None,
+        timeout: httpx.Timeout | None = None,
+        auth: httpx.Auth | None = None,
+    ) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            headers=headers,
+            timeout=timeout,
+            auth=auth,
+            verify=context,
+            follow_redirects=False,
+        )
+
+    return factory
+
+
 def parse_mcp_servers() -> list[ResolvedMCPServer]:
     """Parse LIGHTSPEED_MCP_SERVERS env var and resolve all header values."""
     raw = os.environ.get("LIGHTSPEED_MCP_SERVERS", "").strip()
@@ -120,12 +171,19 @@ def parse_mcp_servers() -> list[ResolvedMCPServer]:
             logger.warning("Invalid timeout in server %r, using default", entry["name"])
             timeout = 60
 
+        try:
+            ca_file = _resolve_ca_file(entry.get("caFile"))
+        except ValueError as exc:
+            logger.error("Skipping MCP server %r: %s", entry["name"], exc)
+            continue
+
         servers.append(
             ResolvedMCPServer(
                 name=entry["name"],
                 url=entry["url"],
                 timeout=timeout,
                 headers=resolved_headers,
+                ca_file=ca_file,
             )
         )
 
@@ -147,11 +205,15 @@ def to_gemini_mcp_toolsets(servers: list[ResolvedMCPServer]) -> list[Any]:
 
     toolsets: list[Any] = []
     for s in servers:
-        params = StreamableHTTPConnectionParams(
-            url=s.url,
-            headers=_headers_dict(s) if s.headers else None,
-            timeout=float(s.timeout),
-        )
+        params_kwargs: dict[str, Any] = {
+            "url": s.url,
+            "headers": _headers_dict(s) if s.headers else None,
+            "timeout": float(s.timeout),
+        }
+        client_factory = mcp_http_client_factory(s.ca_file)
+        if client_factory is not None:
+            params_kwargs["httpx_client_factory"] = client_factory
+        params = StreamableHTTPConnectionParams(**params_kwargs)
         toolsets.append(McpToolset(connection_params=params))
     return toolsets
 
@@ -165,5 +227,8 @@ def to_openai_mcp_servers(servers: list[ResolvedMCPServer]) -> list[Any]:
         params = MCPServerStreamableHttpParams(url=s.url, timeout=float(s.timeout))
         if s.headers:
             params["headers"] = _headers_dict(s)
+        client_factory = mcp_http_client_factory(s.ca_file)
+        if client_factory is not None:
+            params["httpx_client_factory"] = client_factory
         result.append(MCPServerStreamableHttp(params=params, name=s.name))
     return result
