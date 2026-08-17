@@ -39,6 +39,18 @@ _JSON_SCHEMA_TYPE_MAP: dict[str, type[Any]] = {
 }
 
 
+def _has_skills(cwd: str) -> bool:
+    """Return True when at least one subdirectory of *cwd* contains a SKILL.md."""
+    try:
+        for entry in os.listdir(cwd):
+            child = os.path.join(cwd, entry)
+            if os.path.isdir(child) and os.path.isfile(os.path.join(child, "SKILL.md")):
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def _resolve_model(model: str, reasoning_config: dict[str, Any] | None = None) -> Any:
     """Build a LangChain chat model instance based on env vars set by config.py."""
     thinking = reasoning_config.get("thinking") if reasoning_config else None
@@ -186,8 +198,10 @@ class DeepAgentsProvider(AgentProvider):
             "model": chat_model,
             "backend": backend,
             "system_prompt": options.system_prompt,
-            "skills": [options.cwd],
         }
+
+        if _has_skills(options.cwd):
+            agent_kwargs["skills"] = [options.cwd]
 
         if options.output_schema:
             from langchain.agents.structured_output import ToolStrategy

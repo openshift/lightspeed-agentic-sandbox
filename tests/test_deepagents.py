@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -586,3 +587,70 @@ class TestEventMapping:
         mock_create.assert_called_once()
         create_kwargs = mock_create.call_args[1]
         assert create_kwargs["tools"] == [mock_mcp_tool]
+
+
+class TestSkillsGating:
+    """Test that skills= is only passed when SKILL.md files exist under cwd."""
+
+    @pytest.mark.asyncio
+    async def test_skills_passed_when_skill_md_exists(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """skills= should be set when a SKILL.md exists under cwd."""
+        monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+
+        (tmp_path / "my-skill" / "SKILL.md").parent.mkdir(parents=True)
+        (tmp_path / "my-skill" / "SKILL.md").write_text("# skill")
+
+        mock_ai = MagicMock()
+        mock_ai.type = "ai"
+        mock_ai.content = "ok"
+        mock_ai.tool_calls = []
+        mock_ai.usage_metadata = None
+        mock_ai.content_blocks = []
+
+        async def mock_astream(
+            *_args: Any, **_kwargs: Any
+        ) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
+            yield (mock_ai, {"langgraph_node": "agent"})
+
+        mock_agent = MagicMock()
+        mock_agent.astream = mock_astream
+        mock_create = MagicMock(return_value=mock_agent)
+        with _deepagents_provider(mock_create, MagicMock()) as provider:
+            await _collect_events(provider, _base_options(cwd=str(tmp_path)))
+
+        create_kwargs = mock_create.call_args[1]
+        assert create_kwargs["skills"] == [str(tmp_path)]
+
+    @pytest.mark.asyncio
+    async def test_skills_omitted_when_no_skill_md(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """skills= must not be passed when no SKILL.md exists under cwd."""
+        monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+
+        assert not (tmp_path / "SKILL.md").exists()
+
+        mock_ai = MagicMock()
+        mock_ai.type = "ai"
+        mock_ai.content = "ok"
+        mock_ai.tool_calls = []
+        mock_ai.usage_metadata = None
+        mock_ai.content_blocks = []
+
+        async def mock_astream(
+            *_args: Any, **_kwargs: Any
+        ) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
+            yield (mock_ai, {"langgraph_node": "agent"})
+
+        mock_agent = MagicMock()
+        mock_agent.astream = mock_astream
+        mock_create = MagicMock(return_value=mock_agent)
+        with _deepagents_provider(mock_create, MagicMock()) as provider:
+            await _collect_events(provider, _base_options(cwd=str(tmp_path)))
+
+        create_kwargs = mock_create.call_args[1]
+        assert "skills" not in create_kwargs
