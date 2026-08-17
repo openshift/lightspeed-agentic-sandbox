@@ -48,6 +48,18 @@ from lightspeed_agentic.types import (
 logger = logging.getLogger(__name__)
 
 
+def _has_skills(cwd: str) -> bool:
+    """Return True when at least one subdirectory of *cwd* contains a SKILL.md."""
+    try:
+        for entry in os.listdir(cwd):
+            child = os.path.join(cwd, entry)
+            if os.path.isdir(child) and os.path.isfile(os.path.join(child, "SKILL.md")):
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def _make_strict(schema: dict[str, Any]) -> dict[str, Any]:
     """Add additionalProperties:false and required:[all props] to all objects recursively."""
     if not isinstance(schema, dict):
@@ -235,8 +247,7 @@ class OpenAIProvider(AgentProvider):
             Shell(),
             Filesystem(),
         ]
-        skills_agents_dir = Path(options.cwd) / "skills" / ".agents"
-        if skills_agents_dir.is_dir():
+        if _has_skills(options.cwd):
             capabilities.append(
                 Skills(
                     lazy_from=LocalDirLazySkillSource(
