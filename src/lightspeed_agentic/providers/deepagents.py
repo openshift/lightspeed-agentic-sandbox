@@ -164,7 +164,123 @@ def _process_ai_message(
     return events, text_delta, input_tokens, output_tokens
 
 
+class GuardedBackend:
+    """Wraps a LocalShellBackend with pre- and post-execution guardrail checks.
+
+    Delegates all BackendProtocol/SandboxBackendProtocol methods so the SDK's
+    class-level attribute checks and ``isinstance`` gates work correctly.
+    """
+
+    def __init__(
+        self,
+        real_backend: Any,
+        checker: Any,
+        context: Any,
+    ) -> None:
+        self._backend = real_backend
+        self._checker = checker
+        self._context = context
+
+    @property
+    def id(self) -> str:
+        return self._backend.id
+
+    def execute(self, command: str, **kwargs: Any) -> Any:
+        raise NotImplementedError("Use aexecute for async guardrail checks")
+
+    async def aexecute(self, command: str, **kwargs: Any) -> Any:
+        pre = await self._checker.check_tool_request(command, self._context)
+        from lightspeed_agentic.guardrails.types import Verdict
+
+        if pre.verdict == Verdict.BLOCK:
+            from deepagents.backends.protocol import ExecuteResponse
+
+            return ExecuteResponse(
+                output=f"[GUARDRAIL] Command blocked: {pre.reason}",
+                exit_code=1,
+            )
+
+        result = self._backend.execute(command, **kwargs)
+        output = result.output if hasattr(result, "output") else str(result)
+
+        post = await self._checker.check_tool_output(output, command, self._context)
+        if post.verdict == Verdict.BLOCK:
+            from deepagents.backends.protocol import ExecuteResponse
+
+            return ExecuteResponse(
+                output=f"[GUARDRAIL] Tool output blocked: {post.reason}",
+                exit_code=1,
+            )
+        if post.verdict == Verdict.SANITIZE:
+            if hasattr(result, "output"):
+                result.output = post.sanitized_output
+                return result
+            return post.sanitized_output
+
+        return result
+
+    def read(self, *a: Any, **kw: Any) -> Any:
+        return self._backend.read(*a, **kw)
+
+    async def aread(self, *a: Any, **kw: Any) -> Any:
+        return await self._backend.aread(*a, **kw)
+
+    def write(self, *a: Any, **kw: Any) -> Any:
+        return self._backend.write(*a, **kw)
+
+    async def awrite(self, *a: Any, **kw: Any) -> Any:
+        return await self._backend.awrite(*a, **kw)
+
+    def edit(self, *a: Any, **kw: Any) -> Any:
+        return self._backend.edit(*a, **kw)
+
+    async def aedit(self, *a: Any, **kw: Any) -> Any:
+        return await self._backend.aedit(*a, **kw)
+
+    def delete(self, *a: Any, **kw: Any) -> Any:
+        return self._backend.delete(*a, **kw)
+
+    async def adelete(self, *a: Any, **kw: Any) -> Any:
+        return await self._backend.adelete(*a, **kw)
+
+    def ls(self, *a: Any, **kw: Any) -> Any:
+        return self._backend.ls(*a, **kw)
+
+    async def als(self, *a: Any, **kw: Any) -> Any:
+        return await self._backend.als(*a, **kw)
+
+    def glob(self, *a: Any, **kw: Any) -> Any:
+        return self._backend.glob(*a, **kw)
+
+    async def aglob(self, *a: Any, **kw: Any) -> Any:
+        return await self._backend.aglob(*a, **kw)
+
+    def grep(self, *a: Any, **kw: Any) -> Any:
+        return self._backend.grep(*a, **kw)
+
+    async def agrep(self, *a: Any, **kw: Any) -> Any:
+        return await self._backend.agrep(*a, **kw)
+
+    def upload_files(self, *a: Any, **kw: Any) -> Any:
+        return self._backend.upload_files(*a, **kw)
+
+    async def aupload_files(self, *a: Any, **kw: Any) -> Any:
+        return await self._backend.aupload_files(*a, **kw)
+
+    def download_files(self, *a: Any, **kw: Any) -> Any:
+        return self._backend.download_files(*a, **kw)
+
+    async def adownload_files(self, *a: Any, **kw: Any) -> Any:
+        return await self._backend.adownload_files(*a, **kw)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._backend, name)
+
+
 class DeepAgentsProvider(AgentProvider):
+    def __init__(self, guardrails_config: Any | None = None) -> None:
+        self._guardrails_config = guardrails_config
+
     @property
     def name(self) -> str:
         return "deepagents"
@@ -172,6 +288,9 @@ class DeepAgentsProvider(AgentProvider):
     async def query(self, options: ProviderQueryOptions) -> AsyncIterator[ProviderEvent]:
         from deepagents import create_deep_agent
         from deepagents.backends import LocalShellBackend
+        from deepagents.backends.protocol import SandboxBackendProtocol
+
+        SandboxBackendProtocol.register(GuardedBackend)
 
         logger.debug(
             "Starting deepagents query model=%s cwd=%s max_turns=%s",
@@ -181,7 +300,20 @@ class DeepAgentsProvider(AgentProvider):
         )
 
         chat_model = _resolve_model(options.model, options.reasoning_config)
-        backend = LocalShellBackend(root_dir=options.cwd, inherit_env=True)
+        real_backend = LocalShellBackend(root_dir=options.cwd, inherit_env=True)
+
+        backend: Any = real_backend
+        if self._guardrails_config and self._guardrails_config.enabled:
+            from lightspeed_agentic.guardrails.checker import GuardrailsChecker
+            from lightspeed_agentic.guardrails.types import GuardrailContext
+
+            checker = GuardrailsChecker(self._guardrails_config)
+            context = GuardrailContext(
+                original_query=options.prompt,
+                target_namespaces=options.target_namespaces,
+            )
+            backend = GuardedBackend(real_backend, checker, context)
+            logger.info("[guardrails] GuardedBackend active for this query")
 
         agent_kwargs: dict[str, Any] = {
             "model": chat_model,
