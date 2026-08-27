@@ -30,11 +30,11 @@ The sandbox runs as a one-shot batch process (OLS-3066). There is **no HTTP serv
 
 ### Agent execution
 
-7. **Provider startup.** The batch entrypoint calls `resolve_sdk()`, `parse_reasoning_config()`, and `parse_mcp_servers()` before any OTLP export or readiness I/O, then `run_readiness_checks()` (see `health-probes.md`), `init_tracer()`, `create_provider()`, and `resolve_router_model()` once per run. When readiness checks fail, the sandbox MUST fail before invoking the LLM (sandbox failure path, rule 23). Provider selection cannot change mid-process.
+7. **Provider startup.** The batch entrypoint calls `resolve_sdk()`, `parse_reasoning_config()`, and `parse_mcp_servers()` before any OTLP export or readiness I/O, then `run_readiness_checks()` (see `health-probes.md`), `init_tracer()`, `create_provider()`, and `resolve_router_model()` once per run. [PLANNED: OLS-3743] It also validates required `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` and `LIGHTSPEED_AGENT_MAX_TURNS` before invoking the provider. When readiness or required configuration checks fail, the sandbox MUST fail before invoking the LLM (sandbox failure path, rule 23). Provider selection cannot change mid-process.
 
 8. **Agent query.** The sandbox runs `run_agent_query()` with system prompt, query, output schema, context, skills directory, model, MCP servers, and reasoning config. Tool execution (kubectl, oc) is unchanged — delegated to provider SDKs.
 
-9. **Per-run timeout.** Wall-clock limit for the provider event stream defaults to 300_000 ms. Override via `LIGHTSPEED_TIMEOUT_MS` (milliseconds). On timeout, agent output is `success=false` with a timed-out summary (same semantics as former HTTP rule 21).
+9. **[PLANNED: OLS-3743] Agent timeout.** `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` is a required positive integer supplied by the operator. It limits the complete `run_agent_query()` invocation, including model calls, tools, MCP calls, and processing across turns; it is not an individual LLM request timeout. Missing, zero, negative, or malformed values are sandbox configuration failures (rule 23). On timeout, `run_agent_query()` returns `success=false` with an actionable summary and a structured timeout classification for Result publishing; the publisher MUST NOT infer timeout from summary text. `LIGHTSPEED_TIMEOUT_MS` and its sandbox-owned 300-second default are removed.
 
 10. **Per-run spend ceiling.** A fixed USD budget cap is passed into provider options; not configurable via input files.
 
@@ -76,9 +76,9 @@ The agent returns structured JSON via `run_agent_query()` (formerly HTTP `RunRes
    - (d) update the CR `status` subresource via the Kubernetes API,
    - (e) exit 0.
 
-22. **Agent failure path.** When agent output has `success=false` or rule 19–20 applies, the sandbox MUST still publish the Result CR with `status.failureReason` set from the agent summary, `Completed=True` with `reason=Failed` when applicable (`publish_results/status.py`), and **exit 0**. Exit 0 means the **sandbox process** completed its job (read input, ran agent, published Result CR); it does **not** mean the agent step succeeded.
+22. **Agent failure path.** When agent output has `success=false` or rule 19–20 applies, the sandbox MUST still publish the Result CR with `status.failureReason` set from the agent summary and **exit 0**. Generic agent failures use `Completed=True` with `reason=Failed`. [PLANNED: OLS-3743] The timeout path defined by rule 9 instead uses `Completed=True` with `reason=AgentTimeout`. Exit 0 means the **sandbox process** completed its job (read input, ran agent, published Result CR); it does **not** mean the agent step succeeded.
 
-    The operator treats `PodSucceeded` (exit 0) as the signal to read the Result CR, then `validateResultCR` in `lightspeed-agentic-operator/controller/agenticrun/pod_handler.go` checks `status.failureReason` and `Completed.reason=Failed`. When either indicates agent failure, the operator sets the step condition to `False` with `ReasonSandboxFailed` and the CR message — **not** `ReasonSucceeded`. See operator `sandbox-execution.md` rule 8. Exit non-zero on this path would make `PodFailed`; the operator would use the termination log / exit code (rule 43e) and would **not** consume `failureReason` from the Result CR.
+    The operator treats `PodSucceeded` (exit 0) as the signal to read the Result CR, then validates `status.failureReason` and the `Completed` reason. It maps `AgentTimeout` to the distinct terminal step reason `AgentTimeout`; other failures map to `AgentFailed`. See operator `sandbox-execution.md` rules 8 and 40b. Exit non-zero on this path would make `PodFailed`; the operator would use the termination log / exit code (rule 43e) and would **not** consume `failureReason` from the Result CR.
 
 23. **Sandbox failure path.** When input cannot be read, readiness checks fail, Kubernetes create/update fails, or any other infrastructure error occurs, the sandbox MUST write a human-readable message to `/dev/termination-log` (max 4096 bytes) and exit non-zero. The operator reads `pod.status.containerStatuses[].state.terminated.message` — **no Result CR is published** on this path (contrast rules 21–22).
 
@@ -96,14 +96,15 @@ The agent returns structured JSON via `run_agent_query()` (formerly HTTP `RunRes
 
 | Mechanism | Purpose |
 |-----------|---------|
-| `LIGHTSPEED_TIMEOUT_MS` | Per-run agent timeout (milliseconds); default 300_000 |
+| `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` | [PLANNED: OLS-3743] Required whole-agent invocation timeout resolved by the operator |
+| `LIGHTSPEED_AGENT_MAX_TURNS` | [PLANNED: OLS-3743] Required provider iteration cap resolved by the operator |
 | `LIGHTSPEED_SKILLS_DIR` | Skills root and provider `cwd` (default `/app/skills`) |
 | `resolve_router_model()` | Model from `LIGHTSPEED_MODEL` → SDK env → package default |
 | Input files under `/input/` | Query, schema, context, template, optional system prompt |
 
 ## Constraints
 
-- `max_turns`, model id, provider id, and tool allowlists are not in input files; fixed or env-driven per `configuration.md`.
+- Model id, provider id, agent timeout, maximum turns, and tool allowlists are not in input files; they are fixed or env-driven per `configuration.md`.
 - Provider streaming is internal only; no streaming to an HTTP client.
 
 ## Planned Changes
@@ -111,6 +112,7 @@ The agent returns structured JSON via `run_agent_query()` (formerly HTTP `RunRes
 - Operator may later pass `llm` and `allowedTools` via input or env. [PLANNED: OLS-3033]
 - `system-prompt` file as sole system-instructions carrier. [PLANNED: OLS-3491]
 - [PLANNED: OLS-3661] Sandbox populates `status.tokenUsage` (`inputTokens`, `outputTokens`) on Result CRs from provider terminal event. See rule 21 step (a₁) and operator `crd-api.md` rules 6c–6e.
+- [PLANNED: OLS-3743] Replace `LIGHTSPEED_TIMEOUT_MS` with required operator-resolved agent timeout and max-turn limits; publish cooperative timeouts with the distinct `AgentTimeout` reason.
 
 ## Verification
 
@@ -121,8 +123,8 @@ status is generic (see `batch_log_contract.py`).
 | Artifact | Rules exercised | Notes |
 |----------|-----------------|-------|
 | [test_batch_input.py](../../../tests/test_batch_input.py) | 4–6 | Required/optional `/input` files |
-| [test_batch.py](../../../tests/test_batch.py) | 2, 7, 15, 21–23 | Entrypoint orchestration including readiness fail-fast (mocked) |
-| [test_run_agent.py](../../../tests/test_run_agent.py) | 8–20 | Agent query, context prefix, timeouts |
+| [test_batch.py](../../../tests/test_batch.py) | 2, 7, 9, 15, 21–23 | Entrypoint orchestration, required execution-limit parsing, timeout Result publication, and readiness fail-fast (mocked) |
+| [test_run_agent.py](../../../tests/test_run_agent.py) | 8–20 | Agent query, context prefix, timeout classification, and max-turn forwarding |
 | [test_ready.py](../../../tests/test_ready.py) | 7 | R1 readiness checks (`health-probes.md`) |
 | [test_publish_results_publish.py](../../../tests/test_publish_results_publish.py) | 21, 24 | K8s create + status replace |
 | [test_publish_results_status.py](../../../tests/test_publish_results_status.py) | 21 | Status assembly from agent output |

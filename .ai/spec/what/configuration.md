@@ -18,6 +18,8 @@ Cross-references: how options are consumed in code → `how/provider-architectur
     | `LIGHTSPEED_PROVIDER_REGION` | When provider=`vertex` or `bedrock` | Cloud region |
     | `LIGHTSPEED_PROVIDER_API_VERSION` | When provider=`azure` | API version |
     | `LIGHTSPEED_REASONING_CONFIG` | No | JSON-serialized reasoning config from `Agent.spec.reasoningConfig`. When absent, SDK defaults apply. |
+    | `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` | Yes [PLANNED: OLS-3743] | Whole-agent invocation budget resolved from the selected Agent step timeout or the operator default. |
+    | `LIGHTSPEED_AGENT_MAX_TURNS` | Yes [PLANNED: OLS-3743] | Provider iteration cap resolved from `Agent.spec.maxTurns` or the operator default of 200. |
 
     Credentials are mounted via `envFrom` (all secret keys as env vars) AND as files at `/var/run/secrets/llm-credentials/`.
 
@@ -59,7 +61,7 @@ Cross-references: how options are consumed in code → `how/provider-architectur
 
 7. **Skills directory.** `LIGHTSPEED_SKILLS_DIR` sets the filesystem root for skills and provider `cwd`. Default when unset is the container default path under `/app`.
 
-8. **Agent timeout.** `LIGHTSPEED_TIMEOUT_MS` sets the per-run wall-clock timeout in milliseconds for `run_agent_query()`. When unset or invalid, default is 300_000 ms. See `run-api.md` rule 9.
+8. **[PLANNED: OLS-3743] Agent timeout.** `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` is required and sets the wall-clock budget for the complete `run_agent_query()` invocation. It MUST be a positive integer. Missing, zero, negative, or malformed values fail sandbox startup; the sandbox has no independent default. `LIGHTSPEED_TIMEOUT_MS` is removed without an alias. See `run-api.md` rule 9.
 
 9. **Provider credentials.** API authentication uses the conventional env vars expected by each vendor SDK (Anthropic, Google/Gemini, OpenAI). These are populated from the credentials secret mounted via `envFrom` by the operator, and optionally from the file mount at `/var/run/secrets/llm-credentials/` for file-based credentials. The sandbox configuration mapping (rule 2) sets any additional credential-related env vars (e.g. `GOOGLE_APPLICATION_CREDENTIALS` path).
 
@@ -71,7 +73,7 @@ Cross-references: how options are consumed in code → `how/provider-architectur
 
 12. **Anthropic via Vertex.** When `LIGHTSPEED_PROVIDER=vertex` and `LIGHTSPEED_MODEL_PROVIDER=anthropic`, the configuration mapping resolves to SDK name `deepagents` and sets Vertex env vars for `ChatAnthropicVertex`.
 
-13. **Default max turns.** The batch entrypoint passes a built-in default maximum turn count (200) to provider options; not exposed on input files.
+13. **[PLANNED: OLS-3743] Maximum turns.** `LIGHTSPEED_AGENT_MAX_TURNS` is required, parsed as an integer from 1 through 500, and passed to `ProviderQueryOptions.max_turns`. Missing, out-of-range, or malformed values fail sandbox startup. The operator resolves omitted `Agent.spec.maxTurns` to 200; the sandbox does not maintain a second default.
 
 14. **Process entry.** The container process runs `python -m lightspeed_agentic.batch` under `catatonit` as PID 1. There is no HTTP listener.
 
@@ -126,12 +128,13 @@ Cross-references: how options are consumed in code → `how/provider-architectur
 | `/var/run/secrets/llm-credentials/` | LLM credential files mounted by operator (unconditional). |
 | `/var/run/secrets/kubernetes.io/serviceaccount/token` | Projected SA token for MCP `ServiceAccountToken` header resolution. |
 | `/var/secrets/mcp/<secretName>/` | MCP header secret files mounted by operator for `Secret`-sourced headers. |
-| `LIGHTSPEED_TIMEOUT_MS` | Per-run agent timeout (ms); default 300_000. See `run-api.md`. |
+| `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` | [PLANNED: OLS-3743] Required whole-agent invocation timeout from the operator. |
+| `LIGHTSPEED_AGENT_MAX_TURNS` | [PLANNED: OLS-3743] Required provider iteration cap from the operator. |
 | `resolve_router_model()`, `resolve_startup_model()` | Model resolution from env (see `config.py`). |
 
 ## Constraints
 
-- Input files and env vars carry query, schema, and context; provider name, model, max turns, and budget are env-driven or batch defaults.
+- Input files and env vars carry query, schema, and context; provider name and model are environment-driven. [PLANNED: OLS-3743] Agent timeout and maximum turns are required environment values resolved by the operator, not sandbox defaults.
 - Optional Python extras gate which provider SDKs are installed in a given environment; the image recipe installs all extras.
 - Bedrock resolves to SDK name `deepagents` via `ChatAnthropicBedrock`. When Bedrock support for other model families is needed, a `modelProvider` field should be added to the `AWSBedrockConfig` CRD (similar to `googleCloudVertex.modelProvider`).
 
@@ -139,9 +142,11 @@ Cross-references: how options are consumed in code → `how/provider-architectur
 
 - Unit: [test_config.py](../../../tests/test_config.py), [test_model_resolution.py](../../../tests/test_model_resolution.py) — env mapping, model resolution, reasoning/MCP parse errors
 - Live batch: [mcp.feature](../../../tests/e2e/features/mcp.feature) (`LIGHTSPEED_MCP_SERVERS`), [reasoning_config.feature](../../../tests/e2e/features/reasoning_config.feature) (`LIGHTSPEED_REASONING_CONFIG`)
+- [PLANNED: OLS-3743] Unit tests cover required timeout/max-turn parsing, invalid values, and propagation into `run_agent_query()`.
 
 ## Planned Changes
 
 - TLS termination, mTLS, and network policies for operator-to-sandbox traffic. ~~[PLANNED: OLS-3038–OLS-3043]~~ N/A — no HTTP server.
 - Konflux pipeline and lockfile policy updates as Red Hat platform requirements evolve. [PLANNED: OLS-2894]
 - `Client` header source type resolution when client-passthrough MCP auth flows are implemented.
+- [PLANNED: OLS-3743] Require operator-resolved `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` and `LIGHTSPEED_AGENT_MAX_TURNS`; remove the sandbox-owned timeout and turn defaults.
