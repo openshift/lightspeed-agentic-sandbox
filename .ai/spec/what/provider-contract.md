@@ -26,7 +26,7 @@ Cross-references: batch agent invocation → `run-api.md`. Env and build → `co
 
 10. **ProviderQueryOptions — `model`.** Model identifier resolved before the call (see `configuration.md`).
 
-11. **ProviderQueryOptions — `max_turns`.** Upper bound on agent/SDK turn or LLM-call loops.
+11. **ProviderQueryOptions — `max_turns`.** Upper bound on agent/SDK iteration. [PLANNED: OLS-3743] The value comes from required `LIGHTSPEED_AGENT_MAX_TURNS`, resolved by the operator from `Agent.spec.maxTurns` with a default of 200. Adapters MUST pass it to their native limit: DeepAgents/LangGraph `recursion_limit`, Gemini ADK `max_llm_calls`, and OpenAI Agents `max_turns`. These mechanisms are not semantically identical, but all enforce an upper bound; adapters MUST NOT substitute their SDK defaults.
 
 12. **ProviderQueryOptions — `max_budget_usd`.** SDK-level spend ceiling in USD.
 
@@ -112,6 +112,7 @@ Cross-references: batch agent invocation → `run-api.md`. Env and build → `co
 - Parity improvements across providers (tools, streaming, structured output edge cases). [PLANNED: OLS-3047–OLS-3053]
 - BYOK and RAG integration hooks without breaking the thin-adapter rule. [PLANNED: OLS-3054–OLS-3057]
 - Align operator-passed `allowedTools` and `llm` with `ProviderQueryOptions`. [PLANNED: OLS-3033]
+- Wire operator-resolved `Agent.spec.maxTurns` through `LIGHTSPEED_AGENT_MAX_TURNS` to each provider-native iteration limit. [PLANNED: OLS-3743]
 - DeepAgents: token-level streaming via `astream_events()` instead of batch `stream_mode="messages"`. [PLANNED: OLS-3500]
 - DeepAgents: cost tracking from token counts x model pricing. [PLANNED: OLS-3500]
 - DeepAgents: `max_budget_usd` enforcement via adapter-level token cost tracking. [PLANNED: OLS-3500]

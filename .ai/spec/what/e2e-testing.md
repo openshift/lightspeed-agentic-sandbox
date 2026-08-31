@@ -36,7 +36,7 @@ belongs in unit tests.
 | Area | Reason | Artifact |
 |------|--------|----------|
 | Liveness / readiness HTTP probes | HTTP server removed; readiness runs in-process at batch startup | [test_ready.py](../../../tests/test_ready.py), [test_batch.py](../../../tests/test_batch.py) |
-| Run timeout (`timeout_ms=1`) | Provider SDKs do not propagate asyncio cancellation reliably | [test_run_agent.py](../../../tests/test_run_agent.py) |
+| Agent timeout (`LIGHTSPEED_AGENT_TIMEOUT_SECONDS`) | Provider SDKs do not propagate asyncio cancellation reliably enough for a deterministic live assertion | [test_run_agent.py](../../../tests/test_run_agent.py), [test_batch.py](../../../tests/test_batch.py) |
 | Exact `[context]` prefix text | Deterministic formatting; no need for live LLM | [test_run_agent.py](../../../tests/test_run_agent.py) (`format_context_prefix`) |
 | Empty provider result (run-api rule 23) | Requires a mocked provider; unreliable with live models | [test_run_agent.py](../../../tests/test_run_agent.py) |
 | Readiness R1 when credentials missing | Needs deliberately misconfigured runtime; covered without live network | [test_ready.py](../../../tests/test_ready.py) |
@@ -52,6 +52,8 @@ belongs in unit tests.
 
 - **Batch Job per scenario** — `tests/e2e/batch_runner.py` creates input ConfigMap +
   Job, waits for completion, reads Result CR, optionally enriches from pod logs.
+  [PLANNED: OLS-3743] Every Job sets valid `LIGHTSPEED_AGENT_TIMEOUT_SECONDS`
+  and `LIGHTSPEED_AGENT_MAX_TURNS` values because both become required.
 - **Cluster fixtures** — `scripts/e2e-install-fixtures.sh` installs Result CRDs,
   sandbox ServiceAccount/RBAC, OTEL collector, mock MCP server. LLM creds synced via
   `scripts/e2e-install-openai-creds.sh` (or Vertex secret scripts).
@@ -137,6 +139,8 @@ a labeled batch Job in `E2E_NAMESPACE` (default `openshift-lightspeed`) using
 | `E2E_BATCH_VERIFY_FIXTURES` | `e2e-containers.sh` | When `1`, pytest verifies SA/OTEL/mock MCP fixtures |
 | `LIGHTSPEED_MCP_SERVERS` | `e2e-containers.sh` | In-cluster mock MCP URL on every Job |
 | `LIGHTSPEED_REASONING_CONFIG` | `e2e-containers.sh` | Provider-specific reasoning defaults on every Job |
+| `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` | `e2e-containers.sh` [PLANNED: OLS-3743] | Required whole-agent timeout for every Job |
+| `LIGHTSPEED_AGENT_MAX_TURNS` | `e2e-containers.sh` [PLANNED: OLS-3743] | Required provider iteration cap for every Job |
 | `E2E_ARGS` | user / `--` passthrough | Extra pytest args (e.g. `-v`, `-k`, single file) |
 | `E2E_SKIP_FIXTURES` | user | Skip `e2e-install-fixtures.sh` when fixtures already present |
 | `ARTIFACT_DIR` | CI | Pytest tee to `e2e-<provider>-pytest.log` and summary file |
