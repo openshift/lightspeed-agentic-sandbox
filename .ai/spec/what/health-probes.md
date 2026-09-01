@@ -13,15 +13,19 @@ Cross-references: batch lifecycle → `run-api.md`. Credential env mapping → `
 
 2. **R1 — Credential env.** `check_provider_env(expected_envs, credential_file_envs)` — required env vars from `ResolvedSDK` MUST be set and non-empty. For env vars listed in `credential_file_envs` (Vertex: `GOOGLE_APPLICATION_CREDENTIALS`), the path MUST exist, be readable, and non-empty.
 
-3. **No endpoint network probe.** The sandbox MUST NOT HTTP-probe provider base URLs before the agent run. Endpoint reachability is established when the provider SDK invokes the LLM API.
+2a. **R1 — Azure credential alternatives** [OLS-3050]. For `azure`, readiness MUST pass when **either** an API key is present (`AZURE_OPENAI_API_KEY` env or `apitoken` file) **or** all three Entra ID service-principal files (`client_id`, `tenant_id`, `client_secret`) exist under `/var/run/secrets/llm-credentials/` and are non-empty — the two modes defined in `configuration.md` rule 9a. When neither complete set is present, readiness MUST fail with a descriptive error naming the missing credential set. Readiness validates **presence** only; token acquisition happens at adapter init / first request (see `provider-contract.md` rules 30, 39), and a definitive token-acquisition failure terminates the run there rather than at readiness.
 
-| Backend | Required env var(s) |
+2b. **R1 — Bedrock credential alternatives** [OLS-4092]. For `bedrock`, readiness MUST pass when `aws_access_key_id` and `aws_secret_access_key` are present and non-empty (as env vars or files under `/var/run/secrets/llm-credentials/`); an optional `role_arn` file additionally selects STS assume-role — the two modes defined in `configuration.md` rule 9b. When the required key pair is absent, readiness MUST fail with a descriptive error. Readiness validates **presence** only; STS assume-role and credential refresh are performed by `botocore` at first request (see `provider-contract.md` rule 39), not by a readiness network call.
+
+3. **No endpoint network probe.** The sandbox MUST NOT HTTP-probe provider base URLs before the agent run. Endpoint reachability is established when the provider SDK invokes the LLM API. Readiness makes no network call for Azure token acquisition either.
+
+| Backend | Required credential(s) |
 |---------|-------------------|
 | `anthropic` (direct) | `ANTHROPIC_API_KEY` |
 | `vertex/*` | `GOOGLE_APPLICATION_CREDENTIALS` (file path) |
 | `openai` (direct) | `OPENAI_API_KEY` |
-| `azure` | `AZURE_OPENAI_API_KEY` |
-| `bedrock` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
+| `azure` | `AZURE_OPENAI_API_KEY`/`apitoken` **or** `client_id`+`tenant_id`+`client_secret` files (rule 2a) |
+| `bedrock` | `aws_access_key_id`+`aws_secret_access_key` (env or files), optional `role_arn` for STS (rule 2b) |
 
 4. **MCP reachability.** Not implemented; no Jira story.
 

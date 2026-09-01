@@ -46,8 +46,8 @@ Cross-references: how options are consumed in code → `how/provider-architectur
     | `vertex` | `google` | `gemini` | `GEMINI_MODEL`, `GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` |
     | `vertex` | `openai` | `openai` | `OPENAI_MODEL`, `OPENAI_BASE_URL`, `GOOGLE_APPLICATION_CREDENTIALS` |
     | `openai` | *(derived)* | `openai` | `OPENAI_MODEL` |
-    | `azure` | *(derived)* | `openai` | `OPENAI_MODEL`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION` |
-    | `bedrock` | *(derived)* | `deepagents` | `ANTHROPIC_MODEL`, `CLAUDE_CODE_USE_BEDROCK=1`, `AWS_REGION`, `ANTHROPIC_BASE_URL` |
+    | `azure` | *(derived)* | `openai` | `OPENAI_MODEL`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION` (credential handling per rule 9a) |
+    | `bedrock` | *(derived)* | `deepagents` | `ANTHROPIC_MODEL`, `CLAUDE_CODE_USE_BEDROCK=1`, `AWS_REGION`, `ANTHROPIC_BASE_URL` (credential handling per rule 9b) |
 
     `LIGHTSPEED_PROVIDER_URL` MUST be mapped to the SDK-appropriate URL env var when set (e.g. `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`). `LIGHTSPEED_PROVIDER_PROJECT` and `LIGHTSPEED_PROVIDER_REGION` MUST be mapped to the provider-specific project/region vars. Credential files at `/var/run/secrets/llm-credentials/` MUST be referenced via `GOOGLE_APPLICATION_CREDENTIALS` for Vertex providers that require file-based credentials.
 
@@ -64,6 +64,22 @@ Cross-references: how options are consumed in code → `how/provider-architectur
 8. **[PLANNED: OLS-3743] Agent timeout.** `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` is required and sets the wall-clock budget for the complete `run_agent_query()` invocation. It MUST be a positive integer. Missing, zero, negative, or malformed values fail sandbox startup; the sandbox has no independent default. `LIGHTSPEED_TIMEOUT_MS` is removed without an alias. See `run-api.md` rule 9.
 
 9. **Provider credentials.** API authentication uses the conventional env vars expected by each vendor SDK (Anthropic, Google/Gemini, OpenAI). These are populated from the credentials secret mounted via `envFrom` by the operator, and optionally from the file mount at `/var/run/secrets/llm-credentials/` for file-based credentials. The sandbox configuration mapping (rule 2) sets any additional credential-related env vars (e.g. `GOOGLE_APPLICATION_CREDENTIALS` path).
+
+9a. **Azure OpenAI credential resolution (Entra ID / API key).** For `LIGHTSPEED_PROVIDER=azure`, the sandbox MUST select the authentication mode from the mounted credential files at `/var/run/secrets/llm-credentials/`:
+
+    - **Entra ID (service principal)** when `client_id`, `tenant_id`, **and** `client_secret` files are all present and non-empty. The sandbox MUST NOT set `AZURE_OPENAI_API_KEY` in this mode.
+    - **API key** otherwise, when `apitoken` (file) or `AZURE_OPENAI_API_KEY` (`envFrom`) is present and non-empty.
+    - When neither a complete Entra ID set nor an API key is available, readiness MUST fail at startup with a descriptive error naming the missing credential set (see `health-probes.md`).
+
+    Both modes MUST use the OpenAI SDK's built-in Azure support — the adapter constructs the SDK's native `AsyncAzureOpenAI` client (see `provider-contract.md` rule 30 and `how/provider-architecture.md`). In Entra ID mode, token minting and refresh are owned by the provider SDK's credential object (`ClientSecretCredential` via `azure_ad_token_provider`), per the short-lived-token principle in `provider-contract.md` rule 39; the sandbox performs no manual token caching. This mirrors the classic OLS service's Azure Entra ID behavior ([OLS-3050]); key names (`client_id`, `tenant_id`, `client_secret`, `apitoken`) match the classic credential-secret shape.
+
+9b. **AWS Bedrock credential resolution (static keys / STS assume-role).** For `LIGHTSPEED_PROVIDER=bedrock`, the sandbox resolves AWS credentials from the mounted files at `/var/run/secrets/llm-credentials/` (`aws_access_key_id`, `aws_secret_access_key`, and optional `role_arn`), matching the classic OLS service's IAM credential shape ([OLS-1895]). This does **not** change the existing Bedrock model path (Anthropic models via the `deepagents` SDK / `ChatBedrockConverse`); it governs credentials only.
+
+    - **Static keys** when `aws_access_key_id` and `aws_secret_access_key` are present and non-empty and `role_arn` is absent: use them directly as long-lived credentials (no refresh needed).
+    - **STS assume-role (short-lived)** when `role_arn` is also present: the AWS SDK (`botocore` credential-provider chain) performs the assume-role and mints/refreshes the short-lived credentials transparently for the life of the run — the sandbox performs no manual token acquisition, caching, or refresh, per the short-lived-token principle in `provider-contract.md` rule 39.
+    - When no usable AWS credential set is present, readiness MUST fail at startup with a descriptive error (see `health-probes.md` rule 2b).
+
+    Token/credential lifecycle is owned by `botocore` (already present via `langchain-aws`); the sandbox adds no AWS credential-handling dependency.
 
 10. **Vertex / Google GenAI.** `GOOGLE_GENAI_USE_VERTEXAI` toggles Vertex behavior for the Gemini adapter (tool composition rules per `provider-contract.md`). Set by the configuration mapping when `LIGHTSPEED_PROVIDER=vertex` and `LIGHTSPEED_MODEL_PROVIDER=Google`.
 
@@ -116,6 +132,11 @@ Cross-references: how options are consumed in code → `how/provider-architectur
 | `LIGHTSPEED_SKILLS_DIR` | Skill root and provider working directory default. |
 | `GOOGLE_API_KEY`, `GEMINI_API_KEY` | Google GenAI credential (from credentials secret envFrom). |
 | `OPENAI_API_KEY` | OpenAI SDK credential (from credentials secret envFrom). |
+| `AZURE_OPENAI_API_KEY` | Azure OpenAI API-key credential (from credentials secret envFrom). Used only in API-key mode; omitted in Entra ID mode (rule 9a). |
+| `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION` | Internal: Azure client config. Set by configuration mapping (rule 2). |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Bedrock IAM credential (from credentials secret envFrom or `/var/run/secrets/llm-credentials/`; rule 9b). |
+| `AWS_REGION` | Internal: Bedrock region. Set by configuration mapping (rule 2). |
+| `/var/run/secrets/llm-credentials/{aws_access_key_id,aws_secret_access_key,role_arn}` | Bedrock IAM files; `role_arn` (optional) selects STS assume-role, refreshed by botocore (rule 9b). Mounted by operator. |
 | `GOOGLE_GENAI_USE_VERTEXAI` | Internal: Vertex mode for Gemini adapter. Set by configuration mapping. |
 | `OPENAI_BASE_URL` | Internal: OpenAI-compatible endpoint. Set by configuration mapping. |
 | `LIGHTSPEED_AUDIT_ENABLED` | Audit event logging toggle. Set by operator from `AgenticOLSConfig`. |
