@@ -59,7 +59,7 @@ async def test_run_records_token_usage() -> None:
     before_out_sum = _sample("gen_ai_client_token_usage_sum", labels_out)
 
     result = await _run(provider)
-    assert result["success"] is True
+    assert result.output["success"] is True
 
     assert _sample("gen_ai_client_token_usage_count", labels_in) == before_in_count + 1
     assert _sample("gen_ai_client_token_usage_count", labels_out) == before_out_count + 1
@@ -117,7 +117,7 @@ async def test_empty_response_records_metrics() -> None:
     before = _sample("gen_ai_client_operation_duration_seconds_count", labels)
 
     result = await _run(MockProvider(events=[ResultEvent(text="")]))
-    assert result["success"] is False
+    assert result.output["success"] is False
 
     assert _sample("gen_ai_client_operation_duration_seconds_count", labels) == before + 1
 

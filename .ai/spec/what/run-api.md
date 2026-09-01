@@ -70,7 +70,7 @@ The agent returns structured JSON via `run_agent_query()` (formerly HTTP `RunRes
 
 21. **Success path.** On sandbox success (agent completed, including agent failure), the sandbox MUST:
    - (a) merge agent structured output into Result CR `status` fields per step kind (`publish_results/status.py`),
-   - [PLANNED: OLS-3661] (a₁) populate `status.tokenUsage` on the Result CR with `inputTokens` and `outputTokens` from the provider's terminal `result` event (see `provider-contract.md` rule 7). When the provider reports zero tokens (SDK does not support usage reporting), both fields MUST be set to 0. The operator reads this field during result processing for run-level aggregation (see operator `sandbox-execution.md` rule 43.1 and `crd-api.md` rule 6e).
+   - (a₁) populate `status.tokenUsage` on the Result CR with `inputTokens` and `outputTokens` from the provider's terminal `result` event (see `provider-contract.md` rule 7). When the provider reports zero tokens (SDK does not support usage reporting), both fields MUST be set to 0. The operator reads this field during result processing for run-level aggregation (see operator `sandbox-execution.md` rule 43.1 and `crd-api.md` rule 6e).
    - (b) set `status.conditions` with `Started=True` and `Completed=True` (`Started.lastTransitionTime` = wall clock immediately before `run_agent_query()`; `Completed` = after agent returns),
    - (c) create the CR from `result-template` (metadata + spec) via the Kubernetes API,
    - (d) update the CR `status` subresource via the Kubernetes API,
@@ -111,7 +111,6 @@ The agent returns structured JSON via `run_agent_query()` (formerly HTTP `RunRes
 
 - Operator may later pass `llm` and `allowedTools` via input or env. [PLANNED: OLS-3033]
 - `system-prompt` file as sole system-instructions carrier. [PLANNED: OLS-3491]
-- [PLANNED: OLS-3661] Sandbox populates `status.tokenUsage` (`inputTokens`, `outputTokens`) on Result CRs from provider terminal event. See rule 21 step (a₁) and operator `crd-api.md` rules 6c–6e.
 - [PLANNED: OLS-3743] Replace `LIGHTSPEED_TIMEOUT_MS` with required operator-resolved agent timeout and max-turn limits; publish cooperative timeouts with the distinct `AgentTimeout` reason.
 
 ## Verification

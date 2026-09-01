@@ -314,3 +314,47 @@ class TestBuildStatusFailureReason:
     def test_unknown_kind_raises(self) -> None:
         with pytest.raises(ValueError, match="unsupported Result kind"):
             build_status("UnknownResult", {}, started_at=_dt(), completed_at=_dt())
+
+
+class TestBuildStatusTokenUsage:
+    """Token usage populated on all Result CR kinds (OLS-3994)."""
+
+    @pytest.mark.parametrize(
+        ("kind", "agent_output"),
+        [
+            ("AnalysisResult", {"actionRequired": True, "options": []}),
+            ("ExecutionResult", {"success": True, "actionsTaken": []}),
+            ("VerificationResult", {"success": True, "checks": [], "summary": "ok"}),
+            ("EscalationResult", {"success": True, "summary": "esc", "content": "c"}),
+        ],
+    )
+    def test_token_usage_present_on_all_kinds(self, kind: str, agent_output: dict) -> None:
+        status = build_status(
+            kind,
+            agent_output,
+            started_at=_dt(),
+            completed_at=_dt(),
+            input_tokens=500,
+            output_tokens=200,
+        )
+        assert status["tokenUsage"] == {"inputTokens": 500, "outputTokens": 200}
+
+    def test_token_usage_defaults_to_zero(self) -> None:
+        status = build_status(
+            "ExecutionResult",
+            {"success": True, "actionsTaken": []},
+            started_at=_dt(),
+            completed_at=_dt(),
+        )
+        assert status["tokenUsage"] == {"inputTokens": 0, "outputTokens": 0}
+
+    def test_token_usage_zero_when_provider_reports_no_usage(self) -> None:
+        status = build_status(
+            "AnalysisResult",
+            {"actionRequired": False, "options": []},
+            started_at=_dt(),
+            completed_at=_dt(),
+            input_tokens=0,
+            output_tokens=0,
+        )
+        assert status["tokenUsage"] == {"inputTokens": 0, "outputTokens": 0}

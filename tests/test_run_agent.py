@@ -33,8 +33,8 @@ async def test_run_agent_query_success() -> None:
         max_turns=200,
         timeout_ms=300_000,
     )
-    assert result["success"] is True
-    assert "mock result" in result["summary"]
+    assert result.output["success"] is True
+    assert "mock result" in result.output["summary"]
 
 
 @pytest.mark.asyncio
@@ -51,7 +51,7 @@ async def test_run_agent_query_with_system_prompt() -> None:
         max_turns=200,
         timeout_ms=300_000,
     )
-    assert result["success"] is True
+    assert result.output["success"] is True
 
 
 @pytest.mark.asyncio
@@ -71,7 +71,7 @@ async def test_run_agent_query_with_context() -> None:
         max_turns=200,
         timeout_ms=300_000,
     )
-    assert result["success"] is True
+    assert result.output["success"] is True
 
 
 @pytest.mark.asyncio
@@ -89,7 +89,7 @@ async def test_run_agent_query_with_output_schema() -> None:
         max_turns=200,
         timeout_ms=300_000,
     )
-    assert result["success"] is True
+    assert result.output["success"] is True
 
 
 @pytest.mark.asyncio
@@ -107,7 +107,7 @@ async def test_run_agent_query_accepts_traceparent() -> None:
         timeout_ms=300_000,
         traceparent="00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
     )
-    assert result["success"] is True
+    assert result.output["success"] is True
 
 
 @pytest.mark.asyncio
@@ -131,8 +131,8 @@ async def test_run_agent_query_timeout() -> None:
         max_turns=200,
         timeout_ms=1,
     )
-    assert result["success"] is False
-    assert "timed out" in result["summary"]
+    assert result.output["success"] is False
+    assert "timed out" in result.output["summary"]
 
 
 @pytest.mark.asyncio
@@ -149,8 +149,8 @@ async def test_run_agent_query_empty_response() -> None:
         max_turns=200,
         timeout_ms=300_000,
     )
-    assert result["success"] is False
-    assert result["summary"] == "Agent returned empty response"
+    assert result.output["success"] is False
+    assert result.output["summary"] == "Agent returned empty response"
 
 
 @pytest.mark.asyncio
@@ -167,8 +167,8 @@ async def test_run_agent_query_text_response() -> None:
         max_turns=200,
         timeout_ms=300_000,
     )
-    assert result["success"] is True
-    assert result["summary"] == "plain text answer"
+    assert result.output["success"] is True
+    assert result.output["summary"] == "plain text answer"
 
 
 @pytest.mark.asyncio
@@ -186,7 +186,7 @@ async def test_run_agent_query_audit_enabled() -> None:
         timeout_ms=300_000,
         audit_enabled=True,
     )
-    assert result["success"] is True
+    assert result.output["success"] is True
 
 
 @pytest.mark.asyncio
@@ -214,7 +214,7 @@ async def test_run_agent_query_audit_with_tool_events() -> None:
         timeout_ms=300_000,
         audit_enabled=True,
     )
-    assert result["success"] is True
+    assert result.output["success"] is True
 
 
 def test_format_context_envelope_markers_only() -> None:
@@ -414,6 +414,78 @@ async def test_run_agent_query_invalid_context_returns_agent_failure() -> None:
         timeout_ms=300_000,
     )
 
-    assert result["success"] is False
-    assert "Invalid context:" in result["summary"]
-    assert "approvedOption.diagnosis" in result["summary"]
+    assert result.output["success"] is False
+    assert "Invalid context:" in result.output["summary"]
+    assert "approvedOption.diagnosis" in result.output["summary"]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_query_returns_token_counts() -> None:
+    """Token counts from ResultEvent are included in the returned dict (OLS-3994)."""
+    provider = MockProvider(
+        events=[
+            ResultEvent(
+                text='{"success": true, "summary": "ok"}',
+                input_tokens=500,
+                output_tokens=200,
+            )
+        ]
+    )
+    result = await run_agent_query(
+        provider,
+        prompt="test",
+        system_prompt="sys",
+        output_schema=None,
+        context=None,
+        skills_dir="/workspace",
+        model="test-model",
+        max_turns=200,
+        timeout_ms=300_000,
+    )
+    assert result.input_tokens == 500
+    assert result.output_tokens == 200
+
+
+@pytest.mark.asyncio
+async def test_run_agent_query_token_counts_zero_on_timeout() -> None:
+    """Token counts default to 0 when the agent times out (OLS-3994)."""
+
+    class SlowProvider(MockProvider):
+        async def query(self, _options: ProviderQueryOptions) -> AsyncIterator[ProviderEvent]:
+            await asyncio.sleep(10)
+            yield ResultEvent(text="late")
+
+    result = await run_agent_query(
+        SlowProvider(),
+        prompt="test",
+        system_prompt="sys",
+        output_schema=None,
+        context=None,
+        skills_dir="/workspace",
+        model="test-model",
+        max_turns=200,
+        timeout_ms=1,
+    )
+    assert result.input_tokens == 0
+    assert result.output_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_run_agent_query_token_counts_on_text_response() -> None:
+    """Token counts present on plain text (non-JSON) responses (OLS-3994)."""
+    provider = MockProvider(
+        events=[ResultEvent(text="plain text", input_tokens=10, output_tokens=5)]
+    )
+    result = await run_agent_query(
+        provider,
+        prompt="test",
+        system_prompt="sys",
+        output_schema=None,
+        context=None,
+        skills_dir="/workspace",
+        model="test-model",
+        max_turns=200,
+        timeout_ms=300_000,
+    )
+    assert result.input_tokens == 10
+    assert result.output_tokens == 5

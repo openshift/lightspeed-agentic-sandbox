@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 from lightspeed_agentic.batch import BatchInput, InputReadError
 from lightspeed_agentic.config import ResolvedSDK
 from lightspeed_agentic.mcp import MCPConfigError
+from lightspeed_agentic.run_agent import AgentResult
 
 _TEMPLATE = {
     "apiVersion": "agentic.openshift.io/v1alpha1",
@@ -44,13 +45,17 @@ class TestBatchMain:
             exit_mock.assert_called_once_with(1)
 
     def test_success_publishes_and_exits_zero(self) -> None:
-        agent_output = {
-            "success": True,
-            "summary": "done",
-            "options": [{"title": "fix"}],
-            "actionRequired": True,
-            "diagnosis": {"summary": "s", "rootCause": "r"},
-        }
+        agent_result = AgentResult(
+            output={
+                "success": True,
+                "summary": "done",
+                "options": [{"title": "fix"}],
+                "actionRequired": True,
+                "diagnosis": {"summary": "s", "rootCause": "r"},
+            },
+            input_tokens=500,
+            output_tokens=200,
+        )
 
         with (
             patch("lightspeed_agentic.batch.read_batch_inputs", return_value=_INPUTS),
@@ -72,25 +77,25 @@ class TestBatchMain:
         ):
             provider = create_provider.return_value
             provider.name = "deepagents"
-            run_query.return_value = agent_output
+            run_query.return_value = agent_result
 
             from lightspeed_agentic.batch import main
 
             main()
 
             publish.assert_called_once()
-            assert publish.call_args.args[1] == agent_output
+            assert publish.call_args.args[1] == agent_result.output
             publish_kwargs = publish.call_args.kwargs
             assert publish_kwargs["started_at"] is not None
             assert publish_kwargs["completed_at"] is not None
+            assert publish_kwargs["input_tokens"] == 500
+            assert publish_kwargs["output_tokens"] == 200
             init_tracer.assert_called_once_with(agenticrun_phase="analysis")
             assert run_query.call_args.kwargs["step"] == "analysis"
             exit_mock.assert_not_called()
 
     def test_capture_content_defaults_on_when_audit_enabled(self) -> None:
         """Unset LIGHTSPEED_CAPTURE_CONTENT captures content when audit is on."""
-        agent_output = {"success": True, "summary": "done", "options": [], "actionRequired": False}
-
         with (
             patch.dict("os.environ", {"LIGHTSPEED_AUDIT_ENABLED": "true"}, clear=False),
             patch("lightspeed_agentic.batch.read_batch_inputs", return_value=_INPUTS),
@@ -109,7 +114,9 @@ class TestBatchMain:
         ):
             provider = create_provider.return_value
             provider.name = "deepagents"
-            run_query.return_value = agent_output
+            run_query.return_value = AgentResult(
+                output={"success": True, "summary": "done", "options": [], "actionRequired": False},
+            )
 
             from lightspeed_agentic.batch import main
 
@@ -140,7 +147,9 @@ class TestBatchMain:
         ):
             provider = create_provider.return_value
             provider.name = "deepagents"
-            run_query.return_value = {"success": True, "summary": "done"}
+            run_query.return_value = AgentResult(
+                output={"success": True, "summary": "done"},
+            )
 
             from lightspeed_agentic.batch import main
 
@@ -151,13 +160,6 @@ class TestBatchMain:
     def test_passes_traceparent_env_to_run_agent_query(self) -> None:
         """TRACEPARENT env from operator pod spec is forwarded to run_agent_query."""
         traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-        agent_output = {
-            "success": True,
-            "summary": "done",
-            "options": [{"title": "fix"}],
-            "actionRequired": True,
-            "diagnosis": {"summary": "s", "rootCause": "r"},
-        }
 
         with (
             patch.dict("os.environ", {"TRACEPARENT": traceparent}, clear=False),
@@ -178,7 +180,15 @@ class TestBatchMain:
         ):
             provider = create_provider.return_value
             provider.name = "deepagents"
-            run_query.return_value = agent_output
+            run_query.return_value = AgentResult(
+                output={
+                    "success": True,
+                    "summary": "done",
+                    "options": [{"title": "fix"}],
+                    "actionRequired": True,
+                    "diagnosis": {"summary": "s", "rootCause": "r"},
+                },
+            )
 
             from lightspeed_agentic.batch import main
 
@@ -233,14 +243,6 @@ class TestBatchMain:
             exit_mock.assert_called_once_with(1)
 
     def test_skips_otel_when_unconfigured(self) -> None:
-        agent_output = {
-            "success": True,
-            "summary": "done",
-            "options": [{"title": "fix"}],
-            "actionRequired": True,
-            "diagnosis": {"summary": "s", "rootCause": "r"},
-        }
-
         with (
             patch("lightspeed_agentic.batch.read_batch_inputs", return_value=_INPUTS),
             patch("lightspeed_agentic.batch.resolve_sdk", return_value=_MOCK_SDK),
@@ -260,7 +262,15 @@ class TestBatchMain:
         ):
             provider = create_provider.return_value
             provider.name = "deepagents"
-            run_query.return_value = agent_output
+            run_query.return_value = AgentResult(
+                output={
+                    "success": True,
+                    "summary": "done",
+                    "options": [{"title": "fix"}],
+                    "actionRequired": True,
+                    "diagnosis": {"summary": "s", "rootCause": "r"},
+                },
+            )
 
             from lightspeed_agentic.batch import main
 
@@ -329,7 +339,7 @@ class TestBatchMain:
             patch(
                 "lightspeed_agentic.batch.run_agent_query",
                 new_callable=AsyncMock,
-                return_value={"success": True, "summary": "ok"},
+                return_value=AgentResult(output={"success": True, "summary": "ok"}),
             ),
             patch(
                 "lightspeed_agentic.batch.publish_agent_result",
