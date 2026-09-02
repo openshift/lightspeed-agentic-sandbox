@@ -64,7 +64,12 @@ Cross-references: batch agent invocation → `run-api.md`. Env and build → `co
 
 29. **Gemini / exit loop.** When no `output_schema` is set, the adapter registers an SDK exit-loop tool; when `output_schema` is set, that tool is omitted.
 
-30. **OpenAI client.** The OpenAI adapter constructs an async OpenAI client with optional base URL override from environment (see `configuration.md`).
+30. **OpenAI client.** The OpenAI adapter selects its client and model wrapper from the provider type (see `configuration.md`):
+
+    - **Native OpenAI / OpenAI-compatible** (`LIGHTSPEED_PROVIDER=openai`, or `vertex`/`OpenAI`): construct a plain `AsyncOpenAI` client with optional base URL override (`OPENAI_BASE_URL`) and wrap it in `OpenAIResponsesModel`.
+    - **Azure OpenAI** (`LIGHTSPEED_PROVIDER=azure`): the adapter MUST use the OpenAI SDK's built-in Azure support — construct the SDK's native `AsyncAzureOpenAI` client with the SDK's own Azure parameters (`azure_endpoint`, `api_version`, `azure_deployment`) and wrap it in `OpenAIChatCompletionsModel(openai_client=...)`. It MUST NOT point a plain `AsyncOpenAI` at an Azure base URL and MUST NOT hand-build the `Authorization` header. Authentication follows the mode resolved by `configuration.md` rule 9a: **Entra ID mode** passes the built-in `azure_ad_token_provider = get_bearer_token_provider(ClientSecretCredential(tenant_id, client_id, client_secret), "https://cognitiveservices.azure.com/.default")`; **API-key mode** passes the native `api_key`. Token minting and refresh are owned by the provider SDK per rule 39. This closes the OLS-3049 gap (config mapping landed; the Azure client-construction path did not) as part of OLS-3050.
+
+    Provider SDK and `azure.identity` imports stay inside the method per the optional-extra import convention. `AsyncAzureOpenAI` and `azure_ad_token_provider` ship in the `openai` package (already present via `openai-agents`), but the Entra credential classes (`ClientSecretCredential`, `get_bearer_token_provider`) come from `azure-identity` — a new optional dependency added under the `openai` extra (see `how/provider-architecture.md`).
 
 31. **[Removed]** *(Claude adapter was removed in OLS-3500; MCP for Anthropic models is now handled by the DeepAgents adapter — see rule 34.)*
 
@@ -82,6 +87,14 @@ Cross-references: batch agent invocation → `run-api.md`. Env and build → `co
 
 38. **DeepAgents / prompt caching.** `AnthropicPromptCachingMiddleware` is applied unconditionally by `create_deep_agent()` and no-ops for non-Anthropic models. No adapter-level configuration needed.
 
+39. **SDK-delegated short-lived tokens.** For providers that authenticate with short-lived access tokens derived from a long-lived credential, the sandbox mounts only the **long-lived** credential and delegates all short-lived token minting and refresh to the provider SDK's own credential object. The sandbox MUST NOT implement a token cache, refresh timer, or manual expiry/leeway logic. Because the sandbox reads the long-lived credential once at startup (one-shot batch process, no credential hot-reload), only the short-lived token is refreshed in-run — which is all a single run needs. Instances:
+
+    | Provider | Long-lived credential (mounted) | SDK that mints/refreshes the short-lived token |
+    |---|---|---|
+    | Vertex (existing) | `GOOGLE_APPLICATION_CREDENTIALS` service-account key | google-auth |
+    | Azure Entra ID (OLS-3050) | `client_id` / `tenant_id` / `client_secret` | `azure.identity` `ClientSecretCredential` via `azure_ad_token_provider` (rule 30) |
+    | AWS Bedrock (OLS-4092) | `aws_access_key_id` / `aws_secret_access_key` + optional `role_arn` | `botocore` credential-provider chain: with `role_arn` it performs STS assume-role and refreshes the short-lived credentials (see `configuration.md` rule 9b). The Anthropic-on-Bedrock model path is unchanged. |
+
 ## Configuration Surface
 
 | Mechanism | Purpose |
@@ -89,6 +102,9 @@ Cross-references: batch agent invocation → `run-api.md`. Env and build → `co
 | `ProviderQueryOptions.*` | All option fields listed above (set by router, not raw HTTP for most fields). |
 | `GOOGLE_GENAI_USE_VERTEXAI` | Gemini: Vertex vs consumer API behavior and tool mix. Set internally by configuration mapping (see `configuration.md` rule 2), not by operator. |
 | `OPENAI_BASE_URL` | OpenAI-compatible API endpoint override. Set internally by configuration mapping, not by operator. |
+| `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION` | Azure: `azure_endpoint` / `api_version` for `AsyncAzureOpenAI` (rule 30). Set internally by configuration mapping. |
+| `AZURE_OPENAI_API_KEY` | Azure API-key credential (API-key mode only). Populated from credentials secret envFrom. |
+| `/var/run/secrets/llm-credentials/{client_id,tenant_id,client_secret}` | Azure Entra ID service-principal files for `ClientSecretCredential` (Entra ID mode, rule 30). Mounted by operator. |
 | `GOOGLE_API_KEY`, `GEMINI_API_KEY` | Gemini credential and routing. Populated from credentials secret envFrom. |
 | `ANTHROPIC_API_KEY` | DeepAgents/Anthropic: direct API credential. Populated from credentials secret envFrom. |
 | `CLAUDE_CODE_USE_VERTEX` | DeepAgents/Anthropic: when `"1"`, adapter builds `ChatAnthropicVertex` instead of `ChatAnthropic`. Set by configuration mapping. |
