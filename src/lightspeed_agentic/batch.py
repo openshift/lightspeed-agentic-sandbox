@@ -190,7 +190,7 @@ def main() -> None:
         system_prompt = inputs.system_prompt or DEFAULT_SYSTEM_PROMPT
         traceparent = _resolve_traceparent()
         started_at = datetime.now(UTC)
-        agent_output = asyncio.run(
+        agent_result = asyncio.run(
             run_agent_query(
                 provider,
                 prompt=inputs.query,
@@ -214,9 +214,11 @@ def main() -> None:
         completed_at = datetime.now(UTC)
         publish_agent_result(
             inputs.result_template,
-            agent_output,
+            agent_result.output,
             started_at=started_at,
             completed_at=completed_at,
+            input_tokens=agent_result.input_tokens,
+            output_tokens=agent_result.output_tokens,
         )
         logger.info("status updated — exiting 0")
     except PublishError as exc:

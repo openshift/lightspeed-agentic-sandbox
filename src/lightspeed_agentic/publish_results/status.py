@@ -260,6 +260,8 @@ def build_status(
     failure_reason: str | None = None,
     started_at: datetime,
     completed_at: datetime,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
 ) -> dict[str, Any]:
     """Assemble a Result CR status dict from agent output and lifecycle metadata.
 
@@ -304,6 +306,10 @@ def build_status(
 
     _strip_empty_values(status)
 
+    status["tokenUsage"] = {
+        "inputTokens": input_tokens,
+        "outputTokens": output_tokens,
+    }
     status["conditions"] = build_conditions(
         started_at=started_at,
         completed_at=completed_at,

@@ -190,6 +190,20 @@ class TestPublishAgentResult:
         assert status["actionRequired"] == "True"
         assert status["conditions"][1]["reason"] == "Succeeded"
 
+    def test_token_usage_propagated_to_status(self) -> None:
+        api = MagicMock()
+        publish_agent_result(
+            _TEMPLATE,
+            _AGENT_OUTPUT,
+            started_at=_dt(),
+            completed_at=_dt(),
+            input_tokens=1000,
+            output_tokens=400,
+            api=api,
+        )
+        status = api.replace_namespaced_custom_object_status.call_args.kwargs["body"]["status"]
+        assert status["tokenUsage"] == {"inputTokens": 1000, "outputTokens": 400}
+
     def test_missing_kind_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="missing kind"):
             publish_agent_result(

@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from opentelemetry import context as otel_context
@@ -21,6 +22,15 @@ from lightspeed_agentic.tracing import get_tracer, parse_traceparent
 from lightspeed_agentic.types import AgentProvider, ProviderQueryOptions
 
 logger = logging.getLogger("lightspeed_agentic")
+
+
+@dataclass
+class AgentResult:
+    """Wraps agent output dict with token counts for Result CR publishing."""
+
+    output: dict[str, Any] = field(default_factory=dict)
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 class ContextFormatError(ValueError):
@@ -141,7 +151,7 @@ async def run_agent_query(
     agenticrun_uid: str = "",
     traceparent: str | None = None,
     step: str = "analysis",
-) -> dict[str, Any]:
+) -> AgentResult:
     """Run the provider agent and return structured output for Result CR publishing.
 
     When ``traceparent`` is set (W3C value from operator ``TRACEPARENT`` env),
@@ -152,7 +162,7 @@ async def run_agent_query(
         try:
             prefix = format_context_prefix(context)
         except ContextFormatError as exc:
-            return {"success": False, "summary": str(exc)}
+            return AgentResult(output={"success": False, "summary": str(exc)})
         prompt = f"{prefix}\n\n{prompt}"
 
     trace_id, trace_ctx = parse_traceparent(traceparent)
@@ -267,7 +277,9 @@ async def run_agent_query(
             cost_usd=0,
             span=chat_span,
         )
-        return {"success": False, "summary": f"Agent timed out after {timeout_ms}ms"}
+        return AgentResult(
+            output={"success": False, "summary": f"Agent timed out after {timeout_ms}ms"},
+        )
     except Exception as exc:
         audit_logger.complete(
             success=False,
@@ -277,7 +289,9 @@ async def run_agent_query(
             span=chat_span,
         )
         logger.exception("[agent] query error")
-        return {"success": False, "summary": f"Agent error: {exc}"}
+        return AgentResult(
+            output={"success": False, "summary": f"Agent error: {exc}"},
+        )
     else:
         if not text:
             audit_logger.complete(
@@ -289,7 +303,11 @@ async def run_agent_query(
                 response_model=response_model,
                 span=chat_span,
             )
-            return {"success": False, "summary": "Agent returned empty response"}
+            return AgentResult(
+                output={"success": False, "summary": "Agent returned empty response"},
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
 
         try:
             parsed = json.loads(text)
@@ -312,14 +330,22 @@ async def run_agent_query(
 
         if parsed is not None:
             logger.info("[agent] query complete: success=%s, cost=$%.4f", success, cost)
-            return {
-                "success": success,
-                "summary": parsed.get("summary", text),
-                **{k: v for k, v in parsed.items() if k not in ("success", "summary")},
-            }
+            return AgentResult(
+                output={
+                    "success": success,
+                    "summary": parsed.get("summary", text),
+                    **{k: v for k, v in parsed.items() if k not in ("success", "summary")},
+                },
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
 
         logger.info("[agent] query complete (text response), cost=$%.4f", cost)
-        return {"success": True, "summary": text}
+        return AgentResult(
+            output={"success": True, "summary": text},
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
     finally:
         chat_span.end()
         _record_metrics(
