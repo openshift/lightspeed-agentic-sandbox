@@ -31,7 +31,7 @@ normalize_pinned() {
 
 # --- Export runtime deps from uv.lock (with same extras as Konflux) ---
 log "Exporting runtime dependencies from uv.lock"
-UV_RAW=$(uv export --locked --no-dev --extra all --extra eval --no-editable --no-header --no-annotate --format requirements.txt)
+UV_RAW=$(uv export --locked --no-dev --extra all --no-editable --no-header --no-annotate --format requirements.txt)
 UV_PKGS=$(echo "$UV_RAW" | grep -E '^[a-zA-Z0-9]' | normalize_names)
 UV_PINNED=$(echo "$UV_RAW" | normalize_pinned)
 UV_COUNT=$(echo "$UV_PKGS" | wc -l | tr -d ' ')
@@ -80,7 +80,12 @@ STALE=$(
 STALE_COUNT=$(echo "$STALE" | grep -c . || true)
 
 # --- Check for orphans (in hash files but not in uv.lock) ---
-ORPHANS=$(comm -23 <(echo "$HASH_PKGS") <(echo "$UV_PKGS"))
+# Build-only deps needed by source distributions (e.g. hatchling → pluggy)
+# but not part of the runtime dependency tree.
+EXPECTED_BUILD_ONLY=(pluggy)
+BUILD_ALLOW=$(printf '%s\n' "${EXPECTED_BUILD_ONLY[@]}" | normalize_names)
+ORPHANS=$(comm -23 <(echo "$HASH_PKGS") <(echo "$UV_PKGS") \
+    | comm -23 - <(echo "$BUILD_ALLOW"))
 ORPHAN_COUNT=$(echo "$ORPHANS" | grep -c . || true)
 
 # --- Check for version mismatches (split by source) ---

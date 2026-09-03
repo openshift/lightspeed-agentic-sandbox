@@ -46,8 +46,6 @@ docstring-parser==0.18.0 \
     --hash=sha256:ad8ed234ea2dab23080526bd8eaa457a8b1cbabab7c3348723ec5a35a07a0040
 durationpy==0.10 \
     --hash=sha256:ce86a86c56333ed4a1c71ad2f1a0138e6a91ad4144ee31223ac0a08eed8486f3
-execnet==2.1.2 \
-    --hash=sha256:7fd1849c68aacc3c95448d04fb00ad972b14b9713099c2c67924228e7dc0d795
 fastapi==0.136.3 \
     --hash=sha256:7a4d53f0a6638d7ebb0f89ad738493388974431cd7932c13261e2ada1f785c0a
 filetype==1.2.0 \
@@ -98,8 +96,6 @@ httpx-sse==0.4.3 \
     --hash=sha256:81bf5b6e5b4a82d6e8d3dec046b90a63eaa4185b0ec3e78c56503f609d7b41d5
 idna==3.18 \
     --hash=sha256:c8b8ebcb022a6b5c7925661877d5a5b2d3fffa4747ff09d5355833ac38436f81
-iniconfig==2.3.0 \
-    --hash=sha256:c2582a9248e5443ec3cd4c5e5c2703fb9d92bcdf44b7fef5b8b14e7d55551edc
 jiter==0.14.0 \
     --hash=sha256:84c1562c21fffbc2484ae9981fcc6831024498f1ebd444172683ff84bc2fff66 \
     --hash=sha256:9d40519aa849502cb4490a550a63b756ca053074fd48c8df4a36ed7650e8eb10
@@ -195,16 +191,8 @@ pydantic-core==2.46.1 \
     --hash=sha256:f7a3fa79699060131a7b63c29711198953ed1f96a78b7ee7da9d5ab9e5276863
 pydantic-settings==2.14.2 \
     --hash=sha256:794c2942e9f6c7f0a3482aebd328cf08213f4770fdc560ac5d5084a0fce81e7f
-pygments==2.20.0 \
-    --hash=sha256:22eb8865e5accd0fc529e4fdc5cf74db3e6b2b6348b43a089950c8ce671dedb3
 pyjwt==2.13.0 \
     --hash=sha256:43798d73ce4c0a7221087b220935ade361955eeada0b3b4f8622f9b53916ea1c
-pytest==9.0.3 \
-    --hash=sha256:ed0d2ab781c79333f9567b6fd4977151a82af8237175e65424270d55b75d876c
-pytest-asyncio==1.4.0 \
-    --hash=sha256:40346ecb9b9f9b05a58932c972501046ae66d770709b7418b79a4b545dbc7814
-pytest-xdist==3.8.0 \
-    --hash=sha256:68c2be53f1c1ea9308786c1ca2fdd45fdf9c009ed862da9df767943c039ad27d
 python-dateutil==2.9.0.post0 \
     --hash=sha256:89e5d6f444e51ac0a18370406b265fa1f51c88824476fd08c56db669dd317775
 python-dotenv==1.2.2 \

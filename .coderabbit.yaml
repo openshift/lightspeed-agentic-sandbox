@@ -30,7 +30,7 @@ reviews:
     - '!rpms.lock.yaml'
     - '!package-lock.json'
     - '!artifacts.lock.yaml'
-    - '!evals/report.json'
+    - '!/.eval-workspaces/'
     - '!.idea/**'
     # Prodsec recommended exclusions
     - '!**/node_modules/**'

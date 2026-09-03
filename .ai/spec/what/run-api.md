@@ -128,6 +128,7 @@ status is generic (see `batch_log_contract.py`).
 | [test_publish_results_publish.py](../../../tests/test_publish_results_publish.py) | 21, 24 | K8s create + status replace |
 | [test_publish_results_status.py](../../../tests/test_publish_results_status.py) | 21 | Status assembly from agent output |
 | [test_model_resolution.py](../../../tests/test_model_resolution.py) | 7 | Model env resolution |
-| Live batch BDD | 4–23 (semantic) | [e2e-testing.md](e2e-testing.md) Verification map — context echo, structured output, skills, MCP, reasoning, OTEL |
+| Live batch BDD | 4–23 (semantic) | [e2e-testing.md](e2e-testing.md) Verification map — context echo, structured output, skills, analysis output, MCP, reasoning, OTEL |
 
-Evals (`evals/`) still use HTTP against live containers; they are separate from batch BDD.
+Offline analysis schema helpers: [test_analysis_schemas.py](../../../tests/test_analysis_schemas.py),
+[test_analysis_tokens.py](../../../tests/test_analysis_tokens.py).

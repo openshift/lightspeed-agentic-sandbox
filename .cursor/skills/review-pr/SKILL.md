@@ -42,7 +42,7 @@ Only raise issues if you have a concrete concern:
 
 - **Architecture**: Thin provider adapters vs duplicated SDK logic (`CLAUDE.md`)
 - **Error handling**: FastAPI responses, streaming edge cases
-- **Tests**: Offline unit tests; live behavior belongs in `evals/`
+- **Tests**: Offline unit tests; live behavior belongs in `tests/e2e/` (`make e2e`)
 - **Dependencies**: Optional extras, no top-level provider SDK imports in
   `providers/*.py`
 

@@ -176,6 +176,7 @@ Feature files and unit tests are also listed under each behavioral spec. Summary
 | [sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature) | run-api, audit-logging | Context echo, OTEL export |
 | [structured_output.feature](../../../tests/e2e/features/structured_output.feature) | run-api, provider-contract | JSON schema, text fallback, adversarial schema |
 | [skills.feature](../../../tests/e2e/features/skills.feature) | provider-contract | Skills mount, echo-token skill, nonskill query |
+| [analysis_output.feature](../../../tests/e2e/features/analysis_output.feature) | run-api, provider-contract | find-token skill, operator analysis + component tokens |
 | [mcp.feature](../../../tests/e2e/features/mcp.feature) | provider-contract, configuration | MCP wiring, tool invoke, MCP tool failure envelope |
 | [reasoning_config.feature](../../../tests/e2e/features/reasoning_config.feature) | provider-contract, configuration | Reasoning config passthrough |
 | [troubleshooting.feature](../../../tests/e2e/features/troubleshooting.feature) | e2e-testing (troubleshooting) | Cluster-level troubleshooting scenario validation (OLS-3739) |
@@ -184,7 +185,9 @@ Unit tests: [test_run_agent.py](../../../tests/test_run_agent.py),
 [test_batch.py](../../../tests/test_batch.py),
 [test_ready.py](../../../tests/test_ready.py),
 [test_batch_e2e_helpers.py](../../../tests/test_batch_e2e_helpers.py) (harness helpers, no cluster),
-[test_e2e_credentials.py](../../../tests/test_e2e_credentials.py) (credential preflight, including Bedrock Konflux mount).
+[test_e2e_credentials.py](../../../tests/test_e2e_credentials.py) (credential preflight, including Bedrock Konflux mount),
+[test_analysis_schemas.py](../../../tests/test_analysis_schemas.py) (operator analysis JSON schemas),
+[test_analysis_tokens.py](../../../tests/test_analysis_tokens.py) (find-token component token assertions).
 
 ## Troubleshooting scenario tests (OLS-3739)
 

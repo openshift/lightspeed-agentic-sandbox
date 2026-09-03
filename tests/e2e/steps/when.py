@@ -31,6 +31,23 @@ def post_echo_token_query(bdd_context: dict[str, Any], run_runner: Any, provider
     _run_query(bdd_context, run_runner, **kwargs)
 
 
+@when("I run the agent with the prepared find-token analysis query")
+def post_find_token_analysis_query(
+    bdd_context: dict[str, Any],
+    run_runner: Any,
+    provider_name: str,
+) -> None:
+    _ = provider_name
+    kwargs: dict[str, Any] = {
+        "output_schema": bdd_context.get("output_schema"),
+        "system_prompt": bdd_context["system_prompt"],
+    }
+    wait_timeout = bdd_context.get("wait_timeout_seconds")
+    if wait_timeout is not None:
+        kwargs["wait_timeout_seconds"] = wait_timeout
+    _run_query(bdd_context, run_runner, **kwargs)
+
+
 @when("I run the agent with the prepared schema and query")
 def post_with_schema(bdd_context: dict[str, Any], run_runner: Any) -> None:
     kwargs: dict[str, Any] = {"output_schema": bdd_context.get("output_schema")}

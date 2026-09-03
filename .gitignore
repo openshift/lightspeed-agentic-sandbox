@@ -12,8 +12,6 @@ build/
 *.egg
 .coverage
 htmlcov/
-evals/report.json
-/evals/workspace/.agents/
 /.eval-workspaces/
 .ols/
 .idea/

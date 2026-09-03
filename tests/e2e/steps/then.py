@@ -10,6 +10,8 @@ import jsonschema
 from kubernetes.client import CoreV1Api  # type: ignore[import-untyped]
 from pytest_bdd import then
 
+from tests.e2e.analysis_schemas import ANALYSIS_WITH_COMPONENTS_SCHEMA
+from tests.e2e.analysis_tokens import assert_skill_tokens_in_response
 from tests.e2e.otel_verify import wait_for_otel_audit_logs, wait_for_otel_traces
 from tests.e2e.run_result import E2ERunResult
 from tests.e2e.skills_fixtures import E2E_TOKEN_REL_PATH
@@ -17,6 +19,10 @@ from tests.e2e.suite_setup import BatchE2EConfig
 
 # SHA-256 of empty string — models sometimes fabricate this instead of running echo-token.sh
 _EMPTY_STRING_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+
+def _analysis_status_subset(body: dict[str, Any]) -> dict[str, Any]:
+    return {key: body[key] for key in ("actionRequired", "options", "diagnosis") if key in body}
 
 
 def _require_run_result(bdd_context: dict[str, Any]) -> E2ERunResult:
@@ -241,6 +247,46 @@ def assert_token_in_response(bdd_context: dict[str, Any]) -> None:
     assert token in response_token or token in summary, (
         f"token {token!r} not found in response token={response_token!r} or summary={summary!r}"
     )
+
+
+@then("the analysis status validates against the operator components schema")
+def assert_analysis_status_jsonschema(bdd_context: dict[str, Any]) -> None:
+    body = bdd_context["response_body"]
+    analysis = _analysis_status_subset(body)
+    jsonschema.validate(instance=analysis, schema=ANALYSIS_WITH_COMPONENTS_SCHEMA)
+
+
+@then("actionRequired is True")
+def assert_action_required_true(bdd_context: dict[str, Any]) -> None:
+    body = bdd_context["response_body"]
+    assert body.get("actionRequired") == "True", body
+
+
+@then("the response contains DIAG and VERIFY tokens in component tokens")
+def assert_diag_verify_component_tokens(bdd_context: dict[str, Any], provider_name: str) -> None:
+    assert_skill_tokens_in_response(bdd_context["response_body"], provider_name)
+
+
+@then("the first analysis option has remediation and component audit fields")
+def assert_first_option_analysis_fields(bdd_context: dict[str, Any]) -> None:
+    body = bdd_context["response_body"]
+    analysis = _analysis_status_subset(body)
+    option = analysis["options"][0]
+    assert option["remediationPlan"]["reversible"] in (
+        "Reversible",
+        "Irreversible",
+        "Partial",
+    )
+    assert len(option["remediationPlan"]["actions"]) > 0
+    assert len(option["components"]) > 0
+
+    comp = option["components"][0]
+    assert comp["tokens"]["primary"]["valid"] is True
+    assert comp["tokens"]["secondary"]["valid"] is True
+    assert comp["audit"]["outcome"] in ("pass", "fail", "partial")
+    assert len(comp["audit"]["findings"]) > 0
+    for finding in comp["audit"]["findings"]:
+        assert finding["severity"] in ("info", "warning", "critical")
 
 
 @then("the run completes successfully and the envelope has success and summary")

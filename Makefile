@@ -13,7 +13,7 @@ $(E2E_EXTRA_TARGETS):
 endif
 endif
 
-.PHONY: install install-all lock test lint format mypy verify verify-hermetic-requirements eval eval-report e2e image clean help \
+.PHONY: install install-all lock test lint format mypy verify verify-hermetic-requirements e2e image clean help \
        requirements bump-deps rpm-lockfile konflux-requirements
 
 help: ## Show this help
@@ -23,7 +23,7 @@ help: ## Show this help
 install: ## Install package with dev dependencies via uv
 	$(UV) sync --extra dev
 
-install-all: ## Install all provider, dev, and eval dependencies via uv
+install-all: ## Install all provider, dev, and e2e dependencies via uv
 	$(UV) sync --all-extras
 
 lock: ## Refresh uv.lock from pyproject.toml
@@ -50,25 +50,17 @@ verify: verify-hermetic-requirements ## Run non-mutating formatting, lint, and t
 verify-hermetic-requirements: ## Verify hermetic build hash files are in sync with uv.lock
 	bash scripts/verify_hermetic_requirements.sh
 
-image: ## Build container image for local development and evals
+image: ## Build container image for local development and e2e
 	$(CONTAINER_RUNTIME) build -t $(IMAGE) .
-
-EVAL_ARGS ?=
-
-eval: image ## Run evals against live containers (use EVAL_ARGS to filter, e.g. EVAL_ARGS="-k deepagents")
-	PYTEST="$(UV) run pytest" bash evals/run.sh $(EVAL_ARGS)
-
-eval-report: image ## Run evals and generate JSON report
-	PYTEST="$(UV) run pytest" bash evals/run.sh --eval-report=evals/report.json $(EVAL_ARGS)
 
 e2e: image ## Batch cluster E2E BDD (make e2e openai-agents). Needs oc/KUBECONFIG; optional: E2E_ARGS, E2E_SKIP_FIXTURES=1.
 	IMAGE="$(IMAGE)" SANDBOX_IMAGE="$(SANDBOX_IMAGE)" E2E_ARGS="$(E2E_ARGS)" bash scripts/e2e-containers.sh $(filter-out e2e,$(MAKECMDGOALS))
 
 requirements: pyproject.toml ## Generate requirements.txt files for Konflux hermetic builds
-	$(UV) pip compile pyproject.toml --extra all --extra eval \
+	$(UV) pip compile pyproject.toml --extra all --extra e2e \
 		-o requirements.x86_64.txt --generate-hashes \
 		--python-platform x86_64-unknown-linux-gnu --upgrade
-	$(UV) pip compile pyproject.toml --extra all --extra eval \
+	$(UV) pip compile pyproject.toml --extra all --extra e2e \
 		-o requirements.aarch64.txt --generate-hashes \
 		--python-platform aarch64-unknown-linux-gnu --upgrade
 	python3 scripts/gen-build-deps.py \

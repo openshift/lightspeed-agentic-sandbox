@@ -46,11 +46,25 @@ _JSON_SCHEMA_TYPE_MAP: dict[str, type[Any]] = {
 }
 
 
+def _anthropic_backend() -> Literal["vertex", "bedrock", "direct"]:
+    """Resolve Anthropic backend from env; reject conflicting Vertex/Bedrock flags."""
+    use_vertex = os.environ.get("CLAUDE_CODE_USE_VERTEX") == "1"
+    use_bedrock = os.environ.get("CLAUDE_CODE_USE_BEDROCK") == "1"
+    if use_vertex and use_bedrock:
+        raise ValueError("CLAUDE_CODE_USE_VERTEX and CLAUDE_CODE_USE_BEDROCK cannot both be set")
+    if use_vertex:
+        return "vertex"
+    if use_bedrock:
+        return "bedrock"
+    return "direct"
+
+
 def _resolve_model(model: str, reasoning_config: dict[str, Any] | None = None) -> Any:
     """Build a LangChain chat model instance based on env vars set by config.py."""
     thinking = reasoning_config.get("thinking") if reasoning_config else None
+    backend = _anthropic_backend()
 
-    if os.environ.get("CLAUDE_CODE_USE_VERTEX") == "1":
+    if backend == "vertex":
         from langchain_google_vertexai.model_garden import ChatAnthropicVertex
 
         kwargs: dict[str, Any] = {
@@ -62,7 +76,7 @@ def _resolve_model(model: str, reasoning_config: dict[str, Any] | None = None) -
             kwargs["thinking"] = thinking
         return ChatAnthropicVertex(**kwargs)
 
-    if os.environ.get("CLAUDE_CODE_USE_BEDROCK") == "1":
+    if backend == "bedrock":
         from langchain_aws import ChatAnthropicBedrock
 
         kwargs = {
@@ -127,6 +141,13 @@ def _usage_from_message(msg: Any) -> tuple[int, int]:
     return usage.get("input_tokens", 0), usage.get("output_tokens", 0)
 
 
+def _structured_output_method() -> str:
+    """Bedrock rejects large json_schema grammars; function_calling avoids compilation."""
+    if _anthropic_backend() == "bedrock":
+        return "function_calling"
+    return "json_schema"
+
+
 async def _shape_structured_output(
     model: str,
     schema: Any,
@@ -134,11 +155,15 @@ async def _shape_structured_output(
     prompt: str,
     agent_text: str,
 ) -> tuple[Any, int, int]:
-    """Shape pass: tool-free json_schema binding on a model without thinking."""
+    """Shape pass: tool-free structured binding on a model without thinking."""
     from langchain_core.messages import HumanMessage, SystemMessage
 
     format_model = _resolve_model(model, reasoning_config=None)
-    structured = format_model.with_structured_output(schema, method="json_schema", include_raw=True)
+    structured = format_model.with_structured_output(
+        schema,
+        method=_structured_output_method(),
+        include_raw=True,
+    )
     shape_messages = [
         SystemMessage(content=system_prompt),
         HumanMessage(

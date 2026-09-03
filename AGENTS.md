@@ -3,8 +3,7 @@
 Multi-provider agentic sandbox for OpenShift Lightspeed. This repo runs as a
 one-shot batch process plus provider adapters for DeepAgents (Anthropic), Gemini, and OpenAI.
 When editing it, optimize for thin provider wrappers, consistent event mapping,
-and tests that stay offline unless you are intentionally running containerized
-evals.
+and tests that stay offline unless you are intentionally running live cluster BDD.
 
 ## General coding behavior
 
@@ -86,23 +85,20 @@ Use this table to navigate from component → spec → executable tests:
 |---|---|---|
 | [run-api.md](.ai/spec/what/run-api.md) | Batch entrypoint: input files, context prefix, timeouts, Result CR publishing | [test_batch.py](tests/test_batch.py), [test_batch_input.py](tests/test_batch_input.py), [test_run_agent.py](tests/test_run_agent.py), [test_publish_results_publish.py](tests/test_publish_results_publish.py), [test_publish_results_status.py](tests/test_publish_results_status.py) |
 | [health-probes.md](.ai/spec/what/health-probes.md) | Readiness checks at batch startup (R1) | [test_ready.py](tests/test_ready.py), [test_batch.py](tests/test_batch.py) (readiness fail-fast) |
-| [provider-contract.md](.ai/spec/what/provider-contract.md) | Provider adapter rules: events, structured output, thin-adapter principle | [test_run_agent.py](tests/test_run_agent.py), [test_deepagents.py](tests/test_deepagents.py); live batch: [skills.feature](tests/e2e/features/skills.feature), [structured_output.feature](tests/e2e/features/structured_output.feature), [mcp.feature](tests/e2e/features/mcp.feature), [reasoning_config.feature](tests/e2e/features/reasoning_config.feature) |
+| [provider-contract.md](.ai/spec/what/provider-contract.md) | Provider adapter rules: events, structured output, thin-adapter principle | [test_run_agent.py](tests/test_run_agent.py), [test_deepagents.py](tests/test_deepagents.py); live batch: [skills.feature](tests/e2e/features/skills.feature), [structured_output.feature](tests/e2e/features/structured_output.feature), [analysis_output.feature](tests/e2e/features/analysis_output.feature), [mcp.feature](tests/e2e/features/mcp.feature), [reasoning_config.feature](tests/e2e/features/reasoning_config.feature) |
 | [configuration.md](.ai/spec/what/configuration.md) | Provider selection, model resolution, skills directory, env vars | [test_model_resolution.py](tests/test_model_resolution.py), [test_config.py](tests/test_config.py); live batch: [mcp.feature](tests/e2e/features/mcp.feature), [reasoning_config.feature](tests/e2e/features/reasoning_config.feature) |
-| [e2e-testing.md](.ai/spec/what/e2e-testing.md) | Batch cluster BDD harness (OpenShift Jobs, Result CRs, fixtures) | Live batch: [sandbox_e2e.feature](tests/e2e/features/sandbox_e2e.feature), [structured_output.feature](tests/e2e/features/structured_output.feature), [skills.feature](tests/e2e/features/skills.feature), [mcp.feature](tests/e2e/features/mcp.feature), [reasoning_config.feature](tests/e2e/features/reasoning_config.feature); helpers: [test_batch_e2e_helpers.py](tests/test_batch_e2e_helpers.py), [test_e2e_credentials.py](tests/test_e2e_credentials.py) |
+| [e2e-testing.md](.ai/spec/what/e2e-testing.md) | Batch cluster BDD harness (OpenShift Jobs, Result CRs, fixtures) | Live batch: [sandbox_e2e.feature](tests/e2e/features/sandbox_e2e.feature), [structured_output.feature](tests/e2e/features/structured_output.feature), [skills.feature](tests/e2e/features/skills.feature), [analysis_output.feature](tests/e2e/features/analysis_output.feature), [mcp.feature](tests/e2e/features/mcp.feature), [reasoning_config.feature](tests/e2e/features/reasoning_config.feature); helpers: [test_batch_e2e_helpers.py](tests/test_batch_e2e_helpers.py), [test_e2e_credentials.py](tests/test_e2e_credentials.py), [test_analysis_schemas.py](tests/test_analysis_schemas.py) |
 
 ## Quick Commands
 
 ```bash
 make install                           # create/update .venv with dev dependencies via uv
-make install-all                       # install all providers + dev + eval extras
+make install-all                       # install all providers + dev + e2e extras
 make lock                              # refresh uv.lock after dependency changes
 make test                              # unit tests only; mocked providers, no API calls
 make e2e openai-agents                 # live batch BDD on OpenShift (see e2e-testing.md)
-make lint                              # ruff check src/ tests/ evals/
+make lint                              # ruff check src/ tests/
 make format                            # ruff format + autofix
-make eval                              # build image and run live evals in containers
-make eval EVAL_ARGS="-k deepagents"    # run a subset of evals
-make eval-report                       # write evals/report.json
 ```
 
 ## Architecture
@@ -166,12 +162,10 @@ adapters or put path helpers in `tools.py`.
   providers and Kubernetes client — no live API calls.
 - `make e2e` runs live batch BDD on an OpenShift cluster (`scripts/e2e-containers.sh`);
   see [e2e-testing.md](.ai/spec/what/e2e-testing.md).
-- `make eval` and `make eval-report` are separate integration checks; they still use
-  HTTP against live containers.
-- See [`evals/README.md`](evals/README.md) for eval setup, credential handling,
-  provider coverage, and report details.
-- Evals are container-only. If you change eval workspace fixtures, skills, or
-  mounted tool behavior, verify the corresponding assumptions in `evals/run.sh`.
+- `make e2e` runs live batch BDD on an OpenShift cluster (`scripts/e2e-containers.sh`);
+  see [e2e-testing.md](.ai/spec/what/e2e-testing.md).
+- If you change e2e workspace fixtures or skills, verify batch mount paths in
+  `tests/e2e/batch_runner.py` and `tests/e2e/skills_fixtures.py`.
 
 ## Konflux Hermetic Builds
 
@@ -216,9 +210,9 @@ The Konflux pipeline will prefetch the new versions on the next PR.
 ## What To Avoid
 
 - Do not add top-level imports of provider SDK packages in `src/lightspeed_agentic/providers/`.
-- Do not make unit tests hit real model APIs. Live coverage belongs in `evals/`.
-- Do not edit `evals/workspace/skills` or `evals/workspace/tools` without
-  checking how `evals/run.sh` copies and mounts them.
+- Do not make unit tests hit real model APIs. Live coverage belongs in `tests/e2e/`.
+- Do not edit `tests/e2e/workspace/skills` without
+  checking how batch Jobs mount them (`tests/e2e/batch_runner.py`, `tests/e2e/skills_fixtures.py`).
 - Keep runtime dependencies aligned with the shipped container entrypoint. If
   the image invokes a module directly, declare it in `pyproject.toml`.
 - Do not turn this file back into a long-form architecture tutorial. It should
@@ -252,13 +246,11 @@ The Konflux pipeline will prefetch the new versions on the next PR.
 | `OTEL_EXPORTER_OTLP_CERTIFICATE` | Optional collector CA cert path |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` (default) or `http/protobuf` |
 | `ANTHROPIC_VERTEX_PROJECT_ID` | Vertex project for Anthropic via Vertex |
-| `CLOUD_ML_REGION` | Vertex region for Anthropic via Vertex (default `us-east5`) |
-| `EVAL_SERVER_URLS` | Provider-to-URL map exported by `evals/run.sh` for eval pytest fixtures |
-| `EVAL_WORKSPACES` | Provider-to-output-workspace map exported by `evals/run.sh` for eval pytest fixtures |
+| `CLOUD_ML_REGION` | Vertex region for Anthropic via Vertex (default `global`) |
 
 Provider credentials such as `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`,
 `GEMINI_API_KEY`, and `OPENAI_API_KEY` are expected by the underlying SDKs or
-passed through by the eval container launcher.
+passed through by cluster LLM credential Secrets mounted on batch Jobs.
 
 ## Git and PR Workflow
 

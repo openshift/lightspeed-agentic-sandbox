@@ -610,6 +610,98 @@ class TestEventMapping:
         assert result_events[0].input_tokens == 8
         assert result_events[0].output_tokens == 10
 
+    def test_structured_output_method_json_schema_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+        from lightspeed_agentic.providers.deepagents import _structured_output_method
+
+        assert _structured_output_method() == "json_schema"
+
+    def test_structured_output_method_function_calling_on_bedrock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        from lightspeed_agentic.providers.deepagents import _structured_output_method
+
+        assert _structured_output_method() == "function_calling"
+
+    def test_conflicting_vertex_and_bedrock_flags_raise(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+        from lightspeed_agentic.providers.deepagents import (
+            _anthropic_backend,
+            _structured_output_method,
+        )
+
+        with pytest.raises(ValueError, match="cannot both be set"):
+            _anthropic_backend()
+        with pytest.raises(ValueError, match="cannot both be set"):
+            _structured_output_method()
+
+    @pytest.mark.asyncio
+    async def test_shape_pass_uses_function_calling_on_bedrock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
+        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+
+        mock_ai_message = MagicMock()
+        mock_ai_message.type = "ai"
+        mock_ai_message.content = "agent answer"
+        mock_ai_message.tool_calls = []
+        mock_ai_message.usage_metadata = {"input_tokens": 1, "output_tokens": 2}
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "agent answer"
+        mock_ai_message.content_blocks = [text_block]
+
+        async def mock_astream(*_args: Any, **_kwargs: Any) -> AsyncIterator[Any]:
+            yield (mock_ai_message, {"langgraph_node": "agent"})
+
+        mock_agent = MagicMock()
+        mock_agent.astream = mock_astream
+        mock_create = MagicMock(return_value=mock_agent)
+
+        mock_raw = MagicMock(usage_metadata={"input_tokens": 3, "output_tokens": 4})
+        mock_structured_runnable = MagicMock()
+        mock_structured_runnable.ainvoke = AsyncMock(
+            return_value={"parsed": {"status": "ok"}, "raw": mock_raw}
+        )
+        mock_format_model = MagicMock()
+        mock_format_model.with_structured_output = MagicMock(return_value=mock_structured_runnable)
+        mock_agent_model = MagicMock()
+
+        def resolve_model_side_effect(
+            _model: str, reasoning_config: dict[str, Any] | None = None
+        ) -> MagicMock:
+            if reasoning_config and reasoning_config.get("thinking"):
+                return mock_agent_model
+            return mock_format_model
+
+        output_schema = {
+            "type": "object",
+            "properties": {"status": {"type": "string"}},
+            "required": ["status"],
+        }
+
+        with patch.dict(sys.modules, _mock_deepagents_modules(mock_create, MagicMock())):
+            import importlib
+
+            import lightspeed_agentic.providers.deepagents as mod
+
+            importlib.reload(mod)
+            with patch.object(mod, "_resolve_model", side_effect=resolve_model_side_effect):
+                provider = mod.DeepAgentsProvider()
+                await _collect_events(provider, _base_options(output_schema=output_schema))
+
+        call_kwargs = mock_format_model.with_structured_output.call_args[1]
+        assert call_kwargs["method"] == "function_calling"
+        assert call_kwargs["include_raw"] is True
+
     @pytest.mark.asyncio
     async def test_recursion_limit_passed_to_astream(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """max_turns is forwarded to astream config as recursion_limit."""

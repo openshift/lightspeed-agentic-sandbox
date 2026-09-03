@@ -23,6 +23,7 @@ from schemas_contract import (
     NESTED_OUTPUT_SCHEMA,
     STRICT_CONFLICT_SCHEMA,
 )
+from analysis_schemas import ANALYSIS_WITH_COMPONENTS_SCHEMA
 
 
 @given("provider credentials are configured")
@@ -153,9 +154,9 @@ def prepare_context_approved_option_echo(bdd_context: dict[str, Any]) -> None:
     bdd_context["query"] = (
         "The user message contains a [context] block with an approved remediation section. "
         "Return a single JSON object only (no markdown). "
-        "Set success=true, summary='context-echo-ok', approvedTitle to the remediation "
-        "Title value, rootCause to the Diagnosis root cause value, and firstCommand to "
-        "the command field of the first action in the remediation plan (values only, not labels)."
+        "Set success=true, summary='context-echo-ok', approvedTitle to the exact title string, "
+        "rootCause to the exact rootCause string, and firstCommand to the exact command string "
+        "from the first action in remediationPlan.actions (do not include the action description)."
     )
 
 
@@ -177,6 +178,24 @@ def prepare_echo_token(bdd_context: dict[str, Any]) -> None:
         "Do not reply until step 2 exits 0 and prints JSON."
     )
     bdd_context["output_schema"] = ECHO_TOKEN_SCHEMA
+
+
+@given("the find-token analysis query and schema have been prepared")
+def prepare_find_token_analysis(bdd_context: dict[str, Any]) -> None:
+    bdd_context["system_prompt"] = (
+        "You are an assistant. Use your available skills to accomplish tasks. "
+        "When a skill prints structured JSON analysis output, use that JSON as the "
+        "basis for your response. remediationPlan must include at least one action. "
+        "Set actionRequired to the string 'True' and place tokens under "
+        "options[].components[].tokens."
+    )
+    bdd_context["query"] = (
+        "Find the hidden token using the 'find-token' skill. "
+        "Run the script and return its JSON output as your structured analysis response "
+        "(preserve remediationPlan.actions and components with DIAG_/VERIFY_ tokens)."
+    )
+    bdd_context["output_schema"] = ANALYSIS_WITH_COMPONENTS_SCHEMA
+    bdd_context["wait_timeout_seconds"] = 900.0
 
 
 @given("a flat output schema with required fields has been prepared")

@@ -1,4 +1,4 @@
-"""E2E credential validation (standalone; do not import from evals/).
+"""E2E credential validation for live cluster BDD.
 
 Resolution order per provider mirrors the deploy scripts in
 lightspeed-operator/hack/ — env vars first, CLI tools as fallback.
@@ -83,9 +83,9 @@ def _validate_vertex_credential_file(path: str, label: str) -> tuple[bool, str, 
             data = json.loads(handle.read())
     except (OSError, json.JSONDecodeError) as exc:
         return False, f"{label} is not valid Vertex JSON ({path}): {exc}", ""
-    project_id = data.get("project_id", "")
+    project_id = data.get("project_id") or data.get("quota_project_id") or ""
     if not project_id:
-        return False, f"{label} missing project_id ({path})", ""
+        return False, f"{label} missing project_id or quota_project_id ({path})", ""
     return True, path, str(project_id)
 
 
@@ -278,7 +278,7 @@ def _vertex_env_vars() -> dict[str, str]:
         if project:
             env["GOOGLE_CLOUD_PROJECT"] = project
     if not os.environ.get("GOOGLE_CLOUD_LOCATION"):
-        env["GOOGLE_CLOUD_LOCATION"] = os.environ.get("CLOUD_ML_REGION", "us-east5")
+        env["GOOGLE_CLOUD_LOCATION"] = os.environ.get("CLOUD_ML_REGION", "global")
     return env
 
 

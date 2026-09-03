@@ -48,6 +48,7 @@ AI agents. Content is optimized for precision and machine consumption.
 | Understand readiness checks | `what/health-probes.md` |
 | Understand audit logging | `what/audit-logging.md` |
 | Understand E2E testing | `what/e2e-testing.md` |
+| Run live cluster BDD | `what/e2e-testing.md` + `make e2e` |
 
 ## Cross-Reference
 

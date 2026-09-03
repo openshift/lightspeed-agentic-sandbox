@@ -69,6 +69,31 @@ class TestAnthropicVertexDeepagents:
         assert status.env_vars["ANTHROPIC_VERTEX_PROJECT_ID"] == "my-gcp-project"
         assert status.env_vars[creds.GOOGLE_PROVIDER_CREDENTIALS_PATH_ENV] == str(token)
 
+    def test_adc_authorized_user_quota_project_id(
+        self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_VERTEX_PROJECT_ID", raising=False)
+        adc = cred_dir / "adc.json"
+        adc.write_text(
+            json.dumps(
+                {
+                    "account": "user@example.com",
+                    "client_id": "1",
+                    "client_secret": "secret",
+                    "quota_project_id": "itpc-ca-99c692de8f",
+                    "refresh_token": "token",
+                    "type": "authorized_user",
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv(creds.GOOGLE_PROVIDER_CREDENTIALS_PATH_ENV, str(adc))
+
+        status = creds.detect_credentials(creds.PROVIDER_ANTHROPIC_VERTEX_DEEPAGENTS)
+        assert status.available
+        assert status.env_vars["ANTHROPIC_VERTEX_PROJECT_ID"] == "itpc-ca-99c692de8f"
+
 
 class TestAnthropicBedrockDeepagents:
     def test_aws_env_vars(self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:

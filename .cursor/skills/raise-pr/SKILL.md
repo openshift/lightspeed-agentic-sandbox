@@ -43,7 +43,7 @@ Run in order and fix failures:
 1. `make test`
 2. `make verify`
 
-Optional if the change touches container/eval assumptions: `make eval` (slow,
+Optional if the change touches live cluster behavior: `make e2e <provider>` (slow,
 needs credentials — only when requested).
 
 ## Step 3: Commit and push
@@ -63,7 +63,7 @@ If `.github/PULL_REQUEST_TEMPLATE.md` exists, follow it. Otherwise use a clear
 title and body:
 
 - What changed and why
-- How you tested (`make test`, `make verify`, evals if run)
+- How you tested (`make test`, `make verify`, `make e2e` if run)
 - Links to related issues or specs (e.g. `.ai/spec/...`)
 
 ```bash
