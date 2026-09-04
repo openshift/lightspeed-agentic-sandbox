@@ -197,7 +197,6 @@ async def test_run_agent_query_audit_with_tool_events() -> None:
         ToolResultEvent(output="file.txt"),
         ResultEvent(
             text='{"success": true, "summary": "done"}',
-            cost_usd=0.01,
             input_tokens=10,
             output_tokens=5,
         ),

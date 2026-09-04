@@ -35,7 +35,6 @@ async def test_run_records_token_usage() -> None:
         events=[
             ResultEvent(
                 text='{"success": true, "summary": "ok"}',
-                cost_usd=0.01,
                 input_tokens=100,
                 output_tokens=50,
             ),
@@ -91,7 +90,6 @@ async def test_run_records_tool_duration() -> None:
         ToolResultEvent(output="file.txt"),
         ResultEvent(
             text='{"success": true, "summary": "done"}',
-            cost_usd=0.01,
             input_tokens=10,
             output_tokens=5,
         ),

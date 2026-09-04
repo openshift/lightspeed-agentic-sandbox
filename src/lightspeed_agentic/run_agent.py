@@ -185,7 +185,6 @@ async def run_agent_query(
 
     start_time = time.monotonic()
     text = ""
-    cost = 0.0
     input_tokens = 0
     output_tokens = 0
     reasoning_tokens = 0
@@ -235,7 +234,7 @@ async def run_agent_query(
     try:
 
         async def run() -> None:
-            nonlocal text, cost, input_tokens, output_tokens, reasoning_tokens, response_model
+            nonlocal text, input_tokens, output_tokens, reasoning_tokens, response_model
             token = otel_context.attach(span_ctx)
             try:
                 result = provider.query(
@@ -244,7 +243,6 @@ async def run_agent_query(
                         system_prompt=system_prompt,
                         model=model,
                         max_turns=max_turns,
-                        max_budget_usd=5.0,
                         allowed_tools=DEFAULT_ALLOWED_TOOLS,
                         cwd=skills_dir,
                         output_schema=output_schema,
@@ -258,7 +256,6 @@ async def run_agent_query(
                     audit_logger.process_event(event)
                     if event.type == "result":
                         text = event.text
-                        cost = event.cost_usd
                         input_tokens = event.input_tokens
                         output_tokens = event.output_tokens
                         reasoning_tokens = event.reasoning_tokens
@@ -274,7 +271,6 @@ async def run_agent_query(
             success=False,
             input_tokens=0,
             output_tokens=0,
-            cost_usd=0,
             span=chat_span,
         )
         return AgentResult(
@@ -285,7 +281,6 @@ async def run_agent_query(
             success=False,
             input_tokens=0,
             output_tokens=0,
-            cost_usd=0,
             span=chat_span,
         )
         logger.exception("[agent] query error")
@@ -299,7 +294,6 @@ async def run_agent_query(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 reasoning_tokens=reasoning_tokens,
-                cost_usd=cost,
                 response_model=response_model,
                 span=chat_span,
             )
@@ -323,13 +317,12 @@ async def run_agent_query(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             reasoning_tokens=reasoning_tokens,
-            cost_usd=cost,
             response_model=response_model,
             span=chat_span,
         )
 
         if parsed is not None:
-            logger.info("[agent] query complete: success=%s, cost=$%.4f", success, cost)
+            logger.info("[agent] query complete: success=%s", success)
             return AgentResult(
                 output={
                     "success": success,
@@ -340,7 +333,7 @@ async def run_agent_query(
                 output_tokens=output_tokens,
             )
 
-        logger.info("[agent] query complete (text response), cost=$%.4f", cost)
+        logger.info("[agent] query complete (text response)")
         return AgentResult(
             output={"success": True, "summary": text},
             input_tokens=input_tokens,

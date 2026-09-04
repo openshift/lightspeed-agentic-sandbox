@@ -21,7 +21,6 @@ class MockProvider(AgentProvider):
         self._events = events or [
             ResultEvent(
                 text='{"success": true, "summary": "mock result"}',
-                cost_usd=0.01,
                 input_tokens=100,
                 output_tokens=50,
             ),

@@ -73,7 +73,7 @@ belongs in unit tests.
   `reasoning_config.feature`). Anthropic Jobs therefore combine thinking with
   structured-output scenarios (MCP, skills, echo schemas). The DeepAgents adapter
   MUST use two-phase structured output when `output_schema` is set (see
-  [provider-contract.md](provider-contract.md) rule 23): agent pass with optional
+  [provider-contract.md](provider-contract.md) rule 22): agent pass with optional
   thinking, then a tool-free shape pass without thinking.
 
 ## Relationship to behavioral specs

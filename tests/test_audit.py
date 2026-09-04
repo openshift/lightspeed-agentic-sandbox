@@ -116,7 +116,7 @@ class TestToolSpanLifecycle:
         al = _make_logger()
         al.process_event(ToolCallEvent(name="bash", input="ls", call_id="c1"))
         al.process_event(ToolCallEvent(name="cat", input="f", call_id="c2"))
-        al.complete(success=True, input_tokens=0, output_tokens=0, cost_usd=0)
+        al.complete(success=True, input_tokens=0, output_tokens=0)
         assert len(al._tool_spans) == 0
         spans = span_exporter.get_finished_spans()
         assert len(spans) == 2
@@ -176,33 +176,17 @@ class TestComplete:
             input_tokens=100,
             output_tokens=50,
             reasoning_tokens=10,
-            cost_usd=0.01,
             span=span,
         )
         span.set_attribute.assert_any_call("gen_ai.usage.input_tokens", 100)
         span.set_attribute.assert_any_call("gen_ai.usage.output_tokens", 50)
         span.set_attribute.assert_any_call("gen_ai.usage.reasoning_tokens", 10)
 
-    def test_sets_cost_attribute(self, span_exporter) -> None:  # noqa: ARG002
-        al = _make_logger()
-        span = MagicMock()
-        span.is_recording.return_value = True
-        al.complete(success=True, input_tokens=10, output_tokens=5, cost_usd=0.05, span=span)
-        span.set_attribute.assert_any_call("lightspeed.usage.cost", 0.05)
-
-    def test_no_cost_attr_when_zero(self, span_exporter) -> None:  # noqa: ARG002
-        al = _make_logger()
-        span = MagicMock()
-        span.is_recording.return_value = True
-        al.complete(success=True, input_tokens=10, output_tokens=5, cost_usd=0, span=span)
-        set_calls = {c[0][0] for c in span.set_attribute.call_args_list}
-        assert "lightspeed.usage.cost" not in set_calls
-
     def test_no_reasoning_attr_when_zero(self, span_exporter) -> None:  # noqa: ARG002
         al = _make_logger()
         span = MagicMock()
         span.is_recording.return_value = True
-        al.complete(success=True, input_tokens=10, output_tokens=5, cost_usd=0, span=span)
+        al.complete(success=True, input_tokens=10, output_tokens=5, span=span)
         set_calls = {c[0][0] for c in span.set_attribute.call_args_list}
         assert "gen_ai.usage.reasoning_tokens" not in set_calls
 
@@ -210,12 +194,12 @@ class TestComplete:
         al = _make_logger()
         span = MagicMock()
         span.is_recording.return_value = True
-        al.complete(success=False, input_tokens=0, output_tokens=0, cost_usd=0, span=span)
+        al.complete(success=False, input_tokens=0, output_tokens=0, span=span)
         span.set_status.assert_called_once()
 
     def test_no_crash_without_span(self) -> None:
         al = _make_logger()
-        al.complete(success=True, input_tokens=0, output_tokens=0, cost_usd=0)
+        al.complete(success=True, input_tokens=0, output_tokens=0)
 
 
 class TestNoJsonEmission:
@@ -223,7 +207,7 @@ class TestNoJsonEmission:
         al = _make_logger()
         al.process_event(ToolCallEvent(name="bash", input="ls"))
         al.process_event(ToolResultEvent(output="file.txt"))
-        al.complete(success=True, input_tokens=100, output_tokens=50, cost_usd=0.01)
+        al.complete(success=True, input_tokens=100, output_tokens=50)
         out = capsys.readouterr().out
         assert "audit.agent" not in out
 

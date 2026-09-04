@@ -32,7 +32,6 @@ def _base_options(**overrides: Any) -> ProviderQueryOptions:
         "system_prompt": "you are helpful",
         "model": "claude-sonnet-4-6",
         "max_turns": 10,
-        "max_budget_usd": 1.0,
         "allowed_tools": ["Bash", "Read"],
         "cwd": _TEST_WORKSPACE,
     }
@@ -278,7 +277,6 @@ class TestEventMapping:
         assert result_events[0].text == "Hello world"
         assert result_events[0].input_tokens == 10
         assert result_events[0].output_tokens == 5
-        assert result_events[0].cost_usd == 0
 
     @pytest.mark.asyncio
     async def test_text_accumulates_across_chunks(self, monkeypatch: pytest.MonkeyPatch) -> None:

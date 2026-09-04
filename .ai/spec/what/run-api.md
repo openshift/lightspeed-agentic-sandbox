@@ -36,9 +36,7 @@ The sandbox runs as a one-shot batch process (OLS-3066). There is **no HTTP serv
 
 9. **[PLANNED: OLS-3743] Agent timeout.** `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` is a required positive integer supplied by the operator. It limits the complete `run_agent_query()` invocation, including model calls, tools, MCP calls, and processing across turns; it is not an individual LLM request timeout. Missing, zero, negative, or malformed values are sandbox configuration failures (rule 23). On timeout, `run_agent_query()` returns `success=false` with an actionable summary and a structured timeout classification for Result publishing; the publisher MUST NOT infer timeout from summary text. `LIGHTSPEED_TIMEOUT_MS` and its sandbox-owned 300-second default are removed.
 
-10. **Per-run spend ceiling.** A fixed USD budget cap is passed into provider options; not configurable via input files.
-
-11. **Allowed tools.** The default allowed-tools list is passed into provider options; callers cannot override via input files (see `provider-contract.md`).
+10. **Allowed tools.** The default allowed-tools list is passed into provider options; callers cannot override via input files (see `provider-contract.md`).
 
 ### Context prefix formatting
 
