@@ -346,7 +346,6 @@ class OpenAIProvider(AgentProvider):
 
             yield ResultEvent(
                 text=stringify(result.final_output),
-                cost_usd=0,
                 input_tokens=usage.input_tokens,
                 output_tokens=usage.output_tokens,
                 reasoning_tokens=reasoning,

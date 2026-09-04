@@ -55,9 +55,8 @@ class EventLogger:
             case "result":
                 self._flush_thinking()
                 logger.info(
-                    "[provider:%s] result: cost=$%.4f, tokens=%d",
+                    "[provider:%s] result: tokens=%d",
                     self._phase,
-                    event.cost_usd,
                     event.input_tokens + event.output_tokens,
                 )
                 if event.text:

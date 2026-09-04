@@ -262,7 +262,6 @@ def _run_openai_provider(cwd: str):
                 system_prompt="you are a test agent",
                 model="gpt-4.1-mini",
                 max_turns=1,
-                max_budget_usd=0.0,
                 allowed_tools=[],
                 cwd=cwd,
             )

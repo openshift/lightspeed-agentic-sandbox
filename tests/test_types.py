@@ -44,9 +44,8 @@ def test_tool_result_event():
 
 
 def test_result_event():
-    e = ResultEvent(text="done", cost_usd=0.5, input_tokens=100, output_tokens=50)
+    e = ResultEvent(text="done", input_tokens=100, output_tokens=50)
     assert e.type == "result"
-    assert e.cost_usd == 0.5
     assert e.input_tokens == 100
 
 
@@ -82,7 +81,6 @@ def test_query_options_defaults():
         system_prompt="system",
         model="test-model",
         max_turns=10,
-        max_budget_usd=1.0,
         allowed_tools=["Bash"],
         cwd="/workspace",
     )

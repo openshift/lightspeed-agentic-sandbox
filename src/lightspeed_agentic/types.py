@@ -56,7 +56,6 @@ class ToolResultEvent:
 class ResultEvent:
     type: Literal["result"] = field(default="result", init=False)
     text: str = ""
-    cost_usd: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
     reasoning_tokens: int = 0
@@ -79,7 +78,6 @@ class ProviderQueryOptions:
     system_prompt: str
     model: str
     max_turns: int
-    max_budget_usd: float
     allowed_tools: list[str]
     cwd: str
     output_schema: dict[str, Any] | None = None

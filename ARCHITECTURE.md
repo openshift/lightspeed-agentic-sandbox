@@ -117,7 +117,7 @@ Result CR lifecycle uses the **`kubernetes` Python client** (`CustomObjectsApi`)
 
 ## Provider Adapter Design
 
-Each adapter is a thin wrapper. The SDK owns tool execution, skill discovery, and multi-turn orchestration. Adapters map SDK events to normalized `ProviderEvent` objects and extract cost/token usage.
+Each adapter is a thin wrapper. The SDK owns tool execution, skill discovery, and multi-turn orchestration. Adapters map SDK events to normalized `ProviderEvent` objects and extract token usage.
 
 | Provider | SDK | Structured Output | Skills | Tools |
 |---|---|---|---|---|

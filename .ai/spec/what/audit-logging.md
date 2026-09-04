@@ -48,7 +48,7 @@ Telemetry aligns with [OTel GenAI Semantic Conventions](https://github.com/open-
    - **Text output**: a `gen_ai.choice` event with a `gen_ai.completion` attribute containing the text content.
    - **Thinking/reasoning output**: a gen_ai.choice event with gen_ai.reasoning_content when the adapter emits thinking (DeepAgents, and Gemini/OpenAI when reasoning is configured per provider-contract.md). When the model emits both completion and thinking content, they MAY be combined into a single gen_ai.choice event with both attributes.
 
-8. There are no separate `audit.agent.started` or `audit.agent.completed` events. The data previously captured by those events (phase, model, provider, success/failure, total tokens, total cost) MUST be recorded as span attributes on the inference span instead.
+8. There are no separate `audit.agent.started` or `audit.agent.completed` events. The data previously captured by those events (phase, model, provider, success/failure, and total tokens) MUST be recorded as span attributes on the inference span instead.
 
 ### Content Capture Policy
 

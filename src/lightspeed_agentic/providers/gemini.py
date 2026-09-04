@@ -219,7 +219,6 @@ class GeminiProvider(AgentProvider):
 
         yield ResultEvent(
             text=result_text,
-            cost_usd=0,
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
             response_model="",

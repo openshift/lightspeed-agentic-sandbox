@@ -110,7 +110,6 @@ class AuditLogger:
         input_tokens: int,
         output_tokens: int,
         reasoning_tokens: int = 0,
-        cost_usd: float,
         response_model: str = "",
         span: Any = None,
     ) -> None:
@@ -133,8 +132,6 @@ class AuditLogger:
             span.set_attribute("gen_ai.usage.output_tokens", output_tokens)
             if reasoning_tokens:
                 span.set_attribute("gen_ai.usage.reasoning_tokens", reasoning_tokens)
-            if cost_usd:
-                span.set_attribute("lightspeed.usage.cost", cost_usd)
             if not success:
                 span.set_status(StatusCode.ERROR, "agent run failed")
 

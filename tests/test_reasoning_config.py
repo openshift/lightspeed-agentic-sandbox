@@ -17,7 +17,6 @@ def _base_options(**overrides) -> ProviderQueryOptions:
         "system_prompt": "test system",
         "model": "test-model",
         "max_turns": 10,
-        "max_budget_usd": 1.0,
         "allowed_tools": ["Bash"],
         "cwd": "/tmp/test",  # noqa: S108
     }
