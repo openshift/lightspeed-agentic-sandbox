@@ -7,9 +7,22 @@
 # Usage (from lightspeed-agentic-sandbox/):
 #   bash scripts/e2e-containers.sh                  # all three providers (sequential)
 #   bash scripts/e2e-containers.sh openai-agents                    # all e2e tests
-#   bash scripts/e2e-containers.sh openai-agents gpt-4.1-nano       # optional model override
-#   bash scripts/e2e-containers.sh openai-agents -- -k skills       # pytest args after --
-#   E2E_ARGS="-k skills" bash scripts/e2e-containers.sh openai-agents
+#   bash scripts/e2e-containers.sh openai-agents -k mcp             # pytest args (no --)
+#   OPENAI_MODEL=gpt-4o bash scripts/e2e-containers.sh openai-agents
+#
+# Model resolution (priority order):
+#   1. OPENAI_MODEL env var (for openai-agents)
+#   2. GEMINI_MODEL env var (for gemini-vertex-adk)
+#   3. ANTHROPIC_MODEL env var (for anthropic-vertex-deepagents)
+#   4. ANTHROPIC_BEDROCK_MODEL env var (for anthropic-bedrock-deepagents)
+#   5. Defaults from config.env (see _load_config_env_defaults)
+#
+# Custom LLM endpoint support (e.g., vLLM):
+#   export OPENAI_API_KEY="token"
+#   export OPENAI_MODEL="model-name"
+#   export OPENAI_BASE_URL="https://vllm.example.com/v1"
+#   bash scripts/e2e-containers.sh openai-agents -k mcp
+#   See docs/e2e-custom-llm-endpoints.md for details.
 #
 # Prerequisites:
 #   - oc + KUBECONFIG with permissions in E2E_NAMESPACE (default openshift-lightspeed)
@@ -204,6 +217,10 @@ _configure_batch_job_env() {
                 ;;
         esac
     fi
+
+    if [ -n "${OPENAI_BASE_URL:-}" ]; then
+        export OPENAI_BASE_URL="${OPENAI_BASE_URL}"
+    fi
 }
 
 _run_e2e_pytest() {
@@ -263,6 +280,7 @@ run_one() {
     echo "e2e: model LIGHTSPEED_MODEL=${LIGHTSPEED_MODEL:-} OPENAI_MODEL=${OPENAI_MODEL:-} ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-} GEMINI_MODEL=${GEMINI_MODEL:-}"
     echo "e2e: batch job env LIGHTSPEED_MCP_SERVERS=${LIGHTSPEED_MCP_SERVERS:-}"
     echo "e2e: batch job env LIGHTSPEED_REASONING_CONFIG=${LIGHTSPEED_REASONING_CONFIG:-}"
+    echo "e2e: batch job env OPENAI_BASE_URL=${OPENAI_BASE_URL:-}"
 
     export E2E_PROVIDER="${provider}"
     export CLAUDE_CODE_USE_VERTEX="${CLAUDE_CODE_USE_VERTEX:-}"
@@ -287,14 +305,29 @@ fi
 provider="$1"
 shift || true
 
+# Resolve model from environment variables only
+# Each provider has its own env var: OPENAI_MODEL, GEMINI_MODEL, ANTHROPIC_MODEL, ANTHROPIC_BEDROCK_MODEL
 model_override=""
-if [ $# -gt 0 ] && [ "$1" != "--" ]; then
-    model_override="$1"
-    shift || true
-fi
+case "${provider}" in
+    openai-agents)
+        model_override="${OPENAI_MODEL:-}"
+        ;;
+    gemini-vertex-adk)
+        model_override="${GEMINI_MODEL:-}"
+        ;;
+    anthropic-vertex-deepagents)
+        model_override="${ANTHROPIC_MODEL:-}"
+        ;;
+    anthropic-bedrock-deepagents)
+        model_override="${ANTHROPIC_BEDROCK_MODEL:-}"
+        ;;
+esac
 
+# Parse remaining arguments as pytest args (optionally after --)
 if [ "${1:-}" = "--" ]; then
     shift || true
+    export E2E_ARGS="$*"
+else
     export E2E_ARGS="$*"
 fi
 

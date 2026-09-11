@@ -119,7 +119,7 @@ scripts/e2e-install-openai-creds.sh
 
 ```bash
 make e2e openai-agents
-# or: bash scripts/e2e-containers.sh openai-agents [model-override]
+# or: bash scripts/e2e-containers.sh openai-agents
 # matrix ids: anthropic-vertex-deepagents | anthropic-bedrock-deepagents | gemini-vertex-adk | openai-agents
 # pytest filter: bash scripts/e2e-containers.sh openai-agents -- -k reasoning
 ```
@@ -128,6 +128,31 @@ Installs cluster fixtures (unless `E2E_SKIP_FIXTURES=1`), syncs LLM credential
 Secrets, exports provider/model/MCP/reasoning env, runs pytest. Each scenario creates
 a labeled batch Job in `E2E_NAMESPACE` (default `openshift-lightspeed`) using
 `SANDBOX_IMAGE`.
+
+#### Custom LLM endpoints (vLLM, local services, etc.)
+
+The harness supports custom OpenAI-compatible endpoints (vLLM, local deployments,
+internal services) via environment variables. No positional model arguments needed.
+
+```bash
+# Example: vLLM endpoint
+export OPENAI_API_KEY="your-token"
+export OPENAI_MODEL="your-model-name"
+export OPENAI_BASE_URL="https://vllm.example.com/v1"
+
+make e2e openai-agents -k mcp
+```
+
+**How it works:**
+- `suite_setup.py._session_job_env()` forwards `OPENAI_BASE_URL` to batch Jobs
+- `e2e-containers.sh` reads model from provider-specific env vars (`OPENAI_MODEL`, `GEMINI_MODEL`, etc.)
+- `e2e-install-openai-creds.sh` includes `OPENAI_MODEL` and `OPENAI_BASE_URL` as secret keys
+- Batch pods mount the secret via `envFrom`, exposing all keys as environment variables
+- OpenAI client uses `OPENAI_BASE_URL` if set; defaults to `api.openai.com` otherwise
+
+**Backward compatible:** existing OpenAI tests work unchanged. Custom endpoint
+support is opt-in via env vars. See the environment exports table below for the
+complete list of model/endpoint variables by provider.
 
 ### Environment exports
 
@@ -141,6 +166,11 @@ a labeled batch Job in `E2E_NAMESPACE` (default `openshift-lightspeed`) using
 | `LIGHTSPEED_REASONING_CONFIG` | `e2e-containers.sh` | Provider-specific reasoning defaults on every Job |
 | `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` | `e2e-containers.sh` [PLANNED: OLS-3743] | Required whole-agent timeout for every Job |
 | `LIGHTSPEED_AGENT_MAX_TURNS` | `e2e-containers.sh` [PLANNED: OLS-3743] | Required provider iteration cap for every Job |
+| `OPENAI_MODEL` | user | Model name for openai-agents (read by `e2e-containers.sh`, synced to secret) |
+| `OPENAI_BASE_URL` | user | Custom OpenAI-compatible endpoint (optional; defaults to `api.openai.com`) |
+| `GEMINI_MODEL` | user | Model name for gemini-vertex-adk |
+| `ANTHROPIC_MODEL` | user | Model name for anthropic-vertex-deepagents |
+| `ANTHROPIC_BEDROCK_MODEL` | user | Model name for anthropic-bedrock-deepagents |
 | `E2E_ARGS` | user / `--` passthrough | Extra pytest args (e.g. `-v`, `-k`, single file) |
 | `E2E_SKIP_FIXTURES` | user | Skip `e2e-install-fixtures.sh` when fixtures already present |
 | `ARTIFACT_DIR` | CI | Pytest tee to `e2e-<provider>-pytest.log` and summary file |
