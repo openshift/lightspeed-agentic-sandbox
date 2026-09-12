@@ -179,7 +179,7 @@ Feature files and unit tests are also listed under each behavioral spec. Summary
 | [analysis_output.feature](../../../tests/e2e/features/analysis_output.feature) | run-api, provider-contract | find-token skill, operator analysis + component tokens |
 | [mcp.feature](../../../tests/e2e/features/mcp.feature) | provider-contract, configuration | MCP wiring, tool invoke, MCP tool failure envelope |
 | [reasoning_config.feature](../../../tests/e2e/features/reasoning_config.feature) | provider-contract, configuration | Reasoning config passthrough |
-| [troubleshooting.feature](../../../tests/e2e/features/troubleshooting.feature) | e2e-testing (troubleshooting) | Cluster-level troubleshooting scenario validation (OLS-3739) |
+| `troubleshooting.feature` [PLANNED: OLS-3739] | e2e-testing (troubleshooting) | Cluster-level troubleshooting scenario validation — feature file not yet implemented (see Troubleshooting section) |
 
 Unit tests: [test_run_agent.py](../../../tests/test_run_agent.py),
 [test_batch.py](../../../tests/test_batch.py),
@@ -195,6 +195,15 @@ Cluster-level BDD tests that exercise the full AgenticRun lifecycle against
 real OpenShift clusters with injected broken states. These tests verify the
 **quality and correctness of sandbox output** — phase transition testing is the
 operator's responsibility (see lightspeed-agentic-operator specs).
+
+> **Implementation status (2026-08-31).** Landed: the scenario scripts under
+> `scenarios/troubleshooting/` (11 scenario dirs with `setup.sh`/`cleanup.sh`
+> plus `scenario_metadata.yaml`) and the cluster conftest fixtures
+> `k8s_client`, `k8s_core_client`, `scenario_cleanup` (`tests/e2e/conftest.py`).
+> [PLANNED: OLS-3739] Not yet implemented — the `troubleshooting.feature` file,
+> its BDD step/test module, the LLM judge module, and the `make e2e-cluster` /
+> `scripts/e2e-cluster.sh` run mode. The subsections below describe the target
+> design for those pieces; treat them as planned until the artifacts exist.
 
 ### Scope
 
