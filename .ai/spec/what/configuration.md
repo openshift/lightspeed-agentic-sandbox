@@ -87,6 +87,31 @@ Cross-references: how options are consumed in code → `how/provider-architectur
 
 11. **OpenAI base URL.** `OPENAI_BASE_URL` overrides the OpenAI client base URL when set. Mapped from `LIGHTSPEED_PROVIDER_URL` by the configuration mapping for `openai` and `vertex`/`OpenAI` providers.
 
+11a. **OpenAI-compatible endpoints (vLLM, local services, RHOAI, RHEL AI).** ([OLS-3053]) When `OPENAI_BASE_URL` is set to a non-api.openai.com URL (e.g. vLLM, local service, RHOAI/RHEL AI deployment), the OpenAI provider adapts endpoint selection and configuration:
+    - **Endpoint selection.** Native OpenAI (api.openai.com or unset) uses `OpenAIResponsesModel` (streaming via `/v1/responses`). Non-native endpoints use `OpenAIChatCompletionsModel` (streaming via `/v1/chat/completions`) to avoid endpoint-specific bugs and ensure compatibility with vLLM and similar strict OpenAI-compatible implementations.
+    - **Structured output.** For non-native endpoints, strict JSON-schema mode is disabled; the model produces plain JSON conforming to the schema without OpenAI's strict-mode enforcement at the first token. Native OpenAI continues to use strict mode for schema compliance guarantees.
+    - **Configuration via operator.** The LLMProvider CRD `url` field maps to `LIGHTSPEED_PROVIDER_URL` (set by the operator), which the sandbox configuration mapping converts to `OPENAI_BASE_URL` (see `provider-contract.md` rule 29). Credentials are mounted from the credentials secret referenced in the LLMProvider, with keys `api_key` (mapped to `OPENAI_API_KEY`) and optional `model` and `base_url` overrides (mapped to `OPENAI_MODEL`, `OPENAI_BASE_URL`). For vLLM and local deployments that do not require authentication, the secret may contain a placeholder value (e.g. `api_key: "EMPTY"` or a dummy token).
+    - **Model support and caveats.** vLLM and other OpenAI-compatible endpoints support tool calling and streaming. Model variants (gpt-3.5-turbo, gpt-4, gpt-4o, or open-weights equivalents) must support function calling to participate in agentic flows. Models without function-calling support will fail at runtime when tools are available. Reasoning configuration (`LIGHTSPEED_REASONING_CONFIG`) is supported on compatible models but may not be available on all vLLM-served models; unsupported reasoning configs fail at API invocation time, not at startup. Structured output validation happens at API time; if a model does not support the requested schema format or produces invalid JSON, the agent fails with a clear error message.
+    - **Example: RHOAI vLLM endpoint.** When an organization deploys a vLLM instance on RHOAI serving a tool-capable model (e.g. Granite 3.x, Llama 2 70B), the secret contains the endpoint URL and model, and the LLMProvider references it:
+        ```yaml
+        apiVersion: agentic.openshift.io/v1alpha1
+        kind: LLMProvider
+        metadata:
+          name: rhoai-vllm
+        spec:
+          type: OpenAI
+          openAI:
+            credentialsSecret:
+              name: rhoai-vllm-creds  # Secret with OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
+        ```
+        The credentials secret contains:
+        ```
+        OPENAI_API_KEY: <token-or-placeholder>
+        OPENAI_BASE_URL: https://<rhoai-vllm-host>/v1
+        OPENAI_MODEL: granite-3-8b-instruct  # or other tool-capable model
+        ```
+        The sandbox resolves these env vars from the secret, detects `OPENAI_BASE_URL` is non-native, and uses `OpenAIChatCompletionsModel` for request/response handling.
+
 12. **Anthropic via Vertex.** When `LIGHTSPEED_PROVIDER=vertex` and `LIGHTSPEED_MODEL_PROVIDER=anthropic`, the configuration mapping resolves to SDK name `deepagents` and sets Vertex env vars for `ChatAnthropicVertex`.
 
 13. **[PLANNED: OLS-3743] Maximum turns.** `LIGHTSPEED_AGENT_MAX_TURNS` is required, parsed as an integer from 1 through 500, and passed to `ProviderQueryOptions.max_turns`. Missing, out-of-range, or malformed values fail sandbox startup. The operator resolves omitted `Agent.spec.maxTurns` to 200; the sandbox does not maintain a second default.

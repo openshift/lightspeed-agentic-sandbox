@@ -175,7 +175,7 @@ def load_batch_e2e_config() -> BatchE2EConfig:
 def _session_job_env() -> dict[str, str]:
     """Env vars forwarded from the pytest host onto every batch Job."""
     job_env: dict[str, str] = {}
-    for key in ("LIGHTSPEED_MCP_SERVERS", "LIGHTSPEED_REASONING_CONFIG"):
+    for key in ("LIGHTSPEED_MCP_SERVERS", "LIGHTSPEED_REASONING_CONFIG", "OPENAI_BASE_URL"):
         raw = os.environ.get(key, "").strip()
         if raw:
             job_env[key] = raw

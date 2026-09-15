@@ -48,10 +48,36 @@ chmod 600 "${tmp_key}"
 trap 'rm -f "${tmp_key}"' EXIT
 printf '%s' "${KEY}" > "${tmp_key}"
 
-oc create secret generic "${SECRET_NAME}" \
-    --namespace="${E2E_NAMESPACE}" \
-    --from-file=OPENAI_API_KEY="${tmp_key}" \
-    --dry-run=client -o yaml | oc apply -f -
+# Build oc create secret command with OPENAI_API_KEY and optional OPENAI_MODEL and OPENAI_BASE_URL
+cmd_args=(
+    "create" "secret" "generic" "${SECRET_NAME}"
+    "--namespace=${E2E_NAMESPACE}"
+    "--from-file=OPENAI_API_KEY=${tmp_key}"
+)
+
+# Add OPENAI_MODEL if set
+if [ -n "${OPENAI_MODEL:-}" ]; then
+    tmp_model=$(mktemp)
+    chmod 600 "${tmp_model}"
+    printf '%s' "${OPENAI_MODEL}" > "${tmp_model}"
+    trap 'rm -f "${tmp_key}" "${tmp_model}"' EXIT
+    cmd_args+=("--from-file=OPENAI_MODEL=${tmp_model}")
+fi
+
+# Add OPENAI_BASE_URL if set
+if [ -n "${OPENAI_BASE_URL:-}" ]; then
+    tmp_url=$(mktemp)
+    chmod 600 "${tmp_url}"
+    printf '%s' "${OPENAI_BASE_URL}" > "${tmp_url}"
+    if [ -n "${OPENAI_MODEL:-}" ]; then
+        trap 'rm -f "${tmp_key}" "${tmp_model}" "${tmp_url}"' EXIT
+    else
+        trap 'rm -f "${tmp_key}" "${tmp_url}"' EXIT
+    fi
+    cmd_args+=("--from-file=OPENAI_BASE_URL=${tmp_url}")
+fi
+
+oc "${cmd_args[@]}" --dry-run=client -o yaml | oc apply -f -
 
 echo "Created/updated Secret ${SECRET_NAME} in ${E2E_NAMESPACE}"
 echo
