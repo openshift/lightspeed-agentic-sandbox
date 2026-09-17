@@ -6,8 +6,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-import pytest
-
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "gen-build-deps.py"
 _spec = importlib.util.spec_from_file_location("gen_build_deps", _SCRIPT)
 assert _spec is not None
