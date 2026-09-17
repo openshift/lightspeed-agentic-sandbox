@@ -176,18 +176,19 @@ def _parse_compiled(output: str) -> dict[str, str]:
 def _build_replace_pins(
     exact_pins: dict[str, set[str]],
     resolved: dict[str, str],
-) -> dict[str, str]:
-    """Map normalized names to exact pins that differ from unified resolution."""
-    replace_pins: dict[str, str] = {}
+) -> dict[str, list[str]]:
+    """Map normalized names to exact pins that differ from unified resolution.
+
+    Multiple exact pins are valid (e.g. two packages requiring different
+    hatchling==X.Y.Z).  Cachi2 prefetches all listed versions independently,
+    so we emit every pin that differs from the resolved version.
+    """
+    replace_pins: dict[str, list[str]] = {}
     for dep_norm, versions in sorted(exact_pins.items()):
         resolved_ver = resolved.get(dep_norm)
-        replacements = versions - {resolved_ver}
-        if len(replacements) > 1:
-            raise RuntimeError(
-                f"conflicting exact build pins for {dep_norm}: {sorted(replacements)}"
-            )
+        replacements = sorted(versions - {resolved_ver})
         if replacements:
-            replace_pins[dep_norm] = replacements.pop()
+            replace_pins[dep_norm] = replacements
     return replace_pins
 
 
@@ -297,12 +298,13 @@ def main() -> None:
     # the unified resolution — replace conflicting lines instead of appending
     # duplicates (Cachi2 treats duplicate package pins as unsatisfiable).
     replace_pins = _build_replace_pins(exact_pins, resolved)
-    for dep_norm, version in sorted(replace_pins.items()):
-        print(
-            f"  extra pin: {dep_norm}=={version} "
-            f"(resolved {resolved.get(dep_norm)}, also need {version})",
-            file=sys.stderr,
-        )
+    for dep_norm, versions in sorted(replace_pins.items()):
+        for version in versions:
+            print(
+                f"  extra pin: {dep_norm}=={version} "
+                f"(resolved {resolved.get(dep_norm)}, also need {version})",
+                file=sys.stderr,
+            )
 
     if replace_pins:
         kept_lines: list[str] = []
@@ -314,8 +316,9 @@ def main() -> None:
         final_output = "\n".join(kept_lines)
         if final_output:
             final_output += "\n"
-        for dep_norm, version in sorted(replace_pins.items()):
-            final_output += f"{dep_norm}=={version}\n"
+        for dep_norm, versions in sorted(replace_pins.items()):
+            for version in versions:
+                final_output += f"{dep_norm}=={version}\n"
     else:
         final_output = compiled_output
 

@@ -7,6 +7,7 @@
 # Pin pydantic to 2.13.1 which matches pydantic-core 2.46.1 exactly.
 pydantic==2.13.1
 
-# RHOAI's newest openai wheel is 2.41.1, but openai-agents>=0.18.2 imports
-# PromptCacheOptions (added in openai>=2.45.0). Force the PyPI-resolved pin.
-openai==2.48.0
+# openai 3.x switched transport from httpx to httpx2; RHOAI does not carry
+# 3.x wheels yet.  Force the PyPI-resolved pin so sdist prefetch picks up
+# the correct version and its httpx2 transitive deps.
+openai==3.14.1

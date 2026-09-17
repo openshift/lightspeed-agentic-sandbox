@@ -12,6 +12,12 @@ WHEEL_PYPI_HASH_FILE=".konflux/requirements.hashes.wheel.pypi.txt"
 EXPECTED_MISSING=(
     # Windows-only — no linux wheels; omitted from Konflux prefetch hash files
     pywin32
+    # emscripten-only (sys_platform == 'emscripten'); not needed for Linux builds
+    httpx2-jsfetch
+    # Pulled via google-api-core[grpc] extra in uv.lock; the RHOAI-constrained
+    # pip-compile resolution resolves grpcio-status through the RHOAI grpcio
+    # version chain which does not surface grpcio-status as a separate package.
+    grpcio-status
 )
 
 log() { echo "==> $*"; }

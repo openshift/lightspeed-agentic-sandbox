@@ -20,7 +20,7 @@ _spec.loader.exec_module(_gen_build_deps)
 def test_build_replace_pins_single_replacement() -> None:
     pins = {"hatchling": {"1.26.3", "1.32.0"}}
     resolved = {"hatchling": "1.32.0"}
-    assert _gen_build_deps._build_replace_pins(pins, resolved) == {"hatchling": "1.26.3"}
+    assert _gen_build_deps._build_replace_pins(pins, resolved) == {"hatchling": ["1.26.3"]}
 
 
 def test_build_replace_pins_no_replacement_when_matches_resolution() -> None:
@@ -29,8 +29,8 @@ def test_build_replace_pins_no_replacement_when_matches_resolution() -> None:
     assert _gen_build_deps._build_replace_pins(pins, resolved) == {}
 
 
-def test_build_replace_pins_conflicting_versions_raise() -> None:
+def test_build_replace_pins_multiple_versions() -> None:
     pins = {"hatchling": {"1.26.3", "1.27.0"}}
     resolved = {"hatchling": "1.32.0"}
-    with pytest.raises(RuntimeError, match="conflicting exact build pins for hatchling"):
-        _gen_build_deps._build_replace_pins(pins, resolved)
+    result = _gen_build_deps._build_replace_pins(pins, resolved)
+    assert result == {"hatchling": ["1.26.3", "1.27.0"]}
