@@ -2,7 +2,7 @@
 
 Audience: AI agents (Claude). Precision over narrative.
 
-Cross-references: provider behavior and events → `provider-contract.md`. Env defaults → `configuration.md`. Result CR publishing → `publish_results/` in `how/project-structure.md`.
+Cross-references: provider behavior and events → `provider-contract.md`. Env defaults → `configuration.md`. Result CR publishing → `publish_results/` in `how/project-structure.md`. Product trace content → `data-collection.md`.
 
 The sandbox runs as a one-shot batch process (OLS-3066). There is **no HTTP server** — no FastAPI routes, no `/health` or `/ready` probes, no inbound connections.
 
@@ -86,9 +86,13 @@ The agent returns structured JSON via `run_agent_query()` (formerly HTTP `RunRes
 
 ### Observability
 
-26. **Tracing.** When `LIGHTSPEED_AUDIT_ENABLED=true` or `OTEL_EXPORTER_OTLP_ENDPOINT` is set, `batch.main()` calls `init_tracer()` / `shutdown_tracer()` around the agent run. When both are unset, OTEL providers are not initialized (no exporters, no `LoggingHandler`). `LIGHTSPEED_AGENTICRUN_UID` and `LIGHTSPEED_AGENTICRUN_STEP` stamp spans and bridged OTLP logs when OTEL is active (see `audit-logging.md`). When the operator sets W3C `TRACEPARENT` on the pod, `batch.main()` passes it to `run_agent_query()` so the inference span is a child of the operator phase span. When `TRACEPARENT` is unset, the sandbox generates a new trace ID (graceful degradation).
+26. **Tracing.** When `LIGHTSPEED_AUDIT_ENABLED=true`, `OTEL_EXPORTER_OTLP_ENDPOINT` is set, or `LIGHTSPEED_PRODUCT_OTLP_ENDPOINT` is set, `batch.main()` calls `init_tracer()` / `shutdown_tracer()` around the agent run. When all three are unset, OTEL providers are not initialized (no exporters, no `LoggingHandler`). `LIGHTSPEED_AGENTICRUN_UID` and `LIGHTSPEED_AGENTICRUN_STEP` stamp spans and bridged OTLP logs when OTEL is active (see `audit-logging.md`). When the operator sets W3C `TRACEPARENT` on the pod, `batch.main()` passes it to `run_agent_query()` so the inference span is a child of the operator phase span. When `TRACEPARENT` is unset, the sandbox generates a new trace ID (graceful degradation).
 
 27. **Metrics.** Prometheus histograms (`metrics.py`) are recorded in-process during `run_agent_query()` for unit-test verification. The batch entrypoint MUST NOT expose `/metrics` and MUST NOT push or export histograms at shutdown (one-shot pods; use OTLP traces for operational token/duration signals — see `audit-logging.md` rule 19).
+
+### Agentic content tracing
+
+28. [PLANNED: OLS-3569] `run_agent_query()` MUST apply `data-collection.md` when placing effective-input and terminal-output events around provider invocation. That spec is authoritative for the event catalog, full-fidelity content, ordering, correlation, and shared OTLP export; `provider-contract.md` owns adapter normalization and fallbacks.
 
 ## Configuration Surface
 

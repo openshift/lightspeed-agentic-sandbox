@@ -19,6 +19,7 @@ These specs define the behavioral rules and codebase navigation for the lightspe
 | [configuration.md](what/configuration.md) | Environment variables, provider selection, model resolution, container layout, build system |
 | [health-probes.md](what/health-probes.md) | Readiness checks at batch startup (R1); HTTP probes superseded |
 | [audit-logging.md](what/audit-logging.md) | OTel GenAI semantic conventions, span events for LLM calls and tool execution, compliance audit trail |
+| [data-collection.md](what/data-collection.md) | [PLANNED: OLS-3569] Sandbox production of full-fidelity, ordered agent-content trace events |
 | [e2e-testing.md](what/e2e-testing.md) | Batch cluster BDD harness: OpenShift Jobs, fixtures, live vs unit split |
 
 ### how/ — Architecture Specifications
@@ -47,6 +48,7 @@ AI agents. Content is optimized for precision and machine consumption.
 | Navigate the codebase | `how/project-structure.md` |
 | Understand readiness checks | `what/health-probes.md` |
 | Understand audit logging | `what/audit-logging.md` |
+| Understand sandbox Agentic content traces | `what/data-collection.md` |
 | Understand E2E testing | `what/e2e-testing.md` |
 | Run live cluster BDD | `what/e2e-testing.md` + `make e2e` |
 
@@ -60,6 +62,7 @@ AI agents. Content is optimized for precision and machine consumption.
 | `what/configuration.md` | `how/provider-architecture.md` (container build, implementation notes) |
 | `what/health-probes.md` | `how/project-structure.md` (readiness.py) |
 | `what/audit-logging.md` | `how/provider-architecture.md` (observability integration) |
+| `what/data-collection.md` | `how/provider-architecture.md` (provider event normalization and observability integration) |
 
 ## Conventions
 
