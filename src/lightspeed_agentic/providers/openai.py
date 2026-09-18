@@ -35,6 +35,8 @@ else:
 
 from lightspeed_agentic.skills import has_skills
 from lightspeed_agentic.types import (
+    MAX_TOOL_RETURN_CHARS,
+    TOOL_RETURN_PREVIEW_CHARS,
     AgentProvider,
     ContentBlockStopEvent,
     ProviderEvent,
@@ -270,6 +272,7 @@ class OpenAIProvider(AgentProvider):
             RunItemStreamEvent,
             Runner,
         )
+        from agents.extensions import ToolOutputTrimmer
         from agents.items import ToolCallItem, ToolCallOutputItem
         from agents.run_config import RunConfig, SandboxRunConfig
         from agents.sandbox import SandboxAgent
@@ -398,6 +401,10 @@ class OpenAIProvider(AgentProvider):
             run_config = RunConfig(
                 sandbox=SandboxRunConfig(
                     client=UnixLocalSandboxClient(),
+                ),
+                call_model_input_filter=ToolOutputTrimmer(
+                    max_output_chars=MAX_TOOL_RETURN_CHARS,
+                    preview_chars=TOOL_RETURN_PREVIEW_CHARS,
                 ),
             )
 

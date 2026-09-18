@@ -16,6 +16,8 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from lightspeed_agentic.types import (
+    MAX_TOOL_RETURN_CHARS,
+    TOOL_RETURN_PREVIEW_CHARS,
     AgentProvider,
     ContentBlockStopEvent,
     ProviderEvent,
@@ -29,6 +31,26 @@ from lightspeed_agentic.types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _trim_tool_response(
+    tool: Any,
+    args: dict[str, Any],
+    tool_context: Any,
+    tool_response: Any,
+) -> Any:
+    """Replace oversized Gemini tool results with a bounded preview."""
+    _ = tool, args, tool_context
+    serialized = stringify(tool_response)
+    if len(serialized) <= MAX_TOOL_RETURN_CHARS:
+        return None
+
+    return {
+        "status": "truncated",
+        "preview": serialized[:TOOL_RETURN_PREVIEW_CHARS],
+        "original_size": len(serialized),
+        "message": "Tool output was truncated; request a narrower result if needed.",
+    }
 
 
 def _load_skills_toolset(skills_dir: str) -> Any:
@@ -132,6 +154,7 @@ class GeminiProvider(AgentProvider):
             "model": options.model,
             "instruction": options.system_prompt,
             "tools": tools,
+            "after_tool_callback": _trim_tool_response,
             "generate_content_config": types.GenerateContentConfig(**gen_content_kwargs),
         }
 
@@ -152,7 +175,10 @@ class GeminiProvider(AgentProvider):
             session_service=session_service,
         )
 
-        user_id = f"agent-{int(time.time())}"
+        try:
+            user_id = f"agent-{int(time.time())}"
+        except (OSError, OverflowError, ValueError):
+            user_id = "agent"
         session = await session_service.create_session(app_name="lightspeed", user_id=user_id)
 
         streaming_mode = StreamingMode.SSE if options.stream else StreamingMode.NONE

@@ -2,12 +2,32 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from lightspeed_agentic.providers.gemini import _load_skills_toolset
+from lightspeed_agentic.providers.gemini import (  # type: ignore[import-untyped]
+    _load_skills_toolset,
+    _trim_tool_response,
+)
+from lightspeed_agentic.types import (  # type: ignore[import-untyped]
+    MAX_TOOL_RETURN_CHARS,
+    TOOL_RETURN_PREVIEW_CHARS,
+)
 
 
-def test_load_skills_toolset_passes_code_executor(tmp_path) -> None:
+def test_trim_tool_response_keeps_bounded_result() -> None:
+    assert _trim_tool_response(None, {}, None, "small result") is None
+
+
+def test_trim_tool_response_returns_preview_for_oversized_result() -> None:
+    result = _trim_tool_response(None, {}, None, "x" * (MAX_TOOL_RETURN_CHARS + 1))
+
+    assert result["status"] == "truncated"
+    assert len(result["preview"]) == TOOL_RETURN_PREVIEW_CHARS
+    assert result["original_size"] == MAX_TOOL_RETURN_CHARS + 1
+
+
+def test_load_skills_toolset_passes_code_executor(tmp_path: Path) -> None:
     (tmp_path / "echo-token").mkdir()
     mock_skill = MagicMock()
     mock_executor = MagicMock()

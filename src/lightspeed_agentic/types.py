@@ -10,6 +10,8 @@ if TYPE_CHECKING:
     from lightspeed_agentic.mcp import ResolvedMCPServer
 
 DEFAULT_MODEL = "claude-opus-4-6"
+MAX_TOOL_RETURN_CHARS = 4_000
+TOOL_RETURN_PREVIEW_CHARS = 1_000
 
 
 def stringify(value: Any) -> str:

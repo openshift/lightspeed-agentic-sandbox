@@ -11,10 +11,11 @@ import logging
 import os
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from lightspeed_agentic.skills import has_skills
 from lightspeed_agentic.types import (
+    MAX_TOOL_RETURN_CHARS,
     AgentProvider,
     ContentBlockStopEvent,
     ProviderEvent,
@@ -247,7 +248,11 @@ class DeepAgentsProvider(AgentProvider):
         )
 
         chat_model = _resolve_model(options.model, options.reasoning_config)
-        backend = LocalShellBackend(root_dir=options.cwd, inherit_env=True)
+        backend = LocalShellBackend(
+            root_dir=options.cwd,
+            inherit_env=True,
+            max_output_bytes=MAX_TOOL_RETURN_CHARS,
+        )
 
         agent_kwargs: dict[str, Any] = {
             "model": chat_model,
@@ -300,7 +305,7 @@ class DeepAgentsProvider(AgentProvider):
         total_output_tokens = 0
         input_state = {"messages": [{"role": "user", "content": options.prompt}]}
 
-        async for msg, _stream_metadata in agent.astream(  # type: ignore[call-overload]
+        async for msg, _stream_metadata in cast(Any, agent).astream(
             input_state,
             config=stream_config,
             stream_mode="messages",

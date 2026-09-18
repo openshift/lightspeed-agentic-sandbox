@@ -218,8 +218,8 @@ async def _empty_stream() -> AsyncIterator[None]:
 def _run_openai_provider(cwd: str) -> Any:
     """Run OpenAIProvider.query() with mocked SDK internals.
 
-    Returns (events, mock_sandbox_agent_cls) so callers can inspect both the
-    emitted events and the kwargs passed to SandboxAgent.
+    Returns (events, mock_sandbox_agent_cls, mock_runner) so callers can inspect
+    the emitted events, SandboxAgent kwargs, and run configuration.
     """
     from lightspeed_agentic.providers.openai import OpenAIProvider
     from lightspeed_agentic.types import ProviderQueryOptions  # type: ignore[import-untyped]
@@ -230,10 +230,10 @@ def _run_openai_provider(cwd: str) -> Any:
     mock_result.context_wrapper.usage.input_tokens = 0
     mock_result.context_wrapper.usage.output_tokens = 0
 
-    async def _collect() -> tuple[list[Any], MagicMock]:
+    async def _collect() -> tuple[list[Any], MagicMock, MagicMock]:
         with (
+            patch("agents.Runner.run_streamed", return_value=mock_result) as mock_runner,
             patch("agents.sandbox.SandboxAgent", return_value=MagicMock()) as mock_cls,
-            patch("agents.Runner.run_streamed", return_value=mock_result),
             patch("agents.models.openai_responses.OpenAIResponsesModel"),
             patch("openai.AsyncOpenAI"),
         ):
@@ -247,9 +247,28 @@ def _run_openai_provider(cwd: str) -> Any:
                 cwd=cwd,
             )
             events = [e async for e in provider.query(options)]
-            return events, mock_cls
+            return events, mock_cls, mock_runner
 
     return _collect()
+
+
+@pytest.mark.asyncio
+async def test_tool_output_trimmer_uses_shared_limits(tmp_path: Path) -> None:
+    _, _, mock_runner = await _run_openai_provider(str(tmp_path))
+
+    from agents.extensions import ToolOutputTrimmer
+
+    from lightspeed_agentic.types import (
+        MAX_TOOL_RETURN_CHARS,
+        TOOL_RETURN_PREVIEW_CHARS,
+    )
+
+    run_config = mock_runner.call_args.kwargs["run_config"]
+    trimmer = run_config.call_model_input_filter
+
+    assert isinstance(trimmer, ToolOutputTrimmer)
+    assert trimmer.max_output_chars == MAX_TOOL_RETURN_CHARS
+    assert trimmer.preview_chars == TOOL_RETURN_PREVIEW_CHARS
 
 
 @pytest.mark.asyncio
@@ -318,7 +337,7 @@ async def test_skills_registered_when_skill_md_exists(
     (tmp_path / "my-skill").mkdir()
     (tmp_path / "my-skill" / "SKILL.md").write_text("# skill")
 
-    _, mock_cls = await _run_openai_provider(str(tmp_path))
+    _, mock_cls, _ = await _run_openai_provider(str(tmp_path))
 
     capabilities = mock_cls.call_args.kwargs["capabilities"]
 
@@ -337,7 +356,7 @@ async def test_skills_capability_omitted_when_no_skill_md(
     monkeypatch.delenv("E2E_OUTPUT_DIR", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
-    _, mock_cls = await _run_openai_provider(str(tmp_path))
+    _, mock_cls, _ = await _run_openai_provider(str(tmp_path))
 
     capabilities = mock_cls.call_args.kwargs["capabilities"]
 
