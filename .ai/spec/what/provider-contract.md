@@ -68,6 +68,9 @@ Cross-references: batch agent invocation → `run-api.md`. Env and build → `co
     - **Azure OpenAI** (`LIGHTSPEED_PROVIDER=azure`): the adapter MUST use the OpenAI SDK's built-in Azure support — construct the SDK's native `AsyncAzureOpenAI` client with the SDK's own Azure parameters (`azure_endpoint`, `api_version`, `azure_deployment`) and wrap it in `OpenAIChatCompletionsModel(openai_client=...)`. It MUST NOT point a plain `AsyncOpenAI` at an Azure base URL and MUST NOT hand-build the `Authorization` header. Authentication follows the mode resolved by `configuration.md` rule 9a: **Entra ID mode** passes the built-in `azure_ad_token_provider = get_bearer_token_provider(ClientSecretCredential(tenant_id, client_id, client_secret), "https://cognitiveservices.azure.com/.default")`; **API-key mode** passes the native `api_key`. Token minting and refresh are owned by the provider SDK per rule 38. This closes the OLS-3049 gap (config mapping landed; the Azure client-construction path did not) as part of OLS-3050.
 
     Provider SDK and `azure.identity` imports stay inside the method per the optional-extra import convention. `AsyncAzureOpenAI` and `azure_ad_token_provider` ship in the `openai` package (already present via `openai-agents`), but the Entra credential classes (`ClientSecretCredential`, `get_bearer_token_provider`) come from `azure-identity` — a new optional dependency added under the `openai` extra (see `how/provider-architecture.md`).
+30a. [PLANNED: OLS-3472] **OpenAI-compatible Gemma 4.** The OpenAI adapter MUST support Gemma 4 served by RHOAI/vLLM at a custom `OPENAI_BASE_URL`. It MUST pass the configured model identifier through unchanged and use the existing custom-endpoint structured-output path from rule 23 (strict OpenAI schema mode disabled). No Gemma-specific adapter behavior is permitted unless a separately specified incompatibility requires it.
+
+31. **[Removed]** *(Claude adapter was removed in OLS-3500; MCP for Anthropic models is now handled by the DeepAgents adapter — see rule 34.)*
 
 30. **[Removed]** *(Claude adapter was removed in OLS-3500; MCP for Anthropic models is now handled by the DeepAgents adapter — see rule 33.)*
 
@@ -138,6 +141,7 @@ Cross-references: batch agent invocation → `run-api.md`. Env and build → `co
 - The cross-repository real-model corpus and reporting requirements are owned by `openshift/ols/.ai/spec/what/tool-result-inspection.md`.
 - Live batch: [skills.feature](../../../tests/e2e/features/skills.feature), [structured_output.feature](../../../tests/e2e/features/structured_output.feature), [mcp.feature](../../../tests/e2e/features/mcp.feature), [reasoning_config.feature](../../../tests/e2e/features/reasoning_config.feature)
 - Harness helpers: [test_batch_e2e_helpers.py](../../../tests/test_batch_e2e_helpers.py) (no cluster)
+- [PLANNED: OLS-3472] Gemma 4 support assumes that the selected vLLM deployment exposes the OpenAI-compatible operations required by the existing adapter and product-e2e core scenarios.
 
 ## Planned Changes
 

@@ -73,6 +73,9 @@ Cross-references: how options are consumed in code → `how/provider-architectur
     - When neither a complete Entra ID set nor an API key is available, readiness MUST fail at startup with a descriptive error naming the missing credential set (see `health-probes.md`).
 
     Both modes MUST use the OpenAI SDK's built-in Azure support — the adapter constructs the SDK's native `AsyncAzureOpenAI` client (see `provider-contract.md` rule 29 and `how/provider-architecture.md`). In Entra ID mode, token minting and refresh are owned by the provider SDK's credential object (`ClientSecretCredential` via `azure_ad_token_provider`), per the short-lived-token principle in `provider-contract.md` rule 38; the sandbox performs no manual token caching. This mirrors the classic OLS service's Azure Entra ID behavior ([OLS-3050]); key names (`client_id`, `tenant_id`, `client_secret`, `apitoken`) match the classic credential-secret shape.
+10a. [PLANNED: OLS-3472] **Gemma 4 on RHOAI/vLLM.** A Gemma 4 model served by RHOAI/vLLM MUST use the existing `openai` provider path. `LIGHTSPEED_PROVIDER=openai`, `LIGHTSPEED_MODEL=<the identifier exposed by vLLM>`, and `LIGHTSPEED_PROVIDER_URL=<the cluster-internal OpenAI-compatible API URL>` MUST resolve to the existing OpenAI SDK adapter and `OPENAI_BASE_URL`. The sandbox MUST NOT require a Gemma-specific provider value or SDK adapter.
+
+11. **Anthropic via Vertex.** When `LIGHTSPEED_PROVIDER=vertex` and `LIGHTSPEED_MODEL_PROVIDER=anthropic`, the configuration mapping resolves to SDK name `deepagents` and sets Vertex env vars for `ChatAnthropicVertex`.
 
 9b. **AWS Bedrock credential resolution (static keys / STS assume-role).** For `LIGHTSPEED_PROVIDER=bedrock`, the sandbox resolves AWS credentials from the mounted files at `/var/run/secrets/llm-credentials/` (`aws_access_key_id`, `aws_secret_access_key`, and optional `role_arn`), matching the classic OLS service's IAM credential shape ([OLS-1895]). This does **not** change the existing Bedrock model path (Anthropic models via the `deepagents` SDK / `ChatBedrockConverse`); it governs credentials only.
 
@@ -124,6 +127,8 @@ Cross-references: how options are consumed in code → `how/provider-architectur
 16. **Python load path.** Runtime sets process environment so application source under `/opt/lightspeed/src` and installed site-packages are on `PYTHONPATH` as defined in the image.
 
 17. **Hermetic / Konflux build inputs.** Release images are built with network isolation after prefetch: per-architecture Python requirements files with hashes and RPM lockfile input. The generic binary artifacts lockfile may be empty when binaries are copied from other image stages (e.g. `oc`/`kubectl` from `ose-cli`). Regeneration of Python/RPM artifacts is via project automation commands (see `how/provider-architecture.md`).
+
+17a. [PLANNED: OLS-3472] **Disconnected runtime.** A released sandbox image running the Gemma 4/vLLM path MUST start and execute a batch step without downloading Python packages, model artifacts, tools, skills, or binaries from an external network. The model is remote to the sandbox and reachable at the cluster-internal URL; model preparation is the serving platform's responsibility.
 
 18. **Non-hermetic fallback.** When prefetch directories are absent, the container build recipe may fetch selected binaries from external URLs for developer builds.
 
@@ -197,6 +202,7 @@ Cross-references: how options are consumed in code → `how/provider-architectur
 - Input files and env vars carry query, schema, and context; provider name and model are environment-driven. [PLANNED: OLS-3743] Agent timeout and maximum turns are required environment values resolved by the operator, not sandbox defaults.
 - Optional Python extras gate which provider SDKs are installed in a given environment; the image recipe installs all extras.
 - Bedrock resolves to SDK name `deepagents` via `ChatAnthropicBedrock`. When Bedrock support for other model families is needed, a `modelProvider` field should be added to the `AWSBedrockConfig` CRD (similar to `googleCloudVertex.modelProvider`).
+- [PLANNED: OLS-3472] Gemma 4 compatibility is scoped to a vLLM OpenAI-compatible API. The sandbox does not install RHOAI, provision GPUs, or load model weights.
 
 ## Verification
 
