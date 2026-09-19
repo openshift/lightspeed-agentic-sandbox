@@ -12,6 +12,10 @@ WHEEL_PYPI_HASH_FILE=".konflux/requirements.hashes.wheel.pypi.txt"
 EXPECTED_MISSING=(
     # Windows-only — no linux wheels; omitted from Konflux prefetch hash files
     pywin32
+    # Emscripten-only dependency emitted by uv.lock; Konflux targets Linux
+    httpx2-jsfetch
+    # RHOAI-curated versions may omit this uv.lock transitive dependency
+    grpcio-status
 )
 
 log() { echo "==> $*"; }

@@ -95,7 +95,11 @@ Use this table to navigate from component → spec → executable tests:
 make install                           # create/update .venv with dev dependencies via uv
 make install-all                       # install all providers + dev + e2e extras
 make lock                              # refresh uv.lock after dependency changes
+make bump-deps                         # upgrade uv.lock + top-level requirements
+make konflux-requirements              # regenerate .konflux Python locks + Tekton lists
+make rpm-lockfile                      # regenerate .konflux/rpms.lock.yaml
 make test                              # unit tests only; mocked providers, no API calls
+make verify                            # hermetic, format, lint, and type checks
 make e2e openai-agents                 # live batch BDD on OpenShift (see e2e-testing.md)
 make lint                              # ruff check src/ tests/
 make format                            # ruff format + autofix
@@ -162,8 +166,6 @@ adapters or put path helpers in `tools.py`.
   providers and Kubernetes client — no live API calls.
 - `make e2e` runs live batch BDD on an OpenShift cluster (`scripts/e2e-containers.sh`);
   see [e2e-testing.md](.ai/spec/what/e2e-testing.md).
-- `make e2e` runs live batch BDD on an OpenShift cluster (`scripts/e2e-containers.sh`);
-  see [e2e-testing.md](.ai/spec/what/e2e-testing.md).
 - If you change e2e workspace fixtures or skills, verify batch mount paths in
   `tests/e2e/batch_runner.py` and `tests/e2e/skills_fixtures.py`.
 
@@ -179,26 +181,61 @@ starts, with no network access during the build itself.
 |---|---|---|
 | `requirements.x86_64.txt` | Python deps with hashes (x86_64) | `make requirements` |
 | `requirements.aarch64.txt` | Python deps with hashes (aarch64) | `make requirements` |
-| `requirements-build.txt` | Build-time deps for source distributions | `make requirements` |
-| `rpms.in.yaml` | System RPM package list | Edit manually |
-| `rpms.lock.yaml` | Resolved RPM lockfile | `make rpm-lockfile` |
-| `ubi.repo` | UBI 9 repo definitions for RPM resolution | Rarely changes |
+| `requirements-build.txt` | Top-level build-time deps for source distributions | `make requirements` |
+| `.konflux/requirements.hashes.*.txt` | RHOAI/PyPI runtime hashes consumed by Konflux | `make konflux-requirements` |
+| `.konflux/requirements.hermetic.txt` | Bootstrap packages from the RHOAI index | `make konflux-requirements` |
+| `.konflux/requirements-build.txt` | Konflux build-time deps for PyPI sdists | `make konflux-requirements` |
+| `.konflux/requirements.overrides.txt` | Deliberate RHOAI/PyPI compatibility pins | Edit deliberately; then run `make konflux-requirements` |
+| `.konflux/rpms.in.yaml` | System RPM package list for Konflux | Edit manually |
+| `.konflux/rpms.lock.yaml` | Resolved RPM lock consumed by Konflux | `make rpm-lockfile` |
+| `.konflux/redhat.repo` | Repository definitions for RPM resolution | Rarely changes |
 | `artifacts.lock.yaml` | Generic binary lockfile (may be empty; `oc`/`kubectl` come from image stages) | Edit manually when used |
+
+The repository-root `rpms.lock.yaml` is not the lockfile consumed by the
+current Konflux pipeline; `make rpm-lockfile` writes `.konflux/rpms.lock.yaml`.
+Do not update the root file as part of this workflow.
 
 ### Bumping dependencies
 
 ```bash
-make bump-deps          # upgrade uv.lock + regenerate requirements.{arch}.txt
-make rpm-lockfile       # regenerate rpms.lock.yaml (needs podman)
+make bump-deps
+make konflux-requirements
+make rpm-lockfile
+make verify
+make test
 ```
 
-After bumping, commit all changed lockfiles and requirements files together.
-The Konflux pipeline will prefetch the new versions on the next PR.
+`make bump-deps` upgrades `uv.lock`, regenerates the two platform-specific
+requirements files, and regenerates the top-level `requirements-build.txt`.
+`make konflux-requirements` separately resolves the RHOAI-first graph, writes
+the `.konflux` Python lockfiles, and patches the Tekton prefetch package lists.
+`make rpm-lockfile` requires Podman, `.konflux/redhat.repo`, and valid
+`ACTIVATION_KEY` and `ORG_ID` environment variables; optional registry
+authentication uses `REGISTRY_USERNAME` and `REGISTRY_PASSWORD`.
+
+The Konflux resolver invokes `pybuild-deps` through `uv run`. The current
+repository does not declare that tool or its compatible pip API versions;
+until that is fixed, prepare the environment explicitly:
+
+```bash
+uv pip install --python .venv/bin/python \
+  pybuild-deps==0.5.0 pip==24.0 pip-tools==7.5.0
+```
+
+`requirements-build.txt` may contain multiple exact versions of the same build
+backend (for example, Hatchling). This is intentional: each runtime sdist can
+declare its own exact PEP 517 build requirement, and Hermeto fetches every
+listed distribution for the isolated build environments. Do not deduplicate,
+replace, or resolve those exact pins as one shared installation.
+
+After bumping, commit all changed lockfiles, requirements files, and generated
+Tekton lists together. The Konflux pipeline will prefetch the new versions on
+the next PR.
 
 ### Adding a new system package
 
-1. Add the package name to `rpms.in.yaml`
-2. Run `make rpm-lockfile` to regenerate `rpms.lock.yaml`
+1. Add the package name to `.konflux/rpms.in.yaml`
+2. Run `make rpm-lockfile` to regenerate `.konflux/rpms.lock.yaml`
 3. Add the `dnf install` line to the appropriate section in `Containerfile`
 
 ### Adding a new external binary

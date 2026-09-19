@@ -173,22 +173,17 @@ def _parse_compiled(output: str) -> dict[str, str]:
     return pkgs
 
 
-def _build_replace_pins(
+def _extra_build_pins(
     exact_pins: dict[str, set[str]],
     resolved: dict[str, str],
-) -> dict[str, str]:
-    """Map normalized names to exact pins that differ from unified resolution."""
-    replace_pins: dict[str, str] = {}
+) -> list[str]:
+    """Return exact pins not covered by the unified build-dependency resolution."""
+    extra_pins: list[str] = []
     for dep_norm, versions in sorted(exact_pins.items()):
         resolved_ver = resolved.get(dep_norm)
-        replacements = versions - {resolved_ver}
-        if len(replacements) > 1:
-            raise RuntimeError(
-                f"conflicting exact build pins for {dep_norm}: {sorted(replacements)}"
-            )
-        if replacements:
-            replace_pins[dep_norm] = replacements.pop()
-    return replace_pins
+        for version in sorted(versions - {resolved_ver}):
+            extra_pins.append(f"{dep_norm}=={version}")
+    return extra_pins
 
 
 def main() -> None:
@@ -293,31 +288,24 @@ def main() -> None:
         resolved = _parse_compiled(compiled_output)
         all_known = set(runtime_pkgs.keys()) | set(resolved.keys())
 
-    # -- Phase 3: exact pins from sdist build-system.requires may disagree with
-    # the unified resolution — replace conflicting lines instead of appending
-    # duplicates (Cachi2 treats duplicate package pins as unsatisfiable).
-    replace_pins = _build_replace_pins(exact_pins, resolved)
-    for dep_norm, version in sorted(replace_pins.items()):
+    # -- Phase 3: preserve exact pins required by individual sdists -------------
+    # Different sdists can intentionally require different exact versions of the
+    # same build backend.  Hermeto fetches every line and pip resolves each
+    # PEP 517 build environment independently, so duplicate package names with
+    # different versions are valid and required here.
+    extra_pins = _extra_build_pins(exact_pins, resolved)
+    for pin in extra_pins:
+        dep_norm = pin.split("==", 1)[0]
         print(
-            f"  extra pin: {dep_norm}=={version} "
-            f"(resolved {resolved.get(dep_norm)}, also need {version})",
+            f"  extra pin: {pin} (resolved {resolved.get(dep_norm)}, required by an sdist)",
             file=sys.stderr,
         )
 
-    if replace_pins:
-        kept_lines: list[str] = []
-        for line in compiled_output.splitlines():
-            m = re.match(r"^([A-Za-z0-9][\w.-]*)==", line)
-            if m and _norm(m.group(1)) in replace_pins:
-                continue
-            kept_lines.append(line)
-        final_output = "\n".join(kept_lines)
-        if final_output:
+    final_output = compiled_output
+    if extra_pins:
+        if final_output and not final_output.endswith("\n"):
             final_output += "\n"
-        for dep_norm, version in sorted(replace_pins.items()):
-            final_output += f"{dep_norm}=={version}\n"
-    else:
-        final_output = compiled_output
+        final_output += "\n".join(extra_pins) + "\n"
 
     Path(output).write_text(HEADER + final_output)
     pkg_count = len(_parse_compiled(final_output))

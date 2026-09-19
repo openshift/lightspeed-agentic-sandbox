@@ -8,5 +8,6 @@
 pydantic==2.13.1
 
 # RHOAI's newest openai wheel is 2.41.1, but openai-agents>=0.18.2 imports
-# PromptCacheOptions (added in openai>=2.45.0). Force the PyPI-resolved pin.
-openai==2.48.0
+# PromptCacheOptions (added in openai>=2.45.0). Keep the PyPI pin aligned with
+# uv.lock so Konflux hashes include the same transitive dependencies.
+openai==3.14.1

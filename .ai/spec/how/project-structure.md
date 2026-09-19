@@ -37,7 +37,6 @@ The project uses optional extras to gate provider SDKs:
 | `openai` | `openai-agents` |
 | `all` | All three provider extras |
 | `dev` | All providers + test/lint tools |
-| `eval` | Eval-specific test dependencies |
 | `e2e` | BDD test dependencies |
 
 Runtime dependencies include `kubernetes` (Result CR publishing) and `prometheus-client` (metrics histograms). FastAPI and Uvicorn are **not** runtime dependencies.
