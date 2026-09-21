@@ -20,6 +20,10 @@ attrs==26.1.0 \
     --hash=sha256:7dbf34c586f6613ef2729b87c361c53883f5c4be5e18e4e4e12bc9f963c13188
 authlib==1.7.2 \
     --hash=sha256:c888b08e47a67a71c41b4c10faf9cffecc699f226e768017fd48b6623e9ac1db
+azure-core==1.41.0 \
+    --hash=sha256:9de3480f266f6b8ceb6af93f0ffcdebc65f4f996f634e07b02306131102d77ff
+azure-identity==1.25.3 \
+    --hash=sha256:80bea9a8e0287d69b770d0d840c57ce27a115a544985dab269c20b4f8db6f892
 boto3==1.43.28 \
     --hash=sha256:5034bbe6131912887832a1abe79db02435d410cb87e65a510e0b914df3f3ae9f
 botocore==1.43.28 \
@@ -133,6 +137,10 @@ langsmith==0.8.15 \
     --hash=sha256:4abfd4e8fffa861a341cce050a85bfaff336a55ed79f451c496bfa9ec1ad8ddc
 mcp==1.28.1 \
     --hash=sha256:174c5665bf0f1155654bb74a9bd917db660ad66fee32b0e8606d35149e6476c2
+msal==1.37.0 \
+    --hash=sha256:0b1b3032a137904a7bc6696c4b3389cf76892bdc4a38002ef9e02f5a86105482
+msal-extensions==1.3.1 \
+    --hash=sha256:d4a6b6115008b68ad4fdf846a90ff7f2715beb7bfddfc5d7345bc16e1c8daaef
 multidict==6.7.1 \
     --hash=sha256:10baf21a3391c03a4064c51e1bd4929de589f86f3808744f4aeda5a88f39a345 \
     --hash=sha256:913435ce2a574e3a9d9b360051667fd45dcc9bf618daa700a5782bf4209b31f8

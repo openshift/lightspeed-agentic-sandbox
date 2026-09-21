@@ -11,6 +11,7 @@ import dataclasses
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,8 @@ class ResolvedSDK:
     name: str  # "deepagents", "gemini", "openai"
     expected_envs: tuple[str, ...]  # credential env vars expected from envFrom
     credential_file_envs: tuple[str, ...] = ()  # env vars whose value is a credentials file path
+    azure_auth_mode: str | None = None  # "entra_id" or "api_key"; None for non-Azure
+    azure_credentials: dict[str, str] | None = None  # Entra SP values for adapter
 
 
 def _setenv(key: str, value: str) -> None:
@@ -119,17 +122,87 @@ def _resolve_openai(model: str | None, url: str | None) -> ResolvedSDK:
     )
 
 
+def _read_credential_file(path: str) -> str | None:
+    """Read a single credential file, return stripped content or None."""
+    try:
+        p = Path(path)
+        if not p.is_file():
+            return None
+        content = p.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return content or None
+
+
+def azure_api_version_supports_responses(api_version: str | None) -> bool:
+    """Return whether an Azure OpenAI API version supports Responses API."""
+    if not api_version:
+        return False
+    try:
+        version_date = api_version.split("-preview", 1)[0]
+        year, month, day = (int(part) for part in version_date.split("-"))
+    except ValueError:
+        return False
+    return (year, month, day) >= (2025, 3, 1)
+
+
 def _resolve_azure(
     model: str | None,
     url: str | None,
     api_version: str | None,
 ) -> ResolvedSDK:
+    if not api_version:
+        raise ValueError(
+            "LIGHTSPEED_PROVIDER_API_VERSION is required when LIGHTSPEED_PROVIDER=azure"
+        )
     _setenv_if_value("OPENAI_MODEL", model)
     _setenv_if_value("AZURE_OPENAI_ENDPOINT", url)
-    _setenv_if_value("AZURE_OPENAI_API_VERSION", api_version)
-    return ResolvedSDK(
-        "openai",
-        ("AZURE_OPENAI_API_KEY",),
+    _setenv("AZURE_OPENAI_API_VERSION", api_version)
+
+    creds_path = _llm_credentials_path()
+    client_id = _read_credential_file(f"{creds_path}/client_id")
+    tenant_id = _read_credential_file(f"{creds_path}/tenant_id")
+    client_secret = _read_credential_file(f"{creds_path}/client_secret")
+
+    if client_id and tenant_id and client_secret:
+        # Entra ID mode — do NOT set AZURE_OPENAI_API_KEY
+        logger.info("Azure credential resolution: Entra ID (service principal)")
+        return ResolvedSDK(
+            "openai",
+            (),  # no env-based credentials needed
+            azure_auth_mode="entra_id",
+            azure_credentials={
+                "client_id": client_id,
+                "tenant_id": tenant_id,
+                "client_secret": client_secret,
+            },
+        )
+
+    # API-key mode — check file first, then env
+    api_key_file = _read_credential_file(f"{creds_path}/apitoken")
+    if api_key_file:
+        _setenv("AZURE_OPENAI_API_KEY", api_key_file)
+        logger.info("Azure credential resolution: API key (from file)")
+        return ResolvedSDK(
+            "openai",
+            ("AZURE_OPENAI_API_KEY",),
+            azure_auth_mode="api_key",
+        )
+
+    api_key_env = os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
+    if api_key_env:
+        logger.info("Azure credential resolution: API key (from env)")
+        return ResolvedSDK(
+            "openai",
+            ("AZURE_OPENAI_API_KEY",),
+            azure_auth_mode="api_key",
+        )
+
+    raise ValueError(
+        "Azure OpenAI credentials not found. Provide either "
+        "all three Entra ID files (client_id, tenant_id, client_secret) "
+        f"at {creds_path}/, or an API key via apitoken file or "
+        "AZURE_OPENAI_API_KEY env var."
     )
 
 
