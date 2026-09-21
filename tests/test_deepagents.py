@@ -110,19 +110,17 @@ def _deepagents_provider(
 
     import lightspeed_agentic.providers.deepagents as mod  # type: ignore[import-untyped]
 
-    with (
-        patch.dict(
-            sys.modules,
-            _mock_deepagents_modules(
-                mock_create,
-                mock_backend,
-                mcp_client_cls=mcp_client_cls,
-            ),
+    with patch.dict(
+        sys.modules,
+        _mock_deepagents_modules(
+            mock_create,
+            mock_backend,
+            mcp_client_cls=mcp_client_cls,
         ),
-        _resolve_model_patch(),
     ):
         importlib.reload(mod)
-        yield mod.DeepAgentsProvider()
+        with patch.object(mod, "_resolve_model", return_value=MagicMock()):
+            yield mod.DeepAgentsProvider()
 
 
 @pytest.mark.asyncio

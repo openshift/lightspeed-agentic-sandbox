@@ -15,7 +15,7 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from lightspeed_agentic.config import (
     parse_agent_timeout,
@@ -195,6 +195,8 @@ def main() -> None:
         admitted_mcp_servers = asyncio.run(discover_and_admit_mcp_servers(mcp_servers))
         provider_mcp_servers, mcp_policies = split_admitted_mcp_servers(admitted_mcp_servers)
         provider = create_provider(sdk.name)
+        if sdk.azure_credentials:
+            cast(Any, provider)._azure_credentials = sdk.azure_credentials
         startup_model = resolve_startup_model(sdk.name)
         audit_enabled = os.environ.get("LIGHTSPEED_AUDIT_ENABLED", "").strip().lower() == "true"
         capture_content = _resolve_capture_content(audit_enabled)
