@@ -198,3 +198,46 @@ def test_read_first_mounted_secret_in_dir_sorted(tmp_path: Path) -> None:
     (secret_dir / "b").write_text("second", encoding="utf-8")
     (secret_dir / "a").write_text("first", encoding="utf-8")
     assert read_first_mounted_secret_in_dir(secret_dir) == "first"
+
+
+# ── Azure readiness ──
+
+_AZURE_ENTRA = ResolvedSDK(
+    "openai",
+    (),  # no env vars needed — credentials are file-based
+    azure_auth_mode="entra_id",
+    azure_credentials={
+        "client_id": "cid",
+        "tenant_id": "tid",
+        "client_secret": "csec",
+    },
+)
+
+_AZURE_API_KEY = ResolvedSDK(
+    "openai",
+    ("AZURE_OPENAI_API_KEY",),
+    azure_auth_mode="api_key",
+)
+
+
+def test_run_readiness_checks_azure_entra_ok() -> None:
+    """Entra ID mode with empty expected_envs passes readiness."""
+    ok, checks = run_readiness_checks(_AZURE_ENTRA)
+    assert ok is True
+    assert checks["provider_env"] == "ok"
+
+
+def test_run_readiness_checks_azure_api_key_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    """API key mode passes when AZURE_OPENAI_API_KEY is set."""
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "key")
+    ok, checks = run_readiness_checks(_AZURE_API_KEY)
+    assert ok is True
+    assert checks["provider_env"] == "ok"
+
+
+def test_run_readiness_checks_azure_api_key_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """API key mode fails when AZURE_OPENAI_API_KEY is missing."""
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+    ok, checks = run_readiness_checks(_AZURE_API_KEY)
+    assert ok is False
+    assert "error: missing" in checks["provider_env"]

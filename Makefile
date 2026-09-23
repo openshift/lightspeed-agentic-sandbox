@@ -1,4 +1,5 @@
 UV := uv
+REQUIREMENTS_UPGRADE ?=
 
 CONTAINER_RUNTIME := $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
 IMAGE := lightspeed-agentic-sandbox:latest
@@ -59,10 +60,10 @@ e2e: image ## Batch cluster E2E BDD (make e2e openai-agents). Needs oc/KUBECONFI
 requirements: pyproject.toml ## Generate requirements.txt files for Konflux hermetic builds
 	$(UV) pip compile pyproject.toml --extra all --extra e2e \
 		-o requirements.x86_64.txt --generate-hashes \
-		--python-platform x86_64-unknown-linux-gnu --upgrade
+		--python-platform x86_64-unknown-linux-gnu $(REQUIREMENTS_UPGRADE)
 	$(UV) pip compile pyproject.toml --extra all --extra e2e \
 		-o requirements.aarch64.txt --generate-hashes \
-		--python-platform aarch64-unknown-linux-gnu --upgrade
+		--python-platform aarch64-unknown-linux-gnu $(REQUIREMENTS_UPGRADE)
 	python3 scripts/gen-build-deps.py \
 		requirements-build.txt \
 		requirements.x86_64.txt requirements.aarch64.txt
@@ -72,7 +73,7 @@ konflux-requirements: ## Resolve RHOAI+PyPI deps for Konflux hermetic builds
 
 bump-deps: ## Upgrade all dependencies and regenerate requirements
 	$(UV) lock --upgrade
-	$(MAKE) requirements
+	$(MAKE) requirements REQUIREMENTS_UPGRADE=--upgrade
 
 rpm-lockfile: .konflux/rpms.in.yaml .konflux/redhat.repo ## Regenerate rpms.lock.yaml (requires podman + RH subscription)
 	./scripts/generate-rpm-lock.sh -a $${ACTIVATION_KEY} -g $${ORG_ID}

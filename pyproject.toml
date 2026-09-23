@@ -27,7 +27,7 @@ deepagents = [
     "langchain-mcp-adapters>=0.3.0",
 ]
 gemini = ["google-adk>=1.33.0"]
-openai = ["openai-agents>=0.17.2"]
+openai = ["openai-agents>=0.17.2", "azure-identity>=1.21.0"]
 all = ["lightspeed-agentic[deepagents,gemini,openai]"]
 dev = [
     "pytest>=9.0.3",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -49,6 +50,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "ANTHROPIC_BASE_URL",
         "AZURE_OPENAI_ENDPOINT",
         "AZURE_OPENAI_API_VERSION",
+        "AZURE_OPENAI_API_KEY",
         "AWS_REGION",
     ]:
         monkeypatch.delenv(var, raising=False)
@@ -175,10 +177,12 @@ def test_azure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LIGHTSPEED_MODEL", "gpt-4.1")
     monkeypatch.setenv("LIGHTSPEED_PROVIDER_URL", "https://my-resource.openai.azure.com")
     monkeypatch.setenv("LIGHTSPEED_PROVIDER_API_VERSION", "2024-08-01-preview")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
 
     sdk = resolve_sdk()
 
     assert sdk.name == "openai"
+    assert sdk.azure_auth_mode == "api_key"
     assert os.environ["OPENAI_MODEL"] == "gpt-4.1"
     assert os.environ["AZURE_OPENAI_ENDPOINT"] == "https://my-resource.openai.azure.com"
     assert os.environ["AZURE_OPENAI_API_VERSION"] == "2024-08-01-preview"
@@ -401,3 +405,161 @@ def test_max_turns_valid_middle(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LIGHTSPEED_AGENT_MAX_TURNS", "10")
     result = parse_max_turns()
     assert result == 10
+
+
+# ── Azure Entra ID credential resolution ──
+
+
+def _setup_azure_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set the common LIGHTSPEED_* vars for Azure tests."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("LIGHTSPEED_PROVIDER", "azure")
+    monkeypatch.setenv("LIGHTSPEED_MODEL", "gpt-4.1")
+    monkeypatch.setenv("LIGHTSPEED_PROVIDER_URL", "https://my-resource.openai.azure.com")
+    monkeypatch.setenv("LIGHTSPEED_PROVIDER_API_VERSION", "2025-03-01-preview")
+
+
+def _write_sp_files(
+    tmp_path: Path,
+    *,
+    client_id: str = "cid",
+    tenant_id: str = "tid",
+    client_secret: str = "csec",  # noqa: S107
+) -> None:
+    """Write Entra ID service-principal credential files."""
+    (tmp_path / "client_id").write_text(client_id, encoding="utf-8")
+    (tmp_path / "tenant_id").write_text(tenant_id, encoding="utf-8")
+    (tmp_path / "client_secret").write_text(client_secret, encoding="utf-8")
+
+
+def test_azure_entra_id_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """All three SP files present → Entra ID mode, no AZURE_OPENAI_API_KEY."""
+    _setup_azure_env(monkeypatch)
+    _write_sp_files(tmp_path)
+    monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
+
+    sdk = resolve_sdk()
+
+    assert sdk.name == "openai"
+    assert sdk.azure_auth_mode == "entra_id"
+    assert sdk.azure_credentials == {
+        "client_id": "cid",
+        "tenant_id": "tid",
+        "client_secret": "csec",
+    }
+    # MUST NOT set API key in Entra mode
+    assert "AZURE_OPENAI_API_KEY" not in os.environ
+
+
+def test_azure_api_key_mode_from_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """apitoken file present, no SP files → API-key mode."""
+    _setup_azure_env(monkeypatch)
+    (tmp_path / "apitoken").write_text("my-azure-key", encoding="utf-8")
+    monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
+
+    sdk = resolve_sdk()
+
+    assert sdk.name == "openai"
+    assert sdk.azure_auth_mode == "api_key"
+    assert sdk.azure_credentials is None
+    assert os.environ["AZURE_OPENAI_API_KEY"] == "my-azure-key"
+
+
+def test_azure_api_version_is_required(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Azure provider requires an explicit API version from the operator."""
+    _setup_azure_env(monkeypatch)
+    monkeypatch.delenv("LIGHTSPEED_PROVIDER_API_VERSION", raising=False)
+    (tmp_path / "apitoken").write_text("my-azure-key", encoding="utf-8")
+    monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
+
+    with pytest.raises(ValueError, match="LIGHTSPEED_PROVIDER_API_VERSION is required"):
+        resolve_sdk()
+
+    assert "AZURE_OPENAI_API_VERSION" not in os.environ
+
+
+def test_azure_api_key_mode_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """AZURE_OPENAI_API_KEY env var present, no SP files → API-key mode."""
+    _setup_azure_env(monkeypatch)
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "env-key")
+    monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
+
+    sdk = resolve_sdk()
+
+    assert sdk.name == "openai"
+    assert sdk.azure_auth_mode == "api_key"
+    assert sdk.azure_credentials is None
+
+
+def test_azure_entra_id_takes_precedence_over_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """When both SP files and apitoken exist, Entra ID wins."""
+    _setup_azure_env(monkeypatch)
+    _write_sp_files(tmp_path)
+    (tmp_path / "apitoken").write_text("also-a-key", encoding="utf-8")
+    monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
+
+    sdk = resolve_sdk()
+
+    assert sdk.azure_auth_mode == "entra_id"
+    assert "AZURE_OPENAI_API_KEY" not in os.environ
+
+
+def test_azure_incomplete_sp_files_falls_back_to_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Only two of three SP files → falls back to API key if available."""
+    _setup_azure_env(monkeypatch)
+    (tmp_path / "client_id").write_text("cid", encoding="utf-8")
+    (tmp_path / "tenant_id").write_text("tid", encoding="utf-8")
+    # client_secret missing
+    (tmp_path / "apitoken").write_text("fallback-key", encoding="utf-8")
+    monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
+
+    sdk = resolve_sdk()
+
+    assert sdk.azure_auth_mode == "api_key"
+
+
+def test_azure_empty_sp_file_not_entra(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """SP files present but one is empty → not Entra mode."""
+    _setup_azure_env(monkeypatch)
+    (tmp_path / "client_id").write_text("cid", encoding="utf-8")
+    (tmp_path / "tenant_id").write_text("", encoding="utf-8")  # empty
+    (tmp_path / "client_secret").write_text("csec", encoding="utf-8")
+    (tmp_path / "apitoken").write_text("key", encoding="utf-8")
+    monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
+
+    sdk = resolve_sdk()
+
+    assert sdk.azure_auth_mode == "api_key"
+
+
+def test_azure_no_credentials_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """No SP files and no API key → ValueError."""
+    _setup_azure_env(monkeypatch)
+    monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
+
+    with pytest.raises(ValueError, match=r"Azure .* credentials"):
+        resolve_sdk()
