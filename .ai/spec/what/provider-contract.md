@@ -81,7 +81,7 @@ Cross-references: batch agent invocation → `run-api.md`. Env and build → `co
 
 35. **DeepAgents / Anthropic model routing.** The adapter resolves the model string to the correct LangChain chat model instance based on the backend configuration (see `configuration.md`). Direct Anthropic API uses `ChatAnthropic`. Vertex AI uses `ChatAnthropicVertex` (from `langchain_google_vertexai.model_garden`) with project and location from env. Bedrock uses `ChatAnthropicBedrock`. The resolved instance is passed to `create_deep_agent(model=...)`.
 
-36. **DeepAgents / tool execution.** The adapter uses `LocalShellBackend` which provides built-in shell (`execute`), filesystem (`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`), and `delete` tools. The thin-adapter principle (rule 21) applies — tool execution is delegated to the deepagents backend.
+36. **DeepAgents / tool execution.** The adapter uses `LocalShellBackend` with `virtual_mode=False`, which provides built-in shell (`execute`), filesystem (`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`), and `delete` tools. Filesystem tools operate on real paths rooted at `root_dir` (options.cwd). The shell tool (`execute`) has unrestricted system access regardless of `virtual_mode`. `virtual_mode=False` is required because deepagents >=0.7.18 changed the default to `True`, whose `_resolve_path` doubles absolute paths and raises on legitimate path components. The thin-adapter principle (rule 21) applies — tool execution is delegated to the deepagents backend.
 
 37. **DeepAgents / prompt caching.** `AnthropicPromptCachingMiddleware` is applied unconditionally by `create_deep_agent()` and no-ops for non-Anthropic models. No adapter-level configuration needed.
 
