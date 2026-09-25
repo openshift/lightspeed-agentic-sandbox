@@ -67,8 +67,6 @@ google-cloud-storage==3.11.0 \
     --hash=sha256:2441145a141fa464bba46d84e4bb87ea862c9f42a5cbe9088aa0407cc5aef21a
 google-crc32c==1.8.0 \
     --hash=sha256:edfdfaaf68a74fdd3cb96b6c32d0252d75d1a600f91cdc209de1f83e9efb2326
-google-genai==2.8.0 \
-    --hash=sha256:3819e597a14afcc4aebb08dcee3110366e4f097f5ba951ee3460612da81065e9
 google-resumable-media==2.10.0 \
     --hash=sha256:ba2052ceba01de9529e3fe62c7713f88613df4932dbf19af1bdc88c1cb2c2a18
 googleapis-common-protos==1.75.0 \
@@ -109,8 +107,6 @@ jsonschema-specifications==2025.9.1 \
     --hash=sha256:10ed21850aa9c5556850aee3cfbb51d51ec74b223b67f893d6a26c960da02ef5
 kubernetes==36.0.2 \
     --hash=sha256:8aa7020e9d21f10413c9af009a23620f08565db0faf459d844731b5660a1d250
-langchain==1.3.9 \
-    --hash=sha256:7980272ea2ea6bedfdf50fd6e1b2fc16fe94b0dd60b1d694fed19306b3eae0e9
 langchain-google-genai==4.2.5 \
     --hash=sha256:59dd0bdc9ad42040b48b2676438c2d144565dee326be8106fdc2af8d14717d50
 langchain-protocol==0.0.16 \

@@ -59,6 +59,12 @@ google-adk==2.5.0 \
 google-cloud-vectorsearch==0.11.1 \
     --hash=sha256:005e3829e0303853ffa114483283b6bc747537b155fc90aca36e815d1c649ec3 \
     --hash=sha256:fb4723a6668fc633a1e780dec85f436a417228f346b25477afbcf288c311c393
+google-genai==2.25.0 \
+    --hash=sha256:2e8f3a5f76ed00d5ffc3153f6089bc7d3511054eed53ad9cfc6095a7dc59b028 \
+    --hash=sha256:ab603baa5eee0205926ad0f8d7f93e0400df6d67650e99c33e01ab228ea16ad6
+langchain==1.4.2 \
+    --hash=sha256:30a27c34cfa0004bf659dcdef488b99a9b90acb08bcc514a5a74264755da536c \
+    --hash=sha256:5b476418cacbfb8f0da6e63b3b263eefdcec13b48abd6117565a25728ec10b77
 langchain-anthropic==1.7.4 \
     --hash=sha256:7d540300665a1c906986e505cdec41204e759f14dbd989f53f0c180d82624b94 \
     --hash=sha256:eec1178389358eaa4cff4f3dd353f063746b8c61090cffe9236d9035df71e66c
