@@ -319,6 +319,7 @@ class DeepAgentsProvider(AgentProvider):
         chat_model = _resolve_model(options.model, options.reasoning_config)
         backend = LocalShellBackend(
             root_dir=options.cwd,
+            virtual_mode=False,
             inherit_env=True,
             max_output_bytes=MAX_TOOL_RETURN_CHARS,
         )
