@@ -59,18 +59,36 @@ google-adk==2.5.0 \
 google-cloud-vectorsearch==0.11.1 \
     --hash=sha256:005e3829e0303853ffa114483283b6bc747537b155fc90aca36e815d1c649ec3 \
     --hash=sha256:fb4723a6668fc633a1e780dec85f436a417228f346b25477afbcf288c311c393
+langchain==1.4.2 \
+    --hash=sha256:30a27c34cfa0004bf659dcdef488b99a9b90acb08bcc514a5a74264755da536c \
+    --hash=sha256:5b476418cacbfb8f0da6e63b3b263eefdcec13b48abd6117565a25728ec10b77
 langchain-anthropic==1.7.4 \
     --hash=sha256:7d540300665a1c906986e505cdec41204e759f14dbd989f53f0c180d82624b94 \
     --hash=sha256:eec1178389358eaa4cff4f3dd353f063746b8c61090cffe9236d9035df71e66c
 langchain-aws==1.6.2 \
     --hash=sha256:4755c60ce88fff2b829d96027068b7930f335cd85da41fda061769439c288251 \
     --hash=sha256:df2c15b463c068031af40460dbea6efb7999832263ff6eaec6b99c5f6b291acd
+langchain-core==1.6.4 \
+    --hash=sha256:2f940c83f787676ad4dc651d49d053c7ec34bda5a6afcd224da2863ff53a0b84 \
+    --hash=sha256:c1caae770d991bb6f2376bad791970bf77bb29abd1f15823fa9ea7dbac080fa0
+langchain-google-genai==4.4.0 \
+    --hash=sha256:7871beec56ac07b719f77c46997845db6ff2267b817bffb0f97877053b0895d7 \
+    --hash=sha256:8e23a1307bd2158590bbf9d99f1d658fc84a9d9ddb77fb1b372f8875a2bafbbf
 langchain-google-vertexai==3.2.4 \
     --hash=sha256:65b5615e596fdabc2e149f0160fded88bebef2bbc1ea70095ff81714f7570183 \
     --hash=sha256:f0c16b4b639037f60357dbf6d4aa3b0f301f23be6b33b0688c75902235cb9434
 langchain-mcp-adapters==0.3.0 \
     --hash=sha256:1af511a95e028d9546502e360f95698ae8b691dbc07981fc48170c2cb1ebd7a9 \
     --hash=sha256:fa6c9497015eb2807de5d0c341a36e1d2445cecbae1f4a24e922fc5b94f1a36c
+langchain-protocol==0.0.18 \
+    --hash=sha256:70b53a86fbf9cedc863555effe44da192ab02d556ddbf2cf95b8873adcf41b5a \
+    --hash=sha256:ec3e11782f1ed0c9db38e5a9ed01b0e7a0d3fba406faa8aef6594b73c56a63e6
+langgraph==1.2.12 \
+    --hash=sha256:5fae9fa4ce771e90f10ff19ce0d5aaef4b41d7632c713d769e89cbce1241a4b9 \
+    --hash=sha256:95403af7b510de8d79164742f71daaf866c69ca804a8cb72bef2cc1fa1ab9813
+langsmith==0.14.0 \
+    --hash=sha256:1a89e52c24edd6f4c24d8cfb32857814ceb5b9bec344a2850e86ab38475de362 \
+    --hash=sha256:294a02addc2358fab390156b74fa942e2dd40b711f6507c5f26b5c208cc89e15
 numexpr==2.14.2 \
     --hash=sha256:022e61a3d5dbf5807746264b62126d1c2c24057ad90052478a4d4482ab2555c2 \
     --hash=sha256:0741efbd75c284e709b0fd430c85c31982b44c9962922ba8a9cbbea1bf413321 \

@@ -2,17 +2,9 @@
 # Generates analysis output aligned with operator AnalysisResult + e2e components schema.
 set -euo pipefail
 
-OUTDIR="${E2E_OUTPUT_DIR:-/tmp/lightspeed-e2e-output}"
-mkdir -p "${OUTDIR}"
-
 DIAG_TOKEN=$(head -c 12 /dev/urandom | base64 | tr -d '=/+')
 VERIFY_TOKEN=$(head -c 12 /dev/urandom | base64 | tr -d '=/+')
 TIMESTAMP=$(date +%s)
-
-cat > "${OUTDIR}/.hidden_token" <<EOF
-DIAG_${DIAG_TOKEN}
-VERIFY_${VERIFY_TOKEN}
-EOF
 
 cat <<EOF
 {
@@ -31,11 +23,6 @@ cat <<EOF
             "command": "bash scripts/find-token.sh",
             "type": "verify",
             "description": "Generate cryptographic tokens"
-          },
-          {
-            "command": "cat ${OUTDIR}/.hidden_token",
-            "type": "report",
-            "description": "Return tokens in structured format"
           }
         ],
         "reversible": "Reversible"
@@ -62,10 +49,9 @@ cat <<EOF
           },
           "audit": {
             "outcome": "pass",
-            "checks_performed": ["generation", "file_write", "integrity"],
+            "checks_performed": ["generation", "integrity"],
             "findings": [
               {"check": "generation", "result": "pass", "severity": "info"},
-              {"check": "file_write", "result": "pass", "severity": "info"},
               {"check": "integrity", "result": "pass", "severity": "info"}
             ]
           }

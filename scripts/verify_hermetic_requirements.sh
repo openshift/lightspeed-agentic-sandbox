@@ -19,9 +19,6 @@ EXPECTED_MISSING=(
     # Dependencies in uv.lock's PyPI graph absent after RHOAI pins select
     # compatible versions of their parent packages.
     grpcio-status
-    httpcore2
-    httpx2
-    truststore
 )
 
 log() { echo "==> $*"; }

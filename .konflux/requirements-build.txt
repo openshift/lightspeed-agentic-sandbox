@@ -25,9 +25,15 @@ hatchling==1.26.3
 hatchling==1.32.4
     # via
     #   hatch-fancy-pypi-readme
+    #   langchain
     #   langchain-anthropic
     #   langchain-aws
+    #   langchain-core
+    #   langchain-google-genai
     #   langchain-google-vertexai
+    #   langchain-protocol
+    #   langgraph
+    #   langsmith
     #   openai-agents
     #   wcmatch
 meson-python==0.21.1

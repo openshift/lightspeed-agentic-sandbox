@@ -19,3 +19,11 @@ langchain-aws==1.6.2
 langchain-mcp-adapters==0.3.0
 openai-agents==0.18.3
 wcmatch==11.0
+# Keep the DeepAgents runtime compatible with the uv.lock callback stack.
+deepagents==0.7.18
+langchain==1.4.2
+langchain-core==1.6.4
+langchain-google-genai==4.4.0
+langchain-protocol==0.0.18
+langgraph==1.2.12
+langsmith==0.14.0
