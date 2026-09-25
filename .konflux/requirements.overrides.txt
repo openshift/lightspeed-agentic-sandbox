@@ -13,9 +13,11 @@ openai==2.48.0
 
 # Keep PyPI-only packages aligned with uv.lock. The resolver otherwise selects
 # newer releases independently, which makes the generated files fail verification.
+deepagents==0.7.18
 google-adk==2.5.0
 google-cloud-vectorsearch==0.11.1
 langchain-aws==1.6.2
+langchain-core==1.6.5
 langchain-mcp-adapters==0.3.0
 openai-agents==0.18.3
 wcmatch==11.0
