@@ -1064,9 +1064,9 @@ langchain-aws==1.6.2 \
     --hash=sha256:4755c60ce88fff2b829d96027068b7930f335cd85da41fda061769439c288251 \
     --hash=sha256:df2c15b463c068031af40460dbea6efb7999832263ff6eaec6b99c5f6b291acd
     # via lightspeed-agentic (pyproject.toml)
-langchain-core==1.6.4 \
-    --hash=sha256:2f940c83f787676ad4dc651d49d053c7ec34bda5a6afcd224da2863ff53a0b84 \
-    --hash=sha256:c1caae770d991bb6f2376bad791970bf77bb29abd1f15823fa9ea7dbac080fa0
+langchain-core==1.6.5 \
+    --hash=sha256:54c7b0e9314b9084fb04405bb33dc5d32986d512d92b7b8863899cd5f6267556 \
+    --hash=sha256:bdb059fef65473fd444558dbb18f50901657402c43ceed9dc0fdc7b76a393c6b
     # via
     #   deepagents
     #   langchain
