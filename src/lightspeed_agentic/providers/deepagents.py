@@ -4,9 +4,11 @@ Uses create_deep_agent() with LocalShellBackend for shell + filesystem access,
 native skills loading, and v3 event streaming for event mapping.
 
 LocalShellBackend runs with virtual_mode=False so filesystem tools (ls,
-read_file, write_file, edit_file, glob, grep) operate on real paths rooted at
-``root_dir`` (options.cwd).  The shell tool (execute) has unrestricted system
-access regardless of virtual_mode.
+read_file, write_file, edit_file, glob, grep) operate on the real filesystem.
+Absolute paths are used as-is, and relative paths are resolved under
+``root_dir`` (options.cwd); filesystem tools are not confined to that
+directory.  The shell tool (execute) has unrestricted system access regardless
+of virtual_mode.
 """
 
 from __future__ import annotations
@@ -330,7 +332,8 @@ class DeepAgentsProvider(AgentProvider):
         # system access regardless of virtual_mode, so confining only filesystem
         # tools provides no real sandbox benefit.  With virtual_mode=False the
         # filesystem tools (ls, read_file, write_file, edit_file, glob, grep)
-        # operate on real paths rooted at root_dir.
+        # operate on the real filesystem; absolute paths are used as-is, and relative
+        # paths resolve under root_dir.
         backend = LocalShellBackend(
             root_dir=options.cwd,
             inherit_env=True,
