@@ -99,6 +99,14 @@ Telemetry aligns with [OTel GenAI Semantic Conventions](https://github.com/open-
 
 18d. Existing generic inference instrumentation can observe classifier calls. The sandbox MUST add no feature-specific Prometheus metric.
 
+18e. Developer logs and `tool_result.inspection` telemetry MUST NOT contain tool arguments, tool results, or tool-generated errors.
+
+18f. After inspection passes, `AuditLogger` MUST retain the complete normalized result for the approved content-event path.
+
+18g. The existing content-capture and export rules control each approved audit copy of a passing result.
+
+18h. If inspection fails, `AuditLogger` MUST receive no content event for the rejected result.
+
 ### Metrics
 
 19. The sandbox MUST record the following `gen_ai.*` Prometheus histograms during agent execution (`metrics.py`). Histograms are **in-process only** (`prometheus_client`); the batch entrypoint MUST NOT expose a `/metrics` HTTP scrape endpoint and MUST NOT export histograms to OTLP or Pushgateway at shutdown. Short-lived one-shot pods are a poor fit for pull-based Prometheus scraping; **OTLP traces** (with `gen_ai.usage.*` on inference spans) are the operational signal when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Unit tests (`tests/test_metrics.py`) verify histogram recording.
@@ -134,7 +142,8 @@ Telemetry aligns with [OTel GenAI Semantic Conventions](https://github.com/open-
 ## Verification
 
 - Unit: `tests/test_tracing.py` — shared Resource, span-event → OTLP log forwarding (record attrs; audit gate; unresolved AgenticRun env warning), LoggingHandler dual-ship when endpoint set
-- Unit: `tests/test_audit.py` — AuditLogger span/event emission (unchanged call sites)
+- Unit: `tests/test_audit.py` — full passing results in approved audit events and no rejected-result event
+- Unit: `tests/test_logging.py` — payload-free developer records for inspected DeepAgents results
 - Unit: `tests/test_metrics.py` — in-process histogram recording (no export path in batch)
 - Live (batch cluster): `tests/e2e/features/sandbox_e2e.feature` scenario **Batch run exports traces and audit logs to OTEL** — minimal batch Job with audit enabled; asserts the e2e OTEL collector debug exporter received spans and bridged audit log records carrying `agenticrun.uid` / `agenticrun.phase` for the run (requires `scripts/e2e-install-fixtures.sh`, `E2E_BATCH_VERIFY_FIXTURES=1`)
 

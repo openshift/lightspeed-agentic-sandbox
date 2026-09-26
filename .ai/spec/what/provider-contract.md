@@ -14,9 +14,9 @@ Cross-references: batch agent invocation → `run-api.md`. Env and build → `co
 
 4. **Content block stop (`content_block_stop`).** Signals that a content or tool block has completed; used by logging to flush buffered thinking.
 
-5. **Tool call (`tool_call`).** Carries the tool name and a complete string representation of inputs. Provider adapters MUST NOT length-truncate this value; only EventLogger MAY truncate its developer-log rendering (rules 25 and 40).
+5. **Tool call (`tool_call`).** Carries the tool name and a complete string representation of inputs. Provider adapters MUST NOT length-truncate this value. `EventLogger` can truncate its developer-log rendering, subject to OLS-3928 rule 6.
 
-6. **Tool result (`tool_result`).** Carries a complete string representation of tool output. Provider adapters MUST NOT length-truncate this value; only EventLogger MAY truncate its developer-log rendering (rules 25 and 40).
+6. **Tool result (`tool_result`).** Carries a complete string representation of tool output. Provider adapters MUST NOT length-truncate this value. `EventLogger` can truncate its developer-log rendering, subject to OLS-3928 rule 6.
 
 7. **Result (`result`).** Terminal event: final text payload (may be JSON or plain text depending on structured-output path), input/output token counts, reasoning token count, and response model metadata.
 
@@ -97,7 +97,7 @@ Cross-references: batch agent invocation → `run-api.md`. Env and build → `co
 
 39. [PLANNED: OLS-3569] Provider adapters MUST expose the complete provider-neutral completion, reasoning, tool call/result, explicit skill load/use, and terminal-result values required by `data-collection.md`. Provider-specific SDK object shapes MUST stop at the adapter boundary and MUST NOT create alternate content-event names.
 
-40. [PLANNED: OLS-3569] Tool input/result and assistant/reasoning values retained for content trace events MUST NOT be length-truncated. The existing EventLogger MAY continue to truncate its developer-log rendering.
+40. [PLANNED: OLS-3569] Tool input/result and assistant/reasoning values retained for content trace events MUST NOT be length-truncated. The existing `EventLogger` can truncate its developer-log rendering. For DeepAgents tool calls and results, OLS-3928 rule 6 prohibits payload content in that rendering.
 
 41. [PLANNED: OLS-3569] Every adapter's terminal `result` MUST carry the exact final response, requested-model fallback or actual response model, input tokens, output tokens, and reasoning tokens. When an SDK does not expose the actual model or a token category, the adapter MUST use the requested model or zero respectively; it MUST NOT omit the field or invent usage.
 
@@ -123,7 +123,7 @@ Cross-references: batch agent invocation → `run-api.md`. Env and build → `co
 
  5. **Local paths.** The interception paths include normal results, tool-generated errors, shell output, MCP output, file reads, and search results. They also include offload previews and references. Each later model-visible artifact read or search result MUST pass through the same middleware.
 
- 6. **Event boundary.** After a pass, the adapter MUST send the complete normalized `ToolResultEvent` to `AuditLogger` so content trace events retain the full tool result required by rules 39–46. `EventLogger` MAY truncate only its developer-log rendering under rule 40. A failed inspection MUST raise `ToolResultSafetyInspectionFailed` and emit no result event.
+ 6. **Event boundary.** For DeepAgents tool calls and results, the adapter MUST send only controlled, payload-free metadata to `EventLogger`. After a pass, the adapter MUST send the complete normalized `ToolResultEvent` to `AuditLogger`. This path retains the full result required by rules 39–46. A failed inspection MUST raise `ToolResultSafetyInspectionFailed` and send no result event to either logger.
 
  7. **Disabled behavior.** When `LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED` is false, the middleware MUST skip inspection calls and inspection-based termination. The main-system safety instruction remains active for every provider.
 
@@ -152,7 +152,7 @@ Cross-references: batch agent invocation → `run-api.md`. Env and build → `co
 
 - Unit: [test_run_agent.py](../../../tests/test_run_agent.py) — event stream, structured output, context prefix; [test_deepagents.py](../../../tests/test_deepagents.py) — DeepAgents structured output and admitted-name filtering; [test_mcp.py](../../../tests/test_mcp.py) — canonical admission projections and Gemini/OpenAI native filters; [test_openai_schema.py](../../../tests/test_openai_schema.py) — OpenAI complete-set initialization and fail-closed behavior
 - [PLANNED: OLS-3928] Fast mock tests verify contract conformance, offloaded read paths, disabled inspection, and controlled sandbox failure.
-- [PLANNED: OLS-3928] Integration tests verify inspection before `ToolResultEvent` emission. They verify payload-free accepted logger events and rejected-event suppression. They also verify controlled termination without a Result CR.
+- [PLANNED: OLS-3928] Integration tests verify inspection before `ToolResultEvent` emission. They verify payload-free `EventLogger` records and full-fidelity `AuditLogger` events after a pass. They also verify rejected-event suppression and controlled termination without a Result CR.
 - The cross-repository real-model corpus and reporting requirements are owned by `openshift/ols/.ai/spec/what/tool-result-inspection.md`.
 - Live batch: [skills.feature](../../../tests/e2e/features/skills.feature), [structured_output.feature](../../../tests/e2e/features/structured_output.feature), [mcp.feature](../../../tests/e2e/features/mcp.feature), [reasoning_config.feature](../../../tests/e2e/features/reasoning_config.feature)
 - Harness helpers: [test_batch_e2e_helpers.py](../../../tests/test_batch_e2e_helpers.py) (no cluster)
