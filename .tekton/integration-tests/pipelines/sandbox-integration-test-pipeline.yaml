@@ -1,7 +1,5 @@
 ---
-# apiVersion is tekton.dev/v1beta1 (not v1): Konflux EaaS StepAction refs with the
-# git resolver are not available on tekton.dev/v1 on the Tekton version this
-# pipeline runs against. Do not "upgrade" to v1 without verifying EaaS support.
+# Keep tekton.dev/v1beta1 for the git-resolved StepActions used by this pipeline.
 apiVersion: tekton.dev/v1beta1
 kind: Pipeline
 metadata:
@@ -9,12 +7,9 @@ metadata:
 spec:
   description: |
     Runs sandbox batch BDD integration tests for a single LLM provider on a Konflux
-    ephemeral OpenShift cluster (EaaS). Installs sandbox e2e fixtures (Result CRDs,
+    HyperShift hosted cluster. Installs sandbox e2e fixtures (Result CRDs,
     OTEL, RBAC), syncs LLM credential Secrets, then runs pytest batch Jobs against
-    the SANDBOX_IMAGE from SNAPSHOT.
-
-    Pipeline apiVersion is tekton.dev/v1beta1 (not v1): EaaS StepAction refs with
-    the git resolver are not supported on v1 on the Tekton version Konflux runs.
+    the SANDBOX_IMAGE from SNAPSHOT and deprovisions the cluster.
 
     Triggered per-provider by IntegrationTestScenario CRs:
       sandbox-integration-anthropic-vertex-deepagents,
@@ -37,75 +32,37 @@ spec:
       default: 'openshift-lightspeed'
       type: string
     - name: openshift-version-prefix
-      description: 'Minor line prefix for eaas-get-latest-openshift-version-by-prefix (include trailing dot, e.g. 4.19.)'
-      default: '4.19.'
+      description: 'OpenShift minor version to provision (for example, 4.22).'
+      default: '4.22'
       type: string
   tasks:
-    - name: eaas-provision-space
+    - name: provision-ephemeral-cluster
       taskRef:
         resolver: git
         params:
           - name: url
-            value: https://github.com/konflux-ci/build-definitions.git
+            value: https://github.com/openshift/konflux-tasks
           - name: revision
             value: main
           - name: pathInRepo
-            value: task/eaas-provision-space/0.1/eaas-provision-space.yaml
+            value: tasks/provision-ephemeral-cluster/0.1/provision-ephemeral-cluster.yaml
       params:
-        - name: ownerKind
-          value: PipelineRun
         - name: ownerName
           value: $(context.pipelineRun.name)
         - name: ownerUid
           value: $(context.pipelineRun.uid)
-    - name: provision-cluster
-      runAfter:
-        - eaas-provision-space
-      params:
-        - name: openshift-version-prefix
-          value: $(params.openshift-version-prefix)
-      taskSpec:
-        params:
-          - name: openshift-version-prefix
-            type: string
-        results:
-          - name: clusterName
-            value: "$(steps.create-cluster.results.clusterName)"
-        steps:
-          - name: pick-version
-            ref:
-              resolver: git
-              params:
-                - name: url
-                  value: https://github.com/konflux-ci/build-definitions.git
-                - name: revision
-                  value: main
-                - name: pathInRepo
-                  value: stepactions/eaas-get-latest-openshift-version-by-prefix/0.1/eaas-get-latest-openshift-version-by-prefix.yaml
-            params:
-              - name: prefix
-                value: "$(params.openshift-version-prefix)"
-          - name: create-cluster
-            ref:
-              resolver: git
-              params:
-                - name: url
-                  value: https://github.com/konflux-ci/build-definitions.git
-                - name: revision
-                  value: main
-                - name: pathInRepo
-                  value: stepactions/eaas-create-ephemeral-cluster-hypershift-aws/0.1/eaas-create-ephemeral-cluster-hypershift-aws.yaml
-            params:
-              - name: eaasSpaceSecretRef
-                value: $(tasks.eaas-provision-space.results.secretRef)
-              - name: version
-                value: "$(steps.pick-version.results.version)"
-              - name: instanceType
-                value: "m5.large"
+        - name: workflow
+          value: hypershift-hostedcluster-workflow
+        - name: clusterProfile
+          value: aws-konflux-prod
+        - name: env
+          value: '{"COMPUTE_NODE_TYPE": "m5.2xlarge", "HYPERSHIFT_NODE_COUNT": "3", "HOSTED_MANAGEMENT_CLUSTER": "hosted-mgmt2"}'
+        - name: releases
+          value: '{"latest":{"release":{"channel":"stable","version":"$(params.openshift-version-prefix)","architecture":"multi"}}}'
     - name: run-batch-e2e
-      description: Install sandbox e2e fixtures on EaaS cluster and run batch BDD tests.
+      description: Install sandbox e2e fixtures on the HyperShift cluster and run batch BDD tests.
       runAfter:
-        - provision-cluster
+        - provision-ephemeral-cluster
       params:
         - name: SNAPSHOT
           value: $(params.SNAPSHOT)
@@ -115,6 +72,8 @@ spec:
           value: $(params.credential-secret)
         - name: namespace
           value: $(params.namespace)
+        - name: clusterCredentialsSecretRef
+          value: $(tasks.provision-ephemeral-cluster.results.secretRef)
       taskSpec:
         params:
           - name: SNAPSHOT
@@ -123,12 +82,15 @@ spec:
           - name: credential-secret
           - name: namespace
             type: string
+          - name: clusterCredentialsSecretRef
+            type: string
         results:
           - name: commit
             value: "$(steps.extract-commit.results.commit)"
         volumes:
-          - name: credentials
-            emptyDir: {}
+          - name: cluster-credentials
+            secret:
+              secretName: $(params.clusterCredentialsSecretRef)
           - name: credential
             secret:
               secretName: $(params.credential-secret)
@@ -142,23 +104,6 @@ spec:
             secret:
               secretName: ols-konflux-artifacts-bot
         steps:
-          - name: get-kubeconfig
-            ref:
-              resolver: git
-              params:
-                - name: url
-                  value: https://github.com/konflux-ci/build-definitions.git
-                - name: revision
-                  value: main
-                - name: pathInRepo
-                  value: stepactions/eaas-get-ephemeral-cluster-credentials/0.1/eaas-get-ephemeral-cluster-credentials.yaml
-            params:
-              - name: eaasSpaceSecretRef
-                value: $(tasks.eaas-provision-space.results.secretRef)
-              - name: clusterName
-                value: "$(tasks.provision-cluster.results.clusterName)"
-              - name: credentials
-                value: credentials
           - name: extract-commit
             results:
               - name: commit
@@ -192,7 +137,7 @@ spec:
               limits:
                 memory: "8Gi"
             volumeMounts:
-              - name: credentials
+              - name: cluster-credentials
                 mountPath: /credentials
               - name: credential
                 mountPath: /var/run/credentials
@@ -211,7 +156,7 @@ spec:
               - name: GIT_REVISION
                 value: "$(steps.extract-commit.results.commit)"
               - name: KUBECONFIG
-                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+                value: "/credentials/kubeconfig"
               - name: REQUESTS_CA_BUNDLE
                 value: "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
               - name: SSL_CERT_FILE
@@ -242,11 +187,11 @@ spec:
           - name: gather-cluster-resources
             onError: continue
             volumeMounts:
-              - name: credentials
+              - name: cluster-credentials
                 mountPath: /credentials
             env:
               - name: KUBECONFIG
-                value: "/credentials/$(steps.get-kubeconfig.results.kubeconfig)"
+                value: "/credentials/kubeconfig"
               - name: ARTIFACT_DIR
                 value: "/workspace/konflux-artifacts"
               - name: NAMESPACE
@@ -321,3 +266,18 @@ spec:
           value: "quay.io/openshift-lightspeed/ols-operator-artifacts"
         - name: artifact-credentials-secret
           value: ols-konflux-artifacts-bot
+    - name: deprovision-ephemeral-cluster
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/openshift/konflux-tasks
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: tasks/deprovision-ephemeral-cluster/0.1/deprovision-ephemeral-cluster.yaml
+      params:
+        - name: testPlatformClusterClaimName
+          value: $(tasks.provision-ephemeral-cluster.results.testPlatformClusterClaimName)
+        - name: testPlatformClusterClaimNamespace
+          value: $(tasks.provision-ephemeral-cluster.results.testPlatformClusterClaimNamespace)
