@@ -497,6 +497,7 @@ def to_openai_mcp_servers(servers: list[AdmittedMCPProviderServer]) -> list[Any]
                 params=params,
                 name=s.name,
                 tool_filter={"allowed_tool_names": list(s.allowed_tool_names)},
+                client_session_timeout_seconds=s.timeout,
             )
         )
     return result
