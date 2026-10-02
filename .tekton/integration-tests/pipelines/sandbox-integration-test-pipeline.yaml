@@ -186,6 +186,9 @@ spec:
               echo "sandbox-integration commit=${COMMIT}"
               echo -n "${COMMIT}" > "$(step.results.commit.path)"
           - name: run-tests
+            # Continue to diagnostics even when pytest fails; the final
+            # fail-if-any-step-failed step preserves the failure status.
+            onError: continue
             resources:
               requests:
                 memory: "4Gi"
@@ -259,10 +262,25 @@ spec:
               cd "${ARTIFACT_DIR}"
               oc get jobs -n "${NAMESPACE}" -l agentic.openshift.io/component=sandbox-e2e -o yaml > batch-jobs.yaml 2>/dev/null || true
               oc get pods -n "${NAMESPACE}" -l agentic.openshift.io/component=sandbox-e2e -o yaml > batch-pods.yaml 2>/dev/null || true
+              oc get pods -n "${NAMESPACE}" -l app=lightspeed-otel-collector -o yaml > otel-collector-pods.yaml 2>/dev/null || true
               oc get analysisresults -n "${NAMESPACE}" -o yaml > analysisresults.yaml 2>/dev/null || true
+              oc get verificationresults -n "${NAMESPACE}" -o yaml > verificationresults.yaml 2>/dev/null || true
+              oc get executionresults -n "${NAMESPACE}" -o yaml > executionresults.yaml 2>/dev/null || true
               oc get configmaps -n "${NAMESPACE}" -l e2e.openshift.io/session -o yaml > e2e-configmaps.yaml 2>/dev/null || true
-              oc logs -n "${NAMESPACE}" -l agentic.openshift.io/component=sandbox-e2e --tail=500 \
+              oc get events -n "${NAMESPACE}" --sort-by=.lastTimestamp \
+                > events.txt 2>/dev/null || true
+              oc logs -n "${NAMESPACE}" \
+                -l agentic.openshift.io/component=sandbox-e2e \
+                --all-containers=true --prefix --tail=1000 \
                 > batch-pod-logs.txt 2>/dev/null || true
+              : > otel-collector-logs.txt
+              for pod in $(oc get pods -n "${NAMESPACE}" \
+                -l app=lightspeed-otel-collector -o name 2>/dev/null || true); do
+                echo "=== ${pod} ===" >> otel-collector-logs.txt
+                oc logs -n "${NAMESPACE}" "${pod}" \
+                  --all-containers=true --prefix --timestamps --tail=10000 \
+                  >> otel-collector-logs.txt 2>/dev/null || true
+              done
               echo "Artifacts gathered:"
               ls -la "${ARTIFACT_DIR}" || true
           - name: list-artifacts
