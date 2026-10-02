@@ -209,7 +209,7 @@ def _parse_server_entry(entry: Any, index: int) -> ResolvedMCPServer | None:
             resolved_headers.append(resolved)
 
     timeout = entry.get("timeout", 60)
-    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
+    if not isinstance(timeout, int | float) or isinstance(timeout, bool):
         logger.warning("Invalid timeout in server %r, using default", name)
         timeout = 60
 
@@ -280,7 +280,7 @@ def _has_valid_rbac_metadata(metadata: Any) -> bool:
     ]
     if len(forms) != 1:
         return False
-    return isinstance(forms[0], (dict, list)) and bool(forms[0])
+    return isinstance(forms[0], dict | list) and bool(forms[0])
 
 
 def _admit_discovered_tools(

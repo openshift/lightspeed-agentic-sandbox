@@ -1,12 +1,15 @@
---index-url https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.4/cpu-ubi9/simple/
-griffelib==2.0.2 \
-    --hash=sha256:79d665b5da3d3654504f1768491dc189a603dd5791c52fd8f0d655d1422c8205
-maturin==1.13.1 \
-    --hash=sha256:058074849027fbeff8ed8e61658b0ec8f31357b8a8a05b7705a1ea03622ba0b9 \
-    --hash=sha256:c70ec3c3c8e2c8bb95e8ebe676d8d04e623ec842fc39e3547a582dc95051c685
-uv==0.11.6 \
-    --hash=sha256:2c56180b8ba73865f1c578b62f8d8cca387709fbc17042eb4711edb33d2ef3da \
-    --hash=sha256:5a4d77bdf7f4421327179bf04f4faac5a5da4fafd971c3db28cd1ccfc13a970d
-uv-build==0.11.8 \
-    --hash=sha256:2e8ee36180bbe326144a9ddcd3dc8d68a0a4021e1bd76536552e59d34abcd669 \
-    --hash=sha256:ca1f98469bebe5726c3b520709027512fa823afd04d1b09b93f905042b495c0e
+--index-url https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.5/cpu-ubi9/simple/
+griffelib==2.1.0 \
+    --hash=sha256:391729cdaa1665671ec3af0c05523fc969c9d7ca74848f8593676624efc1140d
+maturin==1.15.0 \
+    --hash=sha256:52eb3e4eb6af2d83e5ff4a856714b4d661eb49b937aa97cb995ab30c86435bb0 \
+    --hash=sha256:8de7fc210b6949ed7ef3e60f31d71945d89c95d0a3695f2449521270dc591cf2
+nh3==0.3.6 \
+    --hash=sha256:23ef1e4c97b90d7eb87f665f953be41a410dcc9a5be17513f65a2bcd5bd6613f \
+    --hash=sha256:ab3e567f4866cad347e56bdf2c414f3e01789ae6fc50a3b4da39fd3338c5e549
+uv==0.11.29 \
+    --hash=sha256:5ad8d45df914674d20e3b01511960af91fcc24802150c645c91fe09f6b701d1f \
+    --hash=sha256:94eaedf9d99f5bc2c06a57a03be483369a030946781dafe57ccf13d91c5c63d2
+uv-build==0.11.29 \
+    --hash=sha256:8a698dd58ec5b7e9c91165de5f43798575bc466ec334e3f93734a4df876ea7e6 \
+    --hash=sha256:d00fb39395b6814d457420a2d27fb1513976d5c85aaf986f81843b79c6cddacb
