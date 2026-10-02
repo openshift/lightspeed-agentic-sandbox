@@ -211,7 +211,7 @@ def test_build_manifest_skips_e2e_output_dir_outside_temp(
 
 
 @pytest.mark.asyncio
-async def test_openai_model_uses_shared_tls_context(
+async def test_openai_model_uses_shared_tls_context_and_disables_redirects(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     shared_context = object()
@@ -227,7 +227,7 @@ async def test_openai_model_uses_shared_tls_context(
         http_client.return_value = MagicMock()
         await _run_openai_provider(str(tmp_path))
 
-    http_client.assert_called_once_with(verify=shared_context)
+    http_client.assert_called_once_with(verify=shared_context, follow_redirects=False)
 
 
 async def _empty_stream() -> AsyncIterator[None]:
