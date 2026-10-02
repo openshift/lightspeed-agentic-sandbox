@@ -14,7 +14,7 @@
 # Expects:
 #   - Provider credentials mounted under /var/run/credentials/
 #     (vertex/openai: token; bedrock: aws_access_key_id, aws_secret_access_key)
-#   - KUBECONFIG (Konflux EaaS pipeline sets this after get-kubeconfig)
+#   - KUBECONFIG (Konflux pipeline mounts the hosted cluster's kubeconfig Secret)
 #   - OPERATOR_REPO (Konflux pipeline clones operator for Result CRDs)
 #   - E2E_NAMESPACE (default openshift-lightspeed)
 #   - ARTIFACT_DIR set (for junit XML output)
