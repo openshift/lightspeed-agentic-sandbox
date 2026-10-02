@@ -111,7 +111,7 @@ def _raise_publish_error(operation: str, path: str, exc: BaseException) -> None:
     """Raise PublishError for a failed Kubernetes API call."""
     if isinstance(exc, ApiException):
         raise PublishError(f"{operation} {path}: {exc.status} {_api_error_detail(exc)}") from exc
-    if isinstance(exc, (Urllib3TimeoutError, MaxRetryError)):
+    if isinstance(exc, Urllib3TimeoutError | MaxRetryError):
         raise PublishError(f"{operation} {path}: request timed out") from exc
     raise exc
 

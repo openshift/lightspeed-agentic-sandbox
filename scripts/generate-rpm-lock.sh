@@ -117,14 +117,19 @@ fi
 
 echo "Installing rpm-lockfile-prototype..."
 $CONTAINER_RUNTIME exec "$CONTAINER_NAME" python3 -m pip install --user \
-    https://github.com/konflux-ci/rpm-lockfile-prototype/archive/refs/tags/v0.21.0.tar.gz
+    https://github.com/konflux-ci/rpm-lockfile-prototype/archive/refs/tags/v0.24.0.tar.gz
+
+echo "Copying registry auth into container..."
+AUTH_JSON="/run/user/$(id -u)/containers/auth.json"
+if [[ -f "$AUTH_JSON" ]]; then
+    $CONTAINER_RUNTIME exec "$CONTAINER_NAME" mkdir -p /root/.config/containers
+    $CONTAINER_RUNTIME cp "$AUTH_JSON" "$CONTAINER_NAME:/root/.config/containers/auth.json"
+fi
 
 echo "Creating workdir and copying files..."
 $CONTAINER_RUNTIME exec "$CONTAINER_NAME" mkdir -p "$WORKDIR"
 $CONTAINER_RUNTIME cp "$INPUT_FILE" "$CONTAINER_NAME:$WORKDIR/$(basename "$INPUT_FILE")"
 $CONTAINER_RUNTIME cp "$REDHAT_REPO_FILE" "$CONTAINER_NAME:$WORKDIR/$(basename "$REDHAT_REPO_FILE")"
-
-OUTFILE_BASENAME=$(basename "$OUTPUT_FILE")
 
 echo "Running rpm-lockfile-prototype..."
 $CONTAINER_RUNTIME exec -w "$WORKDIR" "$CONTAINER_NAME" bash -c '
@@ -134,11 +139,11 @@ $CONTAINER_RUNTIME exec -w "$WORKDIR" "$CONTAINER_NAME" bash -c '
     export DNF_VAR_SSL_CLIENT_CERT
     /root/.local/bin/rpm-lockfile-prototype \
         --image "'"$BASE_IMAGE"'" \
-        --outfile "'"$OUTFILE_BASENAME"'" \
+        --outfile "'"$OUTPUT_FILE"'" \
         "'"$(basename "$INPUT_FILE")"'"
 '
 
 echo "Copying output file from container..."
-$CONTAINER_RUNTIME cp "$CONTAINER_NAME:$WORKDIR/$OUTFILE_BASENAME" "$OUTPUT_FILE"
+$CONTAINER_RUNTIME cp "$CONTAINER_NAME:$WORKDIR/$OUTPUT_FILE" "$OUTPUT_FILE"
 
 echo "Successfully generated $OUTPUT_FILE"

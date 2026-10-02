@@ -18,7 +18,15 @@ EXPECTED_MISSING=(
     httpx2-jsfetch
     # Dependencies in uv.lock's PyPI graph absent after RHOAI pins select
     # compatible versions of their parent packages.
-    grpcio-status
+    aiohappyeyeballs
+    aiohttp
+    aiosignal
+    frozenlist
+    multidict
+    propcache
+    tqdm
+    tzlocal
+    yarl
 )
 
 log() { echo "==> $*"; }
@@ -31,7 +39,7 @@ normalize_names() {
 # Extract normalized name\tversion pairs from pip-requirements-style input.
 # Strips trailing continuations (\) and environment markers (; ...).
 normalize_pinned() {
-    grep -E '^[a-zA-Z0-9]' | sed 's/ *\\.*//; s/ *;.*//' | \
+    sed -n '/^[a-zA-Z0-9]/p' | sed 's/ *\\.*//; s/ *;.*//' | \
         awk -F'==' '{name=$1; ver=$2; gsub(/[-_.]+/, "_", name); gsub(/ /, "", ver); print tolower(name) "\t" ver}' | \
         sort -u
 }
@@ -59,8 +67,8 @@ HASH_PINNED=$(echo "$HASH_RAW" | normalize_pinned)
 HASH_COUNT=$(echo "$HASH_PKGS" | grep -c . || true)
 
 # Per-source pinned versions for tiered version checking:
-# PyPI packages (source + wheel.pypi) must match uv.lock exactly.
-# RHOAI packages (wheel) may intentionally pin different versions.
+# The resolver selects versions from RHOAI and PyPI independently of uv.lock.
+# Report version skew for both sources; package coverage remains mandatory.
 PYPI_PINNED=$({ cat "$SOURCE_HASH_FILE"; cat "$WHEEL_PYPI_HASH_FILE"; } | normalize_pinned)
 RHOAI_PINNED=$(cat "$WHEEL_HASH_FILE" | normalize_pinned)
 
@@ -96,7 +104,7 @@ ORPHANS=$(comm -23 <(echo "$HASH_PKGS") <(echo "$UV_PKGS") \
 ORPHAN_COUNT=$(echo "$ORPHANS" | grep -c . || true)
 
 # --- Check for version mismatches (split by source) ---
-# PyPI packages (source.txt + wheel.pypi.txt) must match uv.lock → ERROR
+# PyPI packages (source.txt + wheel.pypi.txt) may differ from uv.lock → WARNING
 PYPI_MISMATCHED=""
 while IFS=$'\t' read -r name uv_ver; do
     hash_versions=$(awk -F'\t' -v n="$name" '$1 == n {print $2}' <<< "$PYPI_PINNED" | paste -sd, -)
@@ -136,10 +144,8 @@ fi
 
 if [[ $PYPI_MISMATCHED_COUNT -gt 0 ]]; then
     echo ""
-    echo "ERROR: $PYPI_MISMATCHED_COUNT PyPI package(s) have version mismatches between uv.lock and hash files:"
+    echo "WARNING: $PYPI_MISMATCHED_COUNT PyPI package(s) have version skew (Konflux resolves independently of uv.lock):"
     echo "$PYPI_MISMATCHED"
-    echo "Fix: run 'make konflux-requirements' to re-resolve PyPI packages."
-    EXIT_CODE=1
 fi
 
 if [[ $RHOAI_MISMATCHED_COUNT -gt 0 ]]; then

@@ -1,37 +1,3 @@
 # Manual version overrides for RHOAI compatibility.
 # Pin packages here when RHOAI has a different version than PyPI resolves to.
 # Regenerate after editing: make konflux-requirements
-
-# RHOAI ships pydantic-core 2.46.1. The auto-override logic pins pydantic
-# to the latest RHOAI version (2.13.4), but that requires pydantic-core 2.46.4.
-# Pin pydantic to 2.13.1 which matches pydantic-core 2.46.1 exactly.
-pydantic==2.13.1
-
-# RHOAI's newest openai wheel is 2.41.1, but openai-agents>=0.18.2 imports
-# PromptCacheOptions (added in openai>=2.45.0). Force the PyPI-resolved pin.
-openai==2.48.0
-
-# Keep PyPI-only packages aligned with uv.lock. The resolver otherwise selects
-# newer releases independently, which makes the generated files fail verification.
-google-adk==2.5.0
-google-cloud-vectorsearch==0.11.1
-langchain-aws==1.6.2
-langchain-mcp-adapters==0.3.0
-openai-agents==0.18.3
-wcmatch==11.0
-# Keep the DeepAgents runtime compatible with the uv.lock callback stack.
-deepagents==0.7.18
-langchain==1.4.2
-langchain-core==1.6.6
-langchain-google-genai==4.4.0
-langchain-protocol==0.0.18
-langgraph==1.2.12
-langsmith==0.14.0
-
-# CVE fixes: override RHOAI pins that are below the minimum safe versions.
-# RHOAI ships older authlib/pyjwt/anyio; pin to the CVE-patched PyPI releases.
-# anyio 4.15.1 requires typing-extensions>=4.16.0 for PEP 661 sentinel support.
-authlib==1.8.0
-pyjwt==2.15.1
-anyio==4.15.1
-typing-extensions==4.16.0

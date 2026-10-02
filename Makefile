@@ -42,12 +42,12 @@ format: ## Auto-format with ruff
 	$(UV) run ruff check . --fix
 
 mypy: ## Run mypy against application package
-	$(UV) run mypy src/lightspeed_agentic
+	$(UV) run --extra dev mypy src/lightspeed_agentic
 
 verify: verify-hermetic-requirements ## Run non-mutating formatting, lint, and type checks
 	$(UV) run ruff format . --check
 	$(UV) run ruff check .
-	$(UV) run mypy src/lightspeed_agentic
+	$(UV) run --extra dev mypy src/lightspeed_agentic
 
 verify-hermetic-requirements: ## Verify hermetic build hash files are in sync with uv.lock
 	bash scripts/verify_hermetic_requirements.sh

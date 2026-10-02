@@ -428,10 +428,8 @@ class OpenAIProvider(AgentProvider):
                     elif (
                         isinstance(
                             event.data,
-                            (
-                                ResponseReasoningTextDeltaEvent,
-                                ResponseReasoningSummaryTextDeltaEvent,
-                            ),
+                            ResponseReasoningTextDeltaEvent
+                            | ResponseReasoningSummaryTextDeltaEvent,
                         )
                         and event.data.delta
                     ):

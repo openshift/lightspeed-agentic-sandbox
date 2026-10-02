@@ -77,7 +77,7 @@ async def _classify_with_retries(
             )
             failure_type = (
                 "timeout"
-                if isinstance(exc, (TimeoutError, asyncio.TimeoutError))
+                if isinstance(exc, TimeoutError | asyncio.TimeoutError)
                 else "invalid_response"
                 if isinstance(exc, ValueError) or type(exc).__name__ == "ValidationError"
                 else "provider_error"

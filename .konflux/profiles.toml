@@ -1,11 +1,11 @@
 [common]
 python_version = "3.12"
 platforms = ["x86_64", "aarch64"]
-bootstrap_packages = ["maturin", "griffelib", "uv", "uv-build"]
+bootstrap_packages = ["maturin", "griffelib", "nh3", "uv", "uv-build"]
 extras = ["all"]
 
 [profiles.cpu]
-rhoai_index_url = "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.4/cpu-ubi9/simple/"
+rhoai_index_url = "https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.5/cpu-ubi9/simple/"
 output_suffix = ""
 tekton_files = [
     ".tekton/lightspeed-agentic-sandbox-pull-request.yaml",
