@@ -12,6 +12,8 @@ from tests.e2e.run_result import E2ERunResult, store_run_result
 def _run_query(bdd_context: dict[str, Any], run_runner: Any, **kwargs: Any) -> None:
     if bdd_context.get("mount_skills", False):
         kwargs["mount_skills"] = True
+    if job_env_overrides := bdd_context.get("job_env_overrides"):
+        kwargs["job_env_overrides"] = job_env_overrides
     res: E2ERunResult = run_runner(bdd_context["query"], **kwargs)
     store_run_result(bdd_context, res)
 

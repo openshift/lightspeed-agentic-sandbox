@@ -11,6 +11,7 @@ import json
 import re
 import secrets
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -169,6 +170,7 @@ def run_batch_query(
     job_name_prefix: str | None = None,
     timeout_ms: int | None = None,
     mount_skills: bool = False,
+    job_env_overrides: Mapping[str, str] | None = None,
 ) -> RunBatchResult:
     """Create input ConfigMap + batch Job, wait for completion, read Result CR."""
     start = time.monotonic()
@@ -237,6 +239,7 @@ def run_batch_query(
                 step,
                 timeout_ms=timeout_ms,
                 skill_configmaps=skill_configmaps,
+                job_env_overrides=job_env_overrides,
             ),
         )
         job_uid = created_job.metadata.uid  # pyright: ignore[reportAttributeAccessIssue, reportOptionalMemberAccess]
@@ -457,6 +460,7 @@ def _build_job_spec(
     step: str,
     timeout_ms: int | None = None,
     skill_configmaps: dict[str, str] | None = None,
+    job_env_overrides: Mapping[str, str] | None = None,
 ) -> V1Job:
     otel_enabled = bool(config.otel_endpoint)
     env = [
@@ -468,7 +472,8 @@ def _build_job_spec(
     ]
     for key, value in config.extra_env.items():
         env.append({"name": key, "value": value})
-    for key, value in config.job_env.items():
+    job_env = {**config.job_env, **(job_env_overrides or {})}
+    for key, value in job_env.items():
         env.append({"name": key, "value": value})
 
     env_names = {item["name"] for item in env}

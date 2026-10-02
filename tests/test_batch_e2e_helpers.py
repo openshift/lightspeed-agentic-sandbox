@@ -23,7 +23,11 @@ from tests.e2e.batch_runner import (
     build_result_template,
     run_batch_query,
 )
-from tests.e2e.otel_verify import logs_contain_audit_logs_for_run, logs_contain_traces_for_run
+from tests.e2e.otel_verify import (
+    logs_contain_audit_logs_for_run,
+    logs_contain_tool_result_inspection_for_run,
+    logs_contain_traces_for_run,
+)
 from tests.e2e.skills_fixtures import (
     E2E_POD_SKILLS_DIR,
     E2E_POD_SKILLS_SRC_DIR,
@@ -33,6 +37,7 @@ from tests.e2e.skills_fixtures import (
 )
 from tests.e2e.suite_setup import (
     BatchE2EConfig,
+    _session_job_env,
     load_batch_e2e_config,
     resolve_llm_secret,
     resolve_model,
@@ -332,6 +337,46 @@ class TestOtelVerify:
         )
         assert not logs_contain_audit_logs_for_run(logs, self.RUN_UID, phase="analysis")
 
+    def test_tool_result_inspection_positive(self) -> None:
+        logs = (
+            "ResourceSpans #0\n"
+            "Span #0\n"
+            f"     -> agenticrun.uid: Str({self.RUN_UID})\n"
+            "[pod/otel-collector/otel-collector] 2026-10-02T19:15:25.104289208Z "
+            "Trace ID       : shared-trace\n"
+            "Span #1\n"
+            "    Name           : tool_result.inspection\n"
+            "     -> inspection.outcome: Str(benign)\n"
+            "[pod/otel-collector/otel-collector] 2026-10-02T19:15:25.104289208Z "
+            "Trace ID       : shared-trace\n"
+        )
+        assert logs_contain_tool_result_inspection_for_run(logs, self.RUN_UID)
+
+    def test_tool_result_inspection_rejects_non_benign_outcome(self) -> None:
+        logs = (
+            "ResourceSpans #0\n"
+            "Span #0\n"
+            f"     -> agenticrun.uid: Str({self.RUN_UID})\n"
+            "Trace ID       : shared-trace\n"
+            "Span #1\n"
+            "    Name           : tool_result.inspection\n"
+            "     -> inspection.outcome: Str(classifier_error)\n"
+            "Trace ID       : shared-trace\n"
+        )
+        assert not logs_contain_tool_result_inspection_for_run(logs, self.RUN_UID)
+
+    def test_tool_result_inspection_rejects_inspection_span_from_another_trace(self) -> None:
+        logs = (
+            "ResourceSpans #0\n"
+            "Span #0\n"
+            f"     -> agenticrun.uid: Str({self.RUN_UID})\n"
+            "Trace ID       : run-trace\n"
+            "Span #1\n"
+            "    Name           : tool_result.inspection\n"
+            "Trace ID       : other-trace\n"
+        )
+        assert not logs_contain_tool_result_inspection_for_run(logs, self.RUN_UID)
+
 
 class TestBuildJobSpec:
     def _config(self, *, job_env: dict[str, str] | None = None) -> BatchE2EConfig:
@@ -355,6 +400,9 @@ class TestBuildJobSpec:
         env = job.spec["template"]["spec"]["containers"][0]["env"]
         return {item["name"]: item["value"] for item in env}
 
+    def test_session_job_env_does_not_enable_tool_output_inspection(self) -> None:
+        assert "LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED" not in _session_job_env()
+
     def test_sets_required_execution_limit_env_defaults(self) -> None:
         job = _build_job_spec(
             self._config(),
@@ -369,6 +417,22 @@ class TestBuildJobSpec:
 
         assert env["LIGHTSPEED_AGENT_TIMEOUT_SECONDS"] == "600"
         assert env["LIGHTSPEED_AGENT_MAX_TURNS"] == "200"
+        assert env["LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED"] == "false"
+
+    def test_applies_job_env_override_without_mutating_config(self) -> None:
+        config = self._config()
+        job = _build_job_spec(
+            config,
+            "job-name",
+            "input-cm",
+            {"app": "test"},
+            "run-uid",
+            "analysis",
+            job_env_overrides={"LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED": "true"},
+        )
+
+        assert self._env(job)["LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED"] == "true"
+        assert "LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED" not in config.job_env
 
     def test_timeout_ms_override_rounds_up_to_seconds(self) -> None:
         job = _build_job_spec(
@@ -411,6 +475,7 @@ class TestBuildJobSpec:
                 job_env={
                     "LIGHTSPEED_AGENT_TIMEOUT_SECONDS": "42",
                     "LIGHTSPEED_AGENT_MAX_TURNS": "7",
+                    "LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED": "true",
                 }
             ),
             "job-name",
@@ -424,6 +489,7 @@ class TestBuildJobSpec:
 
         assert env["LIGHTSPEED_AGENT_TIMEOUT_SECONDS"] == "42"
         assert env["LIGHTSPEED_AGENT_MAX_TURNS"] == "7"
+        assert env["LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED"] == "true"
 
 
 class TestRunBatchQuery:

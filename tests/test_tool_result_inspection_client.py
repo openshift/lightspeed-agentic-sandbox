@@ -22,6 +22,31 @@ class FakeModel:
         return self.response
 
 
+class StructuredFakeModel(FakeModel):
+    def with_structured_output(
+        self,
+        schema: Any,
+        *,
+        method: str,
+        include_raw: bool,
+    ) -> FakeModel:
+        assert schema is ClassifierDecision
+        assert method == "function_calling"
+        assert include_raw is True
+        return _StructuredBoundModel(self.response, self)
+
+
+class _StructuredBoundModel:
+    def __init__(self, response: Any, parent: FakeModel) -> None:
+        self.response = response
+        self.parent = parent
+
+    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> Any:
+        self.parent.messages = messages
+        self.parent.parameters = kwargs
+        return {"raw": None, "parsed": self.response, "parsing_error": None}
+
+
 @pytest.mark.asyncio
 async def test_classifier_client_sends_only_dedicated_untrusted_content_messages() -> None:
     model = FakeModel('{"injectionDetected": false, "category": "none"}')
@@ -59,6 +84,23 @@ async def test_classifier_client_sends_only_dedicated_untrusted_content_messages
     assert json.loads(model.messages[1].content) == request.model_dump(by_alias=True)
     assert "history" not in model.messages[1].content
     assert "system prompt" not in model.messages[1].content.lower()
+
+
+@pytest.mark.asyncio
+async def test_classifier_uses_function_calling_when_model_supports_structured_output() -> None:
+    decision = await LangChainClassifierClient(
+        StructuredFakeModel(ClassifierDecision(injectionDetected=False, category="none"))
+    ).classify(
+        ClassifierRequest(
+            toolName="list_namespaces",
+            resultType="result",
+            chunkIndex=0,
+            chunkCount=1,
+            content="Namespaces: default",
+        )
+    )
+
+    assert decision == ClassifierDecision(injectionDetected=False, category="none")
 
 
 @pytest.mark.asyncio

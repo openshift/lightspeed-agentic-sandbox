@@ -156,6 +156,10 @@ make e2e openai-agents -k mcp
 support is opt-in via env vars. See the environment exports table below for the
 complete list of model/endpoint variables by provider.
 
+The focused tool-result inspection scenario applies
+`LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED=true` only to its own batch Job. The
+suite default remains `false`.
+
 ### Environment exports
 
 | Variable | Set by | Purpose |
@@ -210,6 +214,7 @@ Feature files and unit tests are also listed under each behavioral spec. Summary
 | [skills.feature](../../../tests/e2e/features/skills.feature) | provider-contract | Skills mount, echo-token skill, nonskill query |
 | [analysis_output.feature](../../../tests/e2e/features/analysis_output.feature) | run-api, provider-contract | find-token skill, operator analysis + component tokens |
 | [mcp.feature](../../../tests/e2e/features/mcp.feature) | provider-contract, configuration | MCP wiring, tool invoke, MCP tool failure envelope |
+| [tool_result_inspection.feature](../../../tests/e2e/features/tool_result_inspection.feature) | provider-contract | DeepAgents tool-result inspection enabled for a focused MCP run |
 | [reasoning_config.feature](../../../tests/e2e/features/reasoning_config.feature) | provider-contract, configuration | Reasoning config passthrough |
 | [troubleshooting.feature](../../../tests/e2e/features/troubleshooting.feature) | e2e-testing (troubleshooting) | Cluster-level troubleshooting scenario validation (OLS-3739) |
 

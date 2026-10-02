@@ -685,7 +685,7 @@ class TestEventMapping:
                 )
 
         assert "response_format" not in mock_create.call_args[1]
-        mock_format_model.with_structured_output.assert_called_once()
+        assert mock_format_model.with_structured_output.call_count == 2
         result_events = [e for e in events if isinstance(e, ResultEvent)]
         assert len(result_events) == 1
         assert result_events[0].text == '{"status": "ok"}'
@@ -756,8 +756,8 @@ class TestEventMapping:
                 )
 
         assert "response_format" not in mock_create.call_args[1]
-        mock_format_model.with_structured_output.assert_called_once()
-        call_kwargs = mock_format_model.with_structured_output.call_args[1]
+        assert mock_format_model.with_structured_output.call_count == 2
+        call_kwargs = mock_format_model.with_structured_output.call_args_list[-1][1]
         assert call_kwargs["method"] == "function_calling"
         assert call_kwargs["include_raw"] is True
 
