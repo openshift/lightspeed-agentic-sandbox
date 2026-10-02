@@ -124,6 +124,7 @@ def run_runner(
         wait_timeout_seconds: float = 600.0,
         timeout_ms: int | None = None,
         mount_skills: bool = False,
+        job_env_overrides: dict[str, str] | None = None,
     ) -> E2ERunResult:
         batch = run_batch_query(
             batch_e2e_config,
@@ -138,6 +139,7 @@ def run_runner(
             wait_timeout_seconds=wait_timeout_seconds,
             timeout_ms=timeout_ms,
             mount_skills=mount_skills,
+            job_env_overrides=job_env_overrides,
         )
         return batch_to_run_result(batch)
 

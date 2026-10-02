@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import suppress
 from typing import Any, Protocol
 
 from lightspeed_agentic.inspection.errors import ClassifierResponseError
@@ -81,10 +82,26 @@ def _decision_from_text(text: str) -> ClassifierDecision:
 
 
 class LangChainClassifierClient:
-    """Run a strict, tool-free classifier call through a LangChain chat model."""
+    """Run a strict classifier call through a LangChain chat model.
+
+    LangChain Anthropic adapters use function calling for the decision when
+    structured binding is available. The text parser remains available for
+    lightweight test doubles that do not implement structured binding.
+    """
 
     def __init__(self, model: ChatModel) -> None:
         self._model = model
+        bind_structured = getattr(model, "with_structured_output", None)
+        self._structured_model = None
+        if callable(bind_structured):
+            # Lightweight test/fake models may expose the base method without
+            # implementing tool binding; retain the text-parser compatibility path.
+            with suppress(NotImplementedError):
+                self._structured_model = bind_structured(
+                    ClassifierDecision,
+                    method="function_calling",
+                    include_raw=True,
+                )
 
     async def classify(
         self,
@@ -101,7 +118,13 @@ class LangChainClassifierClient:
         ]
         # LangGraph's messages stream otherwise forwards this nested classifier reply
         # as if it were an agent reply (including into audit and result text).
-        response = await self._model.ainvoke(
-            messages, max_tokens=128, config={"tags": ["nostream"]}
-        )
+        target = self._structured_model or self._model
+        response = await target.ainvoke(messages, max_tokens=128, config={"tags": ["nostream"]})
+        if self._structured_model is not None:
+            if not isinstance(response, dict) or response.get("parsed") is None:
+                raise ClassifierResponseError("schema_mismatch")
+            try:
+                return ClassifierDecision.model_validate(response["parsed"])
+            except (TypeError, ValueError):
+                raise ClassifierResponseError("schema_mismatch") from None
         return _decision_from_text(_response_text(response))
