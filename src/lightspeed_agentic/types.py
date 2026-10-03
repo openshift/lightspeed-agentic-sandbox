@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from lightspeed_agentic.audit import AuditLogger
     from lightspeed_agentic.mcp import AdmittedMCPProviderServer
 
 DEFAULT_MODEL = "claude-opus-4-6"
@@ -87,6 +88,7 @@ class ProviderQueryOptions:
     mcp_servers: list[AdmittedMCPProviderServer] = field(default_factory=list)
     reasoning_config: dict[str, Any] | None = None
     tool_output_inspection_enabled: bool = True
+    audit_logger: AuditLogger | None = None
     deadline: float | None = None
 
 

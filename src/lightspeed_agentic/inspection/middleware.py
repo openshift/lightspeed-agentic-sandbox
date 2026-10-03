@@ -65,7 +65,6 @@ class ToolResultInspectionMiddleware(AgentMiddleware[Any, Any, Any]):
             if getattr(outcome, "passed", True) is False:
                 raise ToolResultSafetyInspectionFailed()
             self._passed_signatures.add(signature)
-
         return await handler(request)
 
     def is_passed(

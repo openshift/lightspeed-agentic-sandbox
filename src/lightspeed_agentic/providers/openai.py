@@ -12,6 +12,7 @@ import logging
 import os
 import tempfile
 from collections.abc import AsyncIterator
+from copy import copy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -161,11 +162,9 @@ def _ensure_openai_init() -> None:
     global _openai_initialized
     if _openai_initialized:
         return
-    from agents import enable_verbose_stdout_logging
     from agents.tracing import set_tracing_disabled
 
     set_tracing_disabled(True)
-    enable_verbose_stdout_logging()  # type: ignore[no-untyped-call]
     _patch_exec_command_args()
     _openai_initialized = True
 
@@ -293,8 +292,20 @@ class OpenAIProvider(AgentProvider):
 
         # Setup model and capabilities based on endpoint
         is_native = _is_native_openai()
-        capabilities: list[Any] = [Shell()]
+        capabilities: list[Any] = []
         function_tools_list: list[Any] | None = None
+        tool_hooks = None
+        model_proxy_factory: Any = None
+        if options.audit_logger is not None:
+            from lightspeed_agentic.providers.openai_telemetry import (
+                create_model_proxy,
+                create_tool_hooks,
+            )
+
+            tool_hooks = create_tool_hooks(options.audit_logger)
+            model_proxy_factory = create_model_proxy
+
+        capabilities.append(Shell())
 
         if is_native:
             from agents.models.openai_responses import OpenAIResponsesModel
@@ -321,8 +332,19 @@ class OpenAIProvider(AgentProvider):
             )
             # vLLM/custom: use manually implemented filesystem function tools
             # (avoids incompatible CustomTool apply_patch in Filesystem)
-            function_tools_list = [read_file, write_file, list_directory, apply_patch]
+            # FunctionTool.__copy__ rebinds SDK wrappers for per-query telemetry hooks.
+            function_tools_list = [
+                copy(tool) if tool_hooks is not None else tool
+                for tool in (read_file, write_file, list_directory, apply_patch)
+            ]
 
+        if model_proxy_factory is not None:
+            model = model_proxy_factory(
+                model,
+                options.audit_logger,
+                request_model=options.model,
+                native_responses=is_native,
+            )
         # Add Skills if present
         if has_skills(options.cwd):
             capabilities.append(
@@ -410,12 +432,13 @@ class OpenAIProvider(AgentProvider):
                 ),
             )
 
-            result = Runner.run_streamed(
-                agent,
-                options.prompt,
-                max_turns=options.max_turns,
-                run_config=run_config,
-            )
+            runner_kwargs: dict[str, Any] = {
+                "max_turns": options.max_turns,
+                "run_config": run_config,
+            }
+            if tool_hooks is not None:
+                runner_kwargs["hooks"] = tool_hooks
+            result = Runner.run_streamed(agent, options.prompt, **runner_kwargs)
 
             # Stream events from the runner
             async for event in result.stream_events():
@@ -475,6 +498,12 @@ class OpenAIProvider(AgentProvider):
                 reasoning_tokens=reasoning,
                 response_model=resp_model,
             )
+        except BaseException as error:
+            if tool_hooks is not None:
+                tool_hooks.close(error)
+            raise
         finally:
+            if tool_hooks is not None:
+                tool_hooks.close()
             if mcp_manager:
                 await mcp_manager.__aexit__(None, None, None)

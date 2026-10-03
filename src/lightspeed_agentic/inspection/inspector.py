@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, cast
 
@@ -115,6 +115,7 @@ async def inspect_tool_result(
     value: Any,
     codec: TokenCodec,
     tool_call_id: str | None = None,
+    correlation_attributes: Mapping[str, str] | None = None,
     context_window_tokens: int,
     instruction_tokens: int,
     output_tokens: int,
@@ -154,6 +155,10 @@ async def inspect_tool_result(
             "inspection.enabled": True,
             "tool.name": tool_name,
         }
+        for key in ("agenticrun.uid", "agenticrun.phase"):
+            correlation_value = (correlation_attributes or {}).get(key)
+            if correlation_value:
+                attributes[key] = correlation_value
         if provider:
             attributes["llm.provider"] = provider
         if model:
@@ -181,10 +186,24 @@ async def inspect_tool_result(
                     monotonic=monotonic,
                     sleep=sleep,
                 )
+            except asyncio.CancelledError:
+                span.set_attribute("inspection.outcome", "classifier_error")
+                span.set_attribute("inspection.failure_type", "cancelled")
+                span.set_attribute("error.type", "cancelled")
+                span.set_status(Status(StatusCode.ERROR))
+                logger.warning(
+                    "tool result safety inspection failed",
+                    extra={
+                        "inspection.outcome": "classifier_error",
+                        "inspection.failure_type": "cancelled",
+                    },
+                )
+                raise
             except InspectionError as exc:
                 span.set_attribute("inspection.attempt_count", exc.attempt_count or 3)
                 span.set_attribute("inspection.outcome", "classifier_error")
                 span.set_attribute("inspection.failure_type", exc.failure_type)
+                span.set_attribute("error.type", exc.failure_type)
                 if exc.response_issue is not None:
                     span.set_attribute("inspection.response_issue", exc.response_issue)
                 if exc.provider_status_code is not None:
@@ -213,7 +232,6 @@ async def inspect_tool_result(
             if decision.injection_detected:
                 span.set_attribute("inspection.outcome", "malicious")
                 span.set_attribute("inspection.category", decision.category)
-                span.set_status(Status(StatusCode.ERROR))
                 logger.warning(
                     "malicious tool result detected",
                     extra={

@@ -103,6 +103,19 @@ class GeminiProvider(AgentProvider):
 
         from lightspeed_agentic.tls import get_ssl_context
 
+        telemetry = None
+        if options.audit_logger is not None:
+            from lightspeed_agentic.providers.gemini_telemetry import (
+                GeminiTelemetry,
+                disable_adk_native_telemetry,
+            )
+
+            disable_adk_native_telemetry()
+            telemetry = GeminiTelemetry(
+                options.audit_logger,
+                requested_model=options.model,
+            )
+
         workspace = pathlib.Path(options.cwd)
 
         bash = ExecuteBashTool(workspace=workspace)
@@ -177,6 +190,23 @@ class GeminiProvider(AgentProvider):
             "generate_content_config": types.GenerateContentConfig(**gen_content_kwargs),
         }
 
+        if telemetry is not None:
+            agent_kwargs.update(
+                {
+                    "before_model_callback": telemetry.before_model_callback,
+                    "after_model_callback": telemetry.after_model_callback,
+                    "on_model_error_callback": telemetry.on_model_error_callback,
+                    "before_tool_callback": telemetry.before_tool_callback,
+                    # ADK stops at the first non-None callback result. Record the
+                    # raw result before the existing model-visible trim runs.
+                    "after_tool_callback": [
+                        telemetry.after_tool_callback,
+                        _trim_tool_response,
+                    ],
+                    "on_tool_error_callback": telemetry.on_tool_error_callback,
+                }
+            )
+
         agent = Agent(**agent_kwargs)
 
         if options.output_schema:
@@ -210,6 +240,7 @@ class GeminiProvider(AgentProvider):
         total_input_tokens = 0
         total_output_tokens = 0
 
+        query_error: BaseException | None = None
         try:
             async for event in runner.run_async(
                 user_id=user_id,
@@ -220,6 +251,8 @@ class GeminiProvider(AgentProvider):
                 ),
                 run_config=run_config,
             ):
+                if telemetry is not None:
+                    telemetry.observe_model_event(event)
                 if not event.content or not event.content.parts:
                     continue
 
@@ -260,9 +293,16 @@ class GeminiProvider(AgentProvider):
                 if usage:
                     total_input_tokens = getattr(usage, "prompt_token_count", 0) or 0
                     total_output_tokens = getattr(usage, "candidates_token_count", 0) or 0
+        except BaseException as error:
+            query_error = error
+            raise
         finally:
-            for toolset in mcp_toolsets:
-                await toolset.close()
+            try:
+                if telemetry is not None:
+                    telemetry.close(query_error)
+            finally:
+                for toolset in mcp_toolsets:
+                    await toolset.close()
 
         yield ContentBlockStopEvent()
 

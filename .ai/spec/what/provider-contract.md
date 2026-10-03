@@ -2,7 +2,7 @@
 
 Audience: AI agents (Claude). Precision over narrative.
 
-Cross-references: batch agent invocation → `run-api.md`. Env and build → `configuration.md`. Provider-neutral product trace events → `data-collection.md`.
+Cross-references: batch agent invocation → `run-api.md`. Env and build → `configuration.md`. GenAI span instrumentation → `audit-logging.md` and `data-collection.md`.
 
 ## Behavioral Rules
 
@@ -54,7 +54,7 @@ Cross-references: batch agent invocation → `run-api.md`. Env and build → `co
 
 24. **Default allowed tools list.** Shared default names: `Bash`, `Read`, `Glob`, `Grep`, `Skill`. `run_agent_query()` always passes this list unless a future contract exposes overrides. [PLANNED: OLS-3033]
 
-25. **Event logging.** A phase-tagged logger buffers `thinking_delta` events, flushes when buffer size exceeds an internal threshold or on `content_block_stop` or tool/result events, and logs truncated thinking. Tool calls and results are logged with separate input/output truncation caps. The `result` event logs the combined token count and truncated final text. [PLANNED: OLS-3928] DeepAgents MUST NOT log tool arguments or inspected tool-result content. It can log only controlled inspection fields and safe tool metadata.
+25. **Event logging.** A phase-tagged logger accumulates the character count of `thinking_delta` events and flushes that count when it reaches the internal threshold, on `content_block_stop`, or before `tool_call` and `result` events. Tool-call logs include the tool name; tool-result logs contain no result payload; the `result` event logs the aggregate input-plus-output token count. Request content and final-response content MUST NOT be logged. Developer logs MUST NOT contain tool arguments, tool results, or tool-generated errors, as specified by `audit-logging.md` rule 18e. [PLANNED: OLS-3928] DeepAgents MUST NOT log tool arguments or inspected tool-result content. It can log only controlled inspection fields and safe tool metadata.
 
 26. **Stringifying tool I/O.** Non-string tool arguments and results are JSON-serialized for events when the SDK exposes structured objects.
 
@@ -96,37 +96,31 @@ Cross-references: batch agent invocation → `run-api.md`. Env and build → `co
     | Azure Entra ID (OLS-3050) | `client_id` / `tenant_id` / `client_secret` | `azure.identity` `ClientSecretCredential` via `azure_ad_token_provider` (rule 29) |
     | AWS Bedrock (OLS-4092) | `aws_access_key_id` / `aws_secret_access_key` + optional `role_arn` | `botocore` credential-provider chain: with `role_arn` it performs STS assume-role and refreshes the short-lived credentials (see `configuration.md` rule 9b). The Anthropic-on-Bedrock model path is unchanged. |
 
-### Agentic product trace normalization
+### GenAI span instrumentation
 
-39. [PLANNED: OLS-3569] Provider adapters MUST expose the complete provider-neutral completion, reasoning, tool call/result, explicit skill load/use, and terminal-result values required by `data-collection.md`. Provider-specific SDK object shapes MUST stop at the adapter boundary and MUST NOT create alternate content-event names.
+39. Provider adapters MUST observe actual SDK inference and tool lifecycle boundaries through native callbacks or a thin request-boundary wrapper, and pass the observed start/end/error and available values to the shared audit recorder. A provider query may issue multiple inference requests; each actual request is a separate span and metrics sample, not one whole-query inference span.
 
-40. [PLANNED: OLS-3569] Tool input/result and assistant/reasoning values retained for content trace events MUST NOT be length-truncated. The existing `EventLogger` can truncate its developer-log rendering. For DeepAgents tool calls and results, OLS-3928 rule 6 prohibits payload content in that rendering.
+40. Native callbacks MUST be the telemetry source for inference and tool operations. The normalized `ProviderEvent` stream remains solely for application output/result handling and developer logging; it MUST NOT create duplicate spans or operation metrics. Parentage, endpoint provider values, and standard attributes follow `audit-logging.md`.
 
-41. [PLANNED: OLS-3569] Every adapter's terminal `result` MUST carry the exact final response, requested-model fallback or actual response model, input tokens, output tokens, and reasoning tokens. When an SDK does not expose the actual model or a token category, the adapter MUST use the requested model or zero respectively; it MUST NOT omit the field or invent usage.
+41. Adapters MUST record only actual observations. An unavailable response model or token count remains absent; an observed zero remains zero. Do not fabricate provider tool call IDs or substitute callback framework IDs. Pass structured Python values to `AuditLogger`, which JSON-serializes them only when the span is recording. `EventLogger` truncation applies only to developer-log rendering and MUST NOT truncate source span content. DeepAgents tool payloads remain excluded from its developer logs under the inspection boundary below. Standalone safety-classifier requests are actual inference operations and MUST retain timing, endpoint provider, requested/observed model, actual usage, and error instrumentation while omitting input messages, output messages, and system instructions.
+42. The Gemini adapter MUST support the declared optional dependency floor `google-adk>=2.5.0`; provider SDK imports MUST remain lazy so absent extras do not break base-package imports. ADK's process-wide native-telemetry alias suppression is applied once within the sandbox's one-shot batch process; this does not define a reusable per-invocation toggle or a long-lived, multi-run process contract.
+43. Gemini telemetry MUST observe the finalized ADK model Event after call-ID population. Record SDK-assigned IDs unchanged on model-output tool-call parts and actual tool spans, but leave them absent from subsequent effective request history when ADK intentionally strips them. Supplied provider IDs remain unchanged; missing IDs MUST NOT be fabricated, and an exact join requires a common ID exposed at both boundaries.
 
-42. [PLANNED: OLS-3569] Gemini MUST retain terminal text from non-streamed ADK responses and pass it through the terminal `result`; it MUST NOT leave the final value empty because the text arrived in a non-partial event. Gemini MUST also expose response-model and token metadata under rule 41.
+44. OpenAI telemetry MUST remain importable without the optional OpenAI extra. SDK model-proxy and tool-hook subclasses are created inside lazy factories invoked by the adapter, not at module import time.
 
-43. [PLANNED: OLS-3569] DeepAgents structured output MUST preserve the first agent pass's ordered completion, reasoning, tool, and skill signals and pass the second tool-free shape result as terminal `result` text. Usage totals MUST include both passes, and response-model fallback follows rule 41.
-
-44. [PLANNED: OLS-3569] OpenAI MUST serialize `result.final_output` as the terminal `result` value and expose model and token metadata under rule 41, including reasoning tokens from output-token details when available.
-
-45. [PLANNED: OLS-3569] Adapters MUST emit skill-loaded and skill-used signals only when their SDK or sandbox integration explicitly exposes those facts. They MUST include identity and all available content or metadata without redaction or truncation and MUST NOT infer skill use from model text or generic tool output.
-
-46. [PLANNED: OLS-3569] Adapters MUST preserve the same tool name and stable call ID across each tool call/result pair and the corresponding operational tool span, retain complete input and output, and normalize result status to `ok` or `error`. When the SDK omits a call ID, the adapter MUST generate one stable ID for the pair.
-
-### Tool-Result Prompt-Injection Inspection [PLANNED: OLS-3928]
+### Tool-Result Prompt-Injection Inspection
 
  1. **Normative source.** The sandbox MUST conform to `openshift/ols/.ai/spec/what/tool-result-inspection.md`.
 
  2. **Runtime coverage.** The guarded adapter is DeepAgents only. Gemini and OpenAI adapters remain unchanged. Selection of an unguarded adapter MUST NOT cause a runtime warning.
 
- 3. **Interception point.** DeepAgents middleware, or an equivalent tool wrapper, MUST inspect each effective model-visible result. Inspection occurs after artifact offload and before delivery to the main model or `ToolResultEvent` emission.
+ 3. **Interception point.** DeepAgents middleware, or an equivalent tool wrapper, MUST inspect each effective model-visible result after existing SDK output limits and artifact offload, before delivery to the next model request or `ToolResultEvent` emission. A benign offload preview does not classify the entire stored raw artifact.
 
  4. **Model integration.** The middleware MUST construct the isolated classifier from the resolved DeepAgents model configuration. It MUST omit the main agent's reasoning configuration.
 
- 5. **Local paths.** The interception paths include normal results, tool-generated errors, shell output, MCP output, file reads, and search results. They also include offload previews and references. Each later model-visible artifact read or search result MUST pass through the same middleware.
+ 5. **Local paths.** The interception paths include normal results, tool-generated errors, shell output, MCP output, file reads, and search results, including offload previews and references. Each later model-visible artifact read or search result MUST pass through the same middleware; a benign preview does not attest to content in the full artifact.
 
- 6. **Event boundary.** For DeepAgents tool calls and results, the adapter MUST send only controlled, payload-free metadata to `EventLogger`. After a pass, the adapter MUST send the complete normalized `ToolResultEvent` to `AuditLogger`. This path retains the full result required by rules 39–46. A failed inspection MUST raise `ToolResultSafetyInspectionFailed` and send no result event to either logger.
+ 6. **Result boundary.** For DeepAgents tool calls and results, `EventLogger` MUST receive only controlled, payload-free metadata. After inspection passes, the application result stream may carry the complete normalized `ToolResultEvent`. Independently, the audit recorder MUST retain the complete raw callback result on the corresponding successfully completed native tool span at execution completion, regardless of later inspection outcome, when that span is recording. A failed inspection MUST raise `ToolResultSafetyInspectionFailed` and MUST NOT send rejected content to the model, application result stream, Result CR, termination message, or developer logs; it MUST NOT erase or fail the completed source tool span.
 
  7. **Disabled behavior.** When `LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED` is false, the middleware MUST skip inspection calls and inspection-based termination. The main-system safety instruction remains active for every provider.
 
@@ -162,7 +156,7 @@ Cross-references: batch agent invocation → `run-api.md`. Env and build → `co
 
  8. **Repeated calls.** Each result MUST receive exactly one sandbox-owned wrapper in each model-facing representation. The middleware MUST use internal message identity or state to track its own wrapper. It MUST NOT infer prior wrapping from markers in external content. Tool names, call IDs, status, and message ordering MUST remain unchanged.
 
- 9. **Event representation.** Sandbox-added markers MUST affect only model-facing content. Normalized `ToolResultEvent` output and approved audit/content records MUST retain the complete result without sandbox-added markers. Existing payload-free developer logging and rejected-result suppression rules remain active. Wrapping MUST NOT invalidate the inspection-pass correlation used to release accepted result events.
+ 9. **Event representation.** Sandbox-added markers MUST affect only model-facing content. A normalized `ToolResultEvent` emitted after inspection passes remains complete and unwrapped; content-enabled compliance copies may also retain the complete unwrapped raw result, including content later rejected. Successful native source spans record the raw callback result independently of inspection. Rejected content MUST remain suppressed from model delivery and application result events. Existing payload-free developer logging remains active. Wrapping MUST NOT invalidate the inspection-pass correlation used to release accepted result events.
 
 10. **Token usage.** Model requests MUST include the complete wrapper. Provider-reported input usage MUST retain those tokens through existing usage accounting. The sandbox MUST NOT import Classic service tool-budget behavior or assume a fixed token cost per wrapper.
 
@@ -194,8 +188,10 @@ Decision record: [0001-tool-output-boundary.md](../decisions/0001-tool-output-bo
 ## Verification
 
 - Unit: [test_run_agent.py](../../../tests/test_run_agent.py) — event stream, structured output, context prefix; [test_deepagents.py](../../../tests/test_deepagents.py) — DeepAgents structured output and admitted-name filtering; [test_mcp.py](../../../tests/test_mcp.py) — canonical admission projections and Gemini/OpenAI native filters; [test_openai_schema.py](../../../tests/test_openai_schema.py) — OpenAI complete-set initialization and fail-closed behavior
-- [PLANNED: OLS-3928] Fast mock tests verify contract conformance, offloaded read paths, disabled inspection, and controlled sandbox failure.
-- [PLANNED: OLS-3928] Integration tests verify inspection before `ToolResultEvent` emission. They verify payload-free `EventLogger` records and full-fidelity `AuditLogger` events after a pass. They also verify rejected-event suppression and controlled termination without a Result CR.
+- Controller-reported integrated focused offline suite: 295 passed. [test_tool_result_inspection_middleware.py](../../../tests/test_tool_result_inspection_middleware.py), [test_tool_result_inspection_telemetry.py](../../../tests/test_tool_result_inspection_telemetry.py), [test_tool_result_inspection_client.py](../../../tests/test_tool_result_inspection_client.py), [test_deepagents_telemetry.py](../../../tests/test_deepagents_telemetry.py), [test_deepagents.py](../../../tests/test_deepagents.py), [test_run_agent.py](../../../tests/test_run_agent.py), and [test_gemini_telemetry.py](../../../tests/test_gemini_telemetry.py) cover effective offload inspection, rejected-result model/event gating, native result/status retention, controlled classifier outcomes, literal correlation, exact terminal output, and exposed call IDs.
+- Offline native SDK and local HTTP OTLP proof is detailed in [audit-logging.md](audit-logging.md), Verification. These smokes are not live-cluster verification; the batch-cluster scenario below was not exercised.
+- Final repository verification (controller-reported): `make verify` passed and `make test` passed (669 tests, 15 warnings) after the final HTTP routing fix; details and the isolated, cleaned-up GNU patch environment workaround are in [audit-logging.md](audit-logging.md). No live cluster was exercised.
+- Controller-reported final receiver review: HTTP routing passed compliance and code-quality re-review, and all 26 tracing tests passed, including the real path-plus-query receiver regression; detailed OTLP proof is in [audit-logging.md](audit-logging.md), Verification.
 - The cross-repository real-model corpus and reporting requirements are owned by `openshift/ols/.ai/spec/what/tool-result-inspection.md`.
 - [PLANNED: OLS-3929] Offline tests MUST cover success, tool-generated errors, MCP and built-in tools, empty content, and content that contains boundary markers.
 - [PLANNED: OLS-3929] Tests MUST cover offload previews/references, later artifact reads/searches, and main-agent/general-purpose-subagent model requests.
@@ -215,5 +211,4 @@ Decision record: [0001-tool-output-boundary.md](../decisions/0001-tool-output-bo
 - Align operator-passed `allowedTools` and `llm` with `ProviderQueryOptions`. [PLANNED: OLS-3033]
 - Wire operator-resolved `Agent.spec.maxTurns` through `LIGHTSPEED_AGENT_MAX_TURNS` to each provider-native iteration limit. [PLANNED: OLS-3743]
 - DeepAgents: token-level streaming via `astream_events()` instead of batch `stream_mode="messages"`. [PLANNED: OLS-3500]
-- [PLANNED: OLS-3928] DeepAgents-only inspection of every model-visible tool result and error.
 - [PLANNED: OLS-3929] DeepAgents-only tool-output boundary and system-prompt trust instruction, independent of the inspection switch.

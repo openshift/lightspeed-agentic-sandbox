@@ -49,15 +49,6 @@ def _mock_deepagents_modules(
     *,
     mcp_client_cls: MagicMock | None = None,
 ) -> dict[str, Any]:
-    mock_tool_strategy = MagicMock(side_effect=lambda schema, **_kw: schema)
-    mock_provider_strategy = MagicMock(side_effect=lambda schema, **_kw: schema)
-    mock_structured_output = MagicMock(
-        ToolStrategy=mock_tool_strategy,
-        ProviderStrategy=mock_provider_strategy,
-    )
-    mock_agents = MagicMock(structured_output=mock_structured_output)
-    mock_langchain = MagicMock(agents=mock_agents)
-
     modules: dict[str, Any] = {
         "deepagents": MagicMock(create_deep_agent=mock_create),
         "deepagents.backends": MagicMock(LocalShellBackend=MagicMock(return_value=mock_backend)),
@@ -69,24 +60,11 @@ def _mock_deepagents_modules(
                 "system_prompt": "Default subagent prompt",
             }
         ),
-        "langchain": mock_langchain,
-        "langchain.agents": mock_agents,
-        "langchain.agents.structured_output": mock_structured_output,
-        "langchain_anthropic": MagicMock(),
-        "langchain_core": MagicMock(),
-        "langchain_core.messages": MagicMock(),
     }
     if mcp_client_cls is not None:
         modules["langchain_mcp_adapters"] = MagicMock()
         modules["langchain_mcp_adapters.client"] = MagicMock(MultiServerMCPClient=mcp_client_cls)
     return modules
-
-
-def _resolve_model_patch() -> Any:
-    return patch(
-        "lightspeed_agentic.providers.deepagents._resolve_model",
-        return_value=MagicMock(),
-    )
 
 
 async def _collect_events(
@@ -110,19 +88,15 @@ def _deepagents_provider(
 
     import lightspeed_agentic.providers.deepagents as mod  # type: ignore[import-untyped]
 
-    with (
-        patch.dict(
-            sys.modules,
-            _mock_deepagents_modules(
-                mock_create,
-                mock_backend,
-                mcp_client_cls=mcp_client_cls,
-            ),
-        ),
-        _resolve_model_patch(),
-    ):
+    mocked_modules = _mock_deepagents_modules(
+        mock_create,
+        mock_backend,
+        mcp_client_cls=mcp_client_cls,
+    )
+    with patch.dict(sys.modules, mocked_modules):
         importlib.reload(mod)
-        yield mod.DeepAgentsProvider()
+        with patch.object(mod, "_resolve_model", return_value=MagicMock()):
+            yield mod.DeepAgentsProvider()
 
 
 @pytest.mark.asyncio
@@ -501,15 +475,12 @@ class TestEventMapping:
     @pytest.mark.parametrize("has_terminal_marker", [True, False])
     @pytest.mark.asyncio
     async def test_streamed_tool_call_chunks_are_emitted_once_with_complete_correlation(
-        self, monkeypatch: pytest.MonkeyPatch, span_exporter, has_terminal_marker: bool
+        self, monkeypatch: pytest.MonkeyPatch, has_terminal_marker: bool
     ) -> None:
-        """Partial tool-call chunks become one call event paired to their result span."""
+        """Partial tool-call chunks yield one normalized call/result pair."""
         import langchain_core
         import langchain_core.messages
         from langchain_core.messages import AIMessageChunk, ToolMessage
-        from opentelemetry.trace import StatusCode
-
-        from lightspeed_agentic.audit import AuditLogger
 
         monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
@@ -567,23 +538,6 @@ class TestEventMapping:
         assert len(tool_results) == 1
         assert tool_results[0].call_id == "call-1"
 
-        audit = AuditLogger(phase="execution", model="test-model", provider="deepagents")
-        for event in events:
-            audit.process_event(event)
-        audit.complete(success=True, input_tokens=0, output_tokens=0)
-
-        tool_spans = [
-            span
-            for span in span_exporter.get_finished_spans()
-            if span.name.startswith("execute_tool")
-        ]
-        assert len(tool_spans) == 1
-        assert tool_spans[0].name == "execute_tool execute"
-        assert dict(tool_spans[0].attributes)["gen_ai.tool.call.id"] == "call-1"
-        assert dict(tool_spans[0].attributes)["tool.input"] == '{"command": "kubectl get pods"}'
-        assert dict(tool_spans[0].attributes)["tool.output"] == "pod-a"
-        assert tool_spans[0].status.status_code == StatusCode.OK
-
     @pytest.mark.asyncio
     async def test_tool_io_truncation_at_boundary(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Tool call and result events preserve complete values for audit consumers."""
@@ -625,6 +579,162 @@ class TestEventMapping:
         tool_results = [e for e in events if isinstance(e, ToolResultEvent)]
         assert tool_calls[0].input == '{"command": "' + long_arg + '"}'
         assert tool_results[0].output == long_output
+
+    @pytest.mark.asyncio
+    async def test_main_subagent_and_shape_requests_record_distinct_spans(
+        self, monkeypatch: pytest.MonkeyPatch, span_exporter
+    ) -> None:
+        import json
+        from uuid import uuid4
+
+        import langchain_core
+        import langchain_core.callbacks
+        import langchain_core.messages
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+        from langchain_core.outputs import ChatGeneration, LLMResult
+
+        from lightspeed_agentic.audit import AuditLogger
+
+        monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+
+        model = MagicMock()
+        structured_runnable = MagicMock()
+        shape_output = AIMessage(
+            content='{"status":"ok"}',
+            usage_metadata={"input_tokens": 5, "output_tokens": 6, "total_tokens": 11},
+            response_metadata={"model": "observed-shape-model", "stop_reason": "end_turn"},
+        )
+
+        async def invoke_shape(messages: list[Any], **kwargs: Any) -> dict[str, Any]:
+            callback = kwargs["config"]["callbacks"][0]
+            assert kwargs["config"]["tags"] == ["nostream"]
+            run_id = uuid4()
+            await callback.on_chat_model_start(
+                {"name": "ChatAnthropic"},
+                [messages],
+                run_id=run_id,
+                invocation_params={"model": "requested-model"},
+            )
+            await callback.on_llm_end(
+                LLMResult(
+                    generations=[[ChatGeneration(message=shape_output)]],
+                ),
+                run_id=run_id,
+            )
+            return {"parsed": {"status": "ok"}, "raw": shape_output}
+
+        structured_runnable.ainvoke = AsyncMock(side_effect=invoke_shape)
+        model.with_structured_output = MagicMock(return_value=structured_runnable)
+        request_inputs = [
+            ("agent", "main task", "Delegating work", "observed-main-model"),
+            ("subagent", "delegated task", "Subagent findings", "observed-subagent-model"),
+            ("agent", "synthesize findings", "The task is complete.", "observed-final-model"),
+        ]
+
+        async def mock_astream(*_args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+            callback = kwargs["config"]["callbacks"][0]
+            for node, request_text, response_text, observed_model in request_inputs:
+                run_id = uuid4()
+                await callback.on_chat_model_start(
+                    {"name": "ChatAnthropic"},
+                    [
+                        [
+                            SystemMessage(content=f"System instructions for {node}."),
+                            HumanMessage(content=request_text),
+                        ]
+                    ],
+                    run_id=run_id,
+                    invocation_params={"model": "requested-model"},
+                )
+                response = AIMessage(
+                    content=response_text,
+                    usage_metadata={"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+                    response_metadata={"model": observed_model, "stop_reason": "end_turn"},
+                )
+                await callback.on_llm_end(
+                    LLMResult(
+                        generations=[[ChatGeneration(message=response)]],
+                    ),
+                    run_id=run_id,
+                )
+                yield response, {"langgraph_node": node}
+
+        mock_agent = MagicMock()
+        mock_agent.astream = mock_astream
+        mock_create = MagicMock(return_value=mock_agent)
+        modules = _mock_deepagents_modules(mock_create, MagicMock())
+        modules["langchain_core"] = langchain_core
+        modules["langchain_core.messages"] = langchain_core.messages
+        output_schema = {
+            "type": "object",
+            "properties": {"status": {"type": "string"}},
+            "required": ["status"],
+        }
+        audit = AuditLogger(
+            phase="execution",
+            model="requested-model",
+            provider="anthropic",
+            agenticrun_uid="run-shape",
+        )
+
+        with patch.dict(sys.modules, modules):
+            import importlib
+
+            import lightspeed_agentic.providers.deepagents as mod
+
+            importlib.reload(mod)
+            with patch.object(mod, "_resolve_model", return_value=model):
+                events = await _collect_events(
+                    mod.DeepAgentsProvider(),
+                    _base_options(
+                        output_schema=output_schema,
+                        tool_output_inspection_enabled=False,
+                        audit_logger=audit,
+                    ),
+                )
+
+        spans = span_exporter.get_finished_spans()
+        assert len(spans) == 4
+        by_response_model = {dict(span.attributes)["gen_ai.response.model"]: span for span in spans}
+        assert set(by_response_model) == {
+            "observed-main-model",
+            "observed-subagent-model",
+            "observed-final-model",
+            "observed-shape-model",
+        }
+        expected_requests = {
+            "observed-main-model": "main task",
+            "observed-subagent-model": "delegated task",
+            "observed-final-model": "synthesize findings",
+            "observed-shape-model": None,
+        }
+        for response_model, expected_request in expected_requests.items():
+            attributes = dict(by_response_model[response_model].attributes)
+            assert by_response_model[response_model].name == "chat requested-model"
+            assert attributes["gen_ai.request.model"] == "requested-model"
+            assert attributes["agenticrun.uid"] == "run-shape"
+            if expected_request is not None:
+                request_messages = json.loads(attributes["gen_ai.input.messages"])
+                assert request_messages[0]["parts"][0]["content"] == expected_request
+            expected_input_tokens, expected_output_tokens = (
+                (5, 6) if response_model == "observed-shape-model" else (2, 3)
+            )
+            assert attributes["gen_ai.usage.input_tokens"] == expected_input_tokens
+            assert attributes["gen_ai.usage.output_tokens"] == expected_output_tokens
+        shape_attributes = dict(by_response_model["observed-shape-model"].attributes)
+        assert shape_attributes["gen_ai.output.type"] == "json"
+        shape_input = json.loads(shape_attributes["gen_ai.input.messages"])
+        assert "Original user request:" in shape_input[0]["parts"][0]["content"]
+        assert "Subagent findings" in shape_input[0]["parts"][0]["content"]
+        assert json.loads(shape_attributes["gen_ai.system_instructions"]) == [
+            {"type": "text", "content": "you are helpful"}
+        ]
+        result_events = [event for event in events if isinstance(event, ResultEvent)]
+        assert len(result_events) == 1
+        assert result_events[0].text == '{"status": "ok"}'
+        assert result_events[0].input_tokens == 11
+        assert result_events[0].output_tokens == 15
 
     @pytest.mark.asyncio
     async def test_structured_output_two_phase(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1037,38 +1147,6 @@ class TestSkillsGating:
 
 
 @pytest.mark.asyncio
-async def test_provider_installs_inspection_on_default_task_subagent() -> None:
-    mock_ai = MagicMock()
-    mock_ai.type = "ai"
-    mock_ai.content = "done"
-    mock_ai.tool_calls = []
-    mock_ai.usage_metadata = None
-    mock_ai.content_blocks = []
-
-    async def mock_astream(
-        *_args: Any, **_kwargs: Any
-    ) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
-        yield mock_ai, {"langgraph_node": "agent"}
-
-    mock_agent = MagicMock()
-    mock_agent.astream = mock_astream
-    mock_create = MagicMock(return_value=mock_agent)
-    with _deepagents_provider(mock_create, MagicMock()) as provider:
-        await _collect_events(
-            provider,
-            _base_options(tool_output_inspection_enabled=True),
-        )
-
-    kwargs = mock_create.call_args.kwargs
-    assert isinstance(kwargs["middleware"][0], ToolResultInspectionMiddleware)
-    task_subagent = next(spec for spec in kwargs["subagents"] if spec["name"] == "general-purpose")
-    assert task_subagent["description"] == "Default general-purpose agent"
-    assert task_subagent["system_prompt"] == "Default subagent prompt"
-    assert isinstance(task_subagent["middleware"][0], ToolResultInspectionMiddleware)
-    assert task_subagent["middleware"][0] is kwargs["middleware"][0]
-
-
-@pytest.mark.asyncio
 async def test_provider_setup_succeeds_when_classifier_model_profile_is_none() -> None:
     mock_ai = MagicMock()
     mock_ai.type = "ai"
@@ -1128,69 +1206,474 @@ async def test_provider_inspection_setup_import_failure_is_safety_failure() -> N
 
 
 @pytest.mark.asyncio
-async def test_provider_discards_buffered_tool_result_when_inspection_fails() -> None:
-    from lightspeed_agentic.inspection.middleware import ToolResultSafetyInspectionFailed
+async def test_malicious_inspection_preserves_raw_tool_span_and_aborts_agent(
+    span_exporter,
+) -> None:
+    import json
+    from uuid import uuid4
 
-    tool_message = MagicMock()
-    tool_message.type = "tool"
-    tool_message.name = "execute"
-    tool_message.status = "success"
-    tool_message.content = "REJECTED-RESULT-SECRET"
-    tool_message.tool_call_id = "rejected-call"
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+    from opentelemetry.trace import StatusCode
 
-    async def mock_astream(
-        *_args: Any, **_kwargs: Any
-    ) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
-        yield tool_message, {"langgraph_node": "tools"}
-        raise ToolResultSafetyInspectionFailed()
+    from lightspeed_agentic.inspection.errors import ToolResultSafetyInspectionFailed
+    from lightspeed_agentic.run_agent import run_agent_query
 
+    call_id = "rejected-call"
+    private_run_id = uuid4()
+    raw_output = "RAW-CALLBACK-RESULT-SECRET"
+    effective_preview = "REJECTED-EFFECTIVE-RESULT-SECRET"
+    tool_message = ToolMessage(
+        content=effective_preview,
+        name="execute",
+        tool_call_id=call_id,
+    )
     mock_agent = MagicMock()
+    mock_create = MagicMock(return_value=mock_agent)
+    classifier_inputs: list[Any] = []
+    next_model_calls: list[bool] = []
+    emitted: list[Any] = []
+
+    async def mock_astream(*_args: Any, **kwargs: Any) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
+        callback = kwargs["config"]["callbacks"][0]
+        model_run_id = uuid4()
+        await callback.on_chat_model_start(
+            {"name": "ChatAnthropic"},
+            [[HumanMessage(content="Run the tool.")]],
+            run_id=model_run_id,
+            invocation_params={"model": "requested-model"},
+        )
+        await callback.on_llm_end(
+            LLMResult(
+                generations=[
+                    [
+                        ChatGeneration(
+                            message=AIMessage(
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "name": "execute",
+                                        "args": {"command": "printf secret"},
+                                        "id": call_id,
+                                    }
+                                ],
+                                response_metadata={
+                                    "model": "observed-model",
+                                    "stop_reason": "tool_use",
+                                },
+                            )
+                        )
+                    ]
+                ],
+                llm_output={"model_name": "observed-model"},
+            ),
+            run_id=model_run_id,
+        )
+        await callback.on_tool_start(
+            {"name": "execute"},
+            '{"command": "printf secret"}',
+            run_id=private_run_id,
+            inputs={"command": "printf secret"},
+            name="execute",
+            tool_call_id=call_id,
+        )
+        await callback.on_tool_end(raw_output, run_id=private_run_id)
+        source_span = next(
+            span
+            for span in span_exporter.get_finished_spans()
+            if span.name == "execute_tool execute"
+        )
+        source_attributes = dict(source_span.attributes)
+        assert source_span.status.status_code == StatusCode.UNSET
+        assert source_attributes["gen_ai.tool.call.id"] == call_id
+        assert json.loads(source_attributes["gen_ai.tool.call.result"]) == raw_output
+        yield tool_message, {"langgraph_node": "tools"}
+
+        inspection_middleware = mock_create.call_args.kwargs["middleware"][0]
+
+        async def model_handler(_request: Any) -> None:
+            next_model_calls.append(True)
+            raise AssertionError("rejected tool result reached the model")
+
+        await inspection_middleware.awrap_model_call(
+            SimpleNamespace(messages=[tool_message]),
+            model_handler,
+        )
+
     mock_agent.astream = mock_astream
-    with _deepagents_provider(MagicMock(return_value=mock_agent), MagicMock()) as provider:
-        emitted: list[Any] = []
+
+    class ClassifierModel:
+        profile: ClassVar[dict[str, int]] = {"max_input_tokens": 100_000}
+
+        async def ainvoke(self, messages: Any, **kwargs: Any) -> Any:
+            classifier_inputs.append(messages)
+            callback = kwargs["config"]["callbacks"][0]
+            run_id = uuid4()
+            await callback.on_chat_model_start(
+                {"name": "ChatAnthropic"},
+                [messages],
+                run_id=run_id,
+                invocation_params={"model": "requested-model"},
+            )
+            response = AIMessage(
+                content='{"injectionDetected":true,"category":"instruction_override"}',
+                usage_metadata={"input_tokens": 7, "output_tokens": 2, "total_tokens": 9},
+                response_metadata={
+                    "model": "observed-classifier-model",
+                    "stop_reason": "end_turn",
+                },
+            )
+            await callback.on_llm_end(
+                LLMResult(
+                    generations=[[ChatGeneration(message=response)]],
+                    llm_output={"model_name": "observed-classifier-model"},
+                ),
+                run_id=run_id,
+            )
+            return response
+
+    with (
+        _deepagents_provider(mock_create, MagicMock()) as provider,
+        patch(
+            "lightspeed_agentic.providers.deepagents._resolve_model",
+            side_effect=[MagicMock(), ClassifierModel()],
+        ),
+    ):
+
+        async def record_events(options: ProviderQueryOptions) -> AsyncIterator[Any]:
+            async for event in provider.query(options):
+                emitted.append(event)
+                yield event
+
+        recording_provider = SimpleNamespace(name=provider.name, query=record_events)
+        with pytest.raises(ToolResultSafetyInspectionFailed):
+            await run_agent_query(
+                recording_provider,
+                prompt="Run the tool.",
+                system_prompt="Use the tool safely.",
+                output_schema=None,
+                context=None,
+                skills_dir=_TEST_WORKSPACE,
+                model="requested-model",
+                max_turns=10,
+                timeout_seconds=30,
+                tool_output_inspection_enabled=True,
+                agenticrun_uid="run-rejected",
+                step="execution",
+            )
+
+    assert next_model_calls == []
+    assert not any(isinstance(event, ToolResultEvent) for event in emitted)
+    assert not any(isinstance(event, ResultEvent) for event in emitted)
+    assert raw_output not in repr(emitted)
+    assert effective_preview not in repr(emitted)
+    assert effective_preview in repr(classifier_inputs)
+    assert raw_output not in repr(classifier_inputs)
+
+    spans = span_exporter.get_finished_spans()
+    tool_spans = [span for span in spans if span.name == "execute_tool execute"]
+    assert len(tool_spans) == 1
+    tool_span = tool_spans[0]
+    tool_attributes = dict(tool_span.attributes)
+    assert tool_span.status.status_code == StatusCode.UNSET
+    assert "error.type" not in tool_attributes
+    assert tool_attributes["gen_ai.tool.call.id"] == call_id
+    assert json.loads(tool_attributes["gen_ai.tool.call.result"]) == raw_output
+    assert str(private_run_id) not in repr(tool_attributes)
+
+    inspection_spans = [span for span in spans if span.name == "tool_result.inspection"]
+    assert len(inspection_spans) == 1
+    inspection_span = inspection_spans[0]
+    inspection_attributes = dict(inspection_span.attributes)
+    assert inspection_span.status.status_code == StatusCode.UNSET
+    assert inspection_attributes["inspection.outcome"] == "malicious"
+    assert inspection_attributes["inspection.category"] == "instruction_override"
+    assert inspection_attributes["gen_ai.tool.call.id"] == call_id
+    assert inspection_attributes["agenticrun.uid"] == "run-rejected"
+    assert inspection_attributes["agenticrun.phase"] == "execution"
+    assert raw_output not in repr(inspection_attributes)
+    assert effective_preview not in repr(inspection_attributes)
+
+    inference_spans = [span for span in spans if span.name == "chat requested-model"]
+    classifier_span = next(
+        span
+        for span in inference_spans
+        if dict(span.attributes).get("gen_ai.response.model") == "observed-classifier-model"
+    )
+    classifier_attributes = dict(classifier_span.attributes)
+    assert classifier_span.status.status_code == StatusCode.UNSET
+    for field in (
+        "gen_ai.input.messages",
+        "gen_ai.system_instructions",
+        "gen_ai.tool.definitions",
+        "gen_ai.output.messages",
+    ):
+        assert field not in classifier_attributes
+    assert raw_output not in repr(classifier_attributes)
+    assert effective_preview not in repr(classifier_attributes)
+
+    agent_span = next(span for span in spans if span.name == "invoke_agent lightspeed")
+    agent_attributes = dict(agent_span.attributes)
+    assert agent_span.status.status_code == StatusCode.ERROR
+    assert agent_attributes["error.type"] == "ToolResultSafetyInspectionFailed"
+    assert "gen_ai.output.messages" not in agent_attributes
+
+
+@pytest.mark.asyncio
+async def test_invalid_encoding_fails_closed_without_retroactive_tool_failure(
+    span_exporter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+    from uuid import uuid4
+
+    from langchain_core.messages import ToolMessage
+    from opentelemetry.trace import StatusCode
+
+    from lightspeed_agentic.audit import AuditLogger
+    from lightspeed_agentic.inspection.errors import ToolResultSafetyInspectionFailed
+    from lightspeed_agentic.providers import deepagents_telemetry
+
+    clock = iter(
+        (
+            1_000_000_000,
+            1_000_000_100,
+            1_000_000_200,
+            1_000_000_300,
+            1_000_000_400,
+        )
+    )
+    monkeypatch.setattr(deepagents_telemetry.time, "time_ns", lambda: next(clock))
+
+    invalid_call_id = "invalid-encoding-call"
+    sibling_call_id = "completed-sibling-call"
+    invalid_content = "INVALID-ENCODING-SECRET-\ud800"
+    sibling_content = "COMPLETED-SIBLING-SECRET"
+    invalid_message = ToolMessage(
+        content=invalid_content,
+        name="execute",
+        tool_call_id=invalid_call_id,
+    )
+    sibling_message = ToolMessage(
+        content=sibling_content,
+        name="execute",
+        tool_call_id=sibling_call_id,
+    )
+    tool_runs = (
+        (invalid_call_id, {"command": "printf invalid"}, invalid_message),
+        (sibling_call_id, {"command": "printf sibling"}, sibling_message),
+    )
+    private_run_ids = (uuid4(), uuid4())
+    mock_agent = MagicMock()
+    mock_create = MagicMock(return_value=mock_agent)
+
+    async def mock_astream(*_args: Any, **kwargs: Any) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
+        callback = kwargs["config"]["callbacks"][0]
+        for (call_id, arguments, _message), private_run_id in zip(
+            tool_runs,
+            private_run_ids,
+            strict=True,
+        ):
+            await callback.on_tool_start(
+                {"name": "execute"},
+                json.dumps(arguments),
+                run_id=private_run_id,
+                inputs=arguments,
+                name="execute",
+                tool_call_id=call_id,
+            )
+        for (_call_id, _arguments, message), private_run_id in zip(
+            tool_runs,
+            private_run_ids,
+            strict=True,
+        ):
+            await callback.on_tool_end(message, run_id=private_run_id)
+        yield invalid_message, {"langgraph_node": "tools"}
+        yield sibling_message, {"langgraph_node": "tools"}
+
+        async def model_handler(_request: Any) -> None:
+            raise AssertionError("uninspectable tool results reached the model")
+
+        inspection_middleware = mock_create.call_args.kwargs["middleware"][0]
+        await inspection_middleware.awrap_model_call(
+            SimpleNamespace(messages=[invalid_message, sibling_message]),
+            model_handler,
+        )
+
+    mock_agent.astream = mock_astream
+    audit = AuditLogger(
+        phase="execution",
+        model="requested-model",
+        provider="anthropic",
+        agenticrun_uid="run-invalid-encoding",
+    )
+    emitted: list[Any] = []
+    with _deepagents_provider(mock_create, MagicMock()) as provider:
 
         async def consume() -> None:
-            async for event in provider.query(_base_options(tool_output_inspection_enabled=True)):
+            async for event in provider.query(
+                _base_options(
+                    tool_output_inspection_enabled=True,
+                    audit_logger=audit,
+                )
+            ):
                 emitted.append(event)
 
         with pytest.raises(ToolResultSafetyInspectionFailed):
             await consume()
 
     assert not any(isinstance(event, ToolResultEvent) for event in emitted)
+    assert not any(isinstance(event, ResultEvent) for event in emitted)
+    assert "INVALID-ENCODING-SECRET" not in repr(emitted)
+    tool_spans = {
+        dict(span.attributes)["gen_ai.tool.call.id"]: span
+        for span in span_exporter.get_finished_spans()
+        if span.name == "execute_tool execute"
+    }
+    assert set(tool_spans) == {invalid_call_id, sibling_call_id}
+
+    invalid_span = tool_spans[invalid_call_id]
+    invalid_attributes = dict(invalid_span.attributes)
+    invalid_json = invalid_attributes["gen_ai.tool.call.result"]
+    assert invalid_span.status.status_code == StatusCode.UNSET
+    assert "error.type" not in invalid_attributes
+    assert invalid_span.end_time == 1_000_000_200
+    assert invalid_json.isascii()
+    assert "\\ud800" in invalid_json
+    assert json.loads(invalid_json) == invalid_content
+
+    sibling_span = tool_spans[sibling_call_id]
+    sibling_attributes = dict(sibling_span.attributes)
+    assert sibling_span.status.status_code == StatusCode.UNSET
+    assert "error.type" not in sibling_attributes
+    assert sibling_span.end_time == 1_000_000_300
+    assert json.loads(sibling_attributes["gen_ai.tool.call.result"]) == sibling_content
+    for span in tool_spans.values():
+        attributes = dict(span.attributes)
+        assert all(str(run_id) not in repr(attributes) for run_id in private_run_ids)
 
 
 @pytest.mark.asyncio
-async def test_provider_emits_complete_result_only_after_model_boundary_passes(
+async def test_provider_releases_tool_result_event_only_after_model_boundary_passes(
     span_exporter,
 ) -> None:
-    from langchain_core.messages import AIMessage, ToolMessage
+    import json
+    from uuid import uuid4
 
-    long_output = "passed-result-" * 900
-    tool_message = ToolMessage(
-        content=long_output,
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+    from opentelemetry.trace import StatusCode
+
+    from lightspeed_agentic.audit import AuditLogger
+
+    raw_output = "full raw artifact output-" * 900
+    effective_preview = "Tool result too large; preview: first lines and artifact path."
+    raw_tool_message = ToolMessage(
+        content=raw_output,
         name="execute",
         tool_call_id="accepted-call",
     )
-    mock_ai = MagicMock()
-    mock_ai.type = "ai"
-    mock_ai.content = "done"
-    mock_ai.tool_calls = []
-    mock_ai.usage_metadata = None
-    mock_ai.content_blocks = []
+    tool_message = ToolMessage(
+        content=effective_preview,
+        name="execute",
+        tool_call_id="accepted-call",
+    )
+    tool_call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "execute",
+                "args": {"command": "printf safe"},
+                "id": "accepted-call",
+            }
+        ],
+        response_metadata={"model": "observed-model", "stop_reason": "tool_use"},
+    )
+    final_message = AIMessage(
+        content="done",
+        usage_metadata={"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
+        response_metadata={"model": "observed-model", "stop_reason": "end_turn"},
+    )
 
-    async def mock_astream(
-        *_args: Any, **_kwargs: Any
-    ) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
+    async def mock_astream(*_args: Any, **kwargs: Any) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
+        callback = kwargs["config"]["callbacks"][0]
+        first_run = uuid4()
+        await callback.on_chat_model_start(
+            {"name": "ChatAnthropic"},
+            [
+                [
+                    SystemMessage(content="Use the tools safely."),
+                    HumanMessage(content="Investigate."),
+                ]
+            ],
+            run_id=first_run,
+            invocation_params={"model": "requested-model"},
+        )
+        await callback.on_llm_end(
+            LLMResult(
+                generations=[[ChatGeneration(message=tool_call)]],
+                llm_output={"model_name": "observed-model"},
+            ),
+            run_id=first_run,
+        )
+        tool_run = uuid4()
+        await callback.on_tool_start(
+            {"name": "execute"},
+            '{"command": "printf safe"}',
+            run_id=tool_run,
+            inputs={"command": "printf safe"},
+            name="execute",
+        )
+        await callback.on_tool_end(raw_tool_message, run_id=tool_run)
+        source_span = next(
+            span
+            for span in span_exporter.get_finished_spans()
+            if span.name == "execute_tool execute"
+        )
+        source_attributes = dict(source_span.attributes)
+        assert source_span.status.status_code == StatusCode.UNSET
+        assert json.loads(source_attributes["gen_ai.tool.call.result"]) == raw_output
+        assert effective_preview not in source_attributes["gen_ai.tool.call.result"]
         yield tool_message, {"langgraph_node": "tools"}
         middleware = mock_create.call_args.kwargs["middleware"][0]
         await middleware.awrap_model_call(
             MagicMock(messages=[tool_message]),
             lambda _request: _async_noop(),
         )
-        yield mock_ai, {"langgraph_node": "agent"}
-
-    async def classifier(_messages: Any, **_kwargs: Any) -> Any:
-        return AIMessage(content='{"injectionDetected":false,"category":"none"}')
+        tool_spans = [
+            span
+            for span in span_exporter.get_finished_spans()
+            if span.name == "execute_tool execute"
+        ]
+        assert len(tool_spans) == 1
+        tool_attributes = dict(tool_spans[0].attributes)
+        assert tool_spans[0].status.status_code == StatusCode.UNSET
+        assert json.loads(tool_attributes["gen_ai.tool.call.result"]) == raw_output
+        final_run = uuid4()
+        await callback.on_chat_model_start(
+            {"name": "ChatAnthropic"},
+            [
+                [
+                    SystemMessage(content="Use the tools safely."),
+                    HumanMessage(content="Investigate."),
+                    ToolMessage(
+                        content=effective_preview,
+                        name="execute",
+                        tool_call_id="accepted-call",
+                    ),
+                ]
+            ],
+            run_id=final_run,
+            invocation_params={"model": "requested-model"},
+        )
+        await callback.on_llm_end(
+            LLMResult(
+                generations=[[ChatGeneration(message=final_message)]],
+                llm_output={"model_name": "observed-model"},
+            ),
+            run_id=final_run,
+        )
+        yield final_message, {"langgraph_node": "agent"}
 
     async def _async_noop() -> None:
         return None
@@ -1199,12 +1682,44 @@ async def test_provider_emits_complete_result_only_after_model_boundary_passes(
     mock_agent.astream = mock_astream
     mock_create = MagicMock(return_value=mock_agent)
 
+    classifier_inputs: list[Any] = []
+
     class ClassifierModel:
         profile: ClassVar[dict[str, int]] = {"max_input_tokens": 100_000}
 
         async def ainvoke(self, messages: Any, **kwargs: Any) -> Any:
-            return await classifier(messages, **kwargs)
+            classifier_inputs.append(messages)
+            callback = kwargs["config"]["callbacks"][0]
+            run_id = uuid4()
+            await callback.on_chat_model_start(
+                {"name": "ChatAnthropic"},
+                [messages],
+                run_id=run_id,
+                invocation_params={"model": "requested-model"},
+            )
+            response = AIMessage(
+                content='{"injectionDetected":false,"category":"none"}',
+                usage_metadata={"input_tokens": 7, "output_tokens": 2, "total_tokens": 9},
+                response_metadata={
+                    "model": "observed-classifier-model",
+                    "stop_reason": "end_turn",
+                },
+            )
+            await callback.on_llm_end(
+                LLMResult(
+                    generations=[[ChatGeneration(message=response)]],
+                    llm_output={"model_name": "observed-classifier-model"},
+                ),
+                run_id=run_id,
+            )
+            return response
 
+    audit = AuditLogger(
+        phase="execution",
+        model="requested-model",
+        provider="anthropic",
+        agenticrun_uid="run-accepted",
+    )
     with (
         _deepagents_provider(mock_create, MagicMock()) as provider,
         patch(
@@ -1214,16 +1729,189 @@ async def test_provider_emits_complete_result_only_after_model_boundary_passes(
     ):
         events = await _collect_events(
             provider,
-            _base_options(tool_output_inspection_enabled=True),
+            _base_options(
+                tool_output_inspection_enabled=True,
+                audit_logger=audit,
+            ),
         )
 
     tool_result = next(event for event in events if isinstance(event, ToolResultEvent))
-    assert tool_result.output == long_output
+    assert tool_result.output == effective_preview
+    assert raw_output not in tool_result.output
+    assert effective_preview in repr(classifier_inputs)
+    assert raw_output not in repr(classifier_inputs)
+    assert sum(isinstance(event, ToolResultEvent) for event in events) == 1
+    tool_result_index = events.index(tool_result)
+    text_result_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, TextDeltaEvent) and event.text == "done"
+    )
+    assert tool_result_index < text_result_index
     inspection_spans = [
         span for span in span_exporter.get_finished_spans() if span.name == "tool_result.inspection"
     ]
     assert len(inspection_spans) == 1
-    assert dict(inspection_spans[0].attributes)["gen_ai.tool.call.id"] == "accepted-call"
+    inspection_attributes = dict(inspection_spans[0].attributes)
+    assert inspection_attributes["gen_ai.tool.call.id"] == "accepted-call"
+    assert raw_output not in repr(inspection_attributes)
+    assert effective_preview not in repr(inspection_attributes)
+
+    inference_spans = [
+        span for span in span_exporter.get_finished_spans() if span.name == "chat requested-model"
+    ]
+    assert len(inference_spans) == 3
+    classifier_span = next(
+        span
+        for span in inference_spans
+        if dict(span.attributes).get("gen_ai.response.model") == "observed-classifier-model"
+    )
+    classifier_attributes = dict(classifier_span.attributes)
+    assert classifier_span.status.status_code == StatusCode.UNSET
+    assert classifier_attributes["gen_ai.output.type"] == "json"
+    assert classifier_attributes["gen_ai.usage.input_tokens"] == 7
+    assert classifier_attributes["gen_ai.usage.output_tokens"] == 2
+    assert classifier_attributes["gen_ai.response.finish_reasons"] == ("end_turn",)
+    assert "gen_ai.input.messages" not in classifier_attributes
+    assert "gen_ai.system_instructions" not in classifier_attributes
+    assert "gen_ai.tool.definitions" not in classifier_attributes
+    assert "gen_ai.output.messages" not in classifier_attributes
+    assert raw_output not in repr(classifier_attributes)
+    assert effective_preview not in repr(classifier_attributes)
+    final_attributes = next(
+        dict(span.attributes)
+        for span in inference_spans
+        if "gen_ai.input.messages" in dict(span.attributes)
+        and "gen_ai.output.messages" in dict(span.attributes)
+        and "done" in dict(span.attributes)["gen_ai.output.messages"]
+    )
+    model_input = json.loads(final_attributes["gen_ai.input.messages"])
+    tool_response = next(
+        part
+        for message in model_input
+        for part in message["parts"]
+        if part["type"] == "tool_call_response"
+    )
+    assert tool_response["response"] == effective_preview
+    assert tool_response["id"] == "accepted-call"
+
+    tool_spans = [
+        span for span in span_exporter.get_finished_spans() if span.name == "execute_tool execute"
+    ]
+    assert len(tool_spans) == 1
+    tool_span = tool_spans[0]
+    tool_attributes = dict(tool_span.attributes)
+    assert tool_span.status.status_code == StatusCode.UNSET
+    assert tool_attributes["gen_ai.tool.call.id"] == "accepted-call"
+    assert json.loads(tool_attributes["gen_ai.tool.call.result"]) == raw_output
+
+
+@pytest.mark.asyncio
+async def test_provider_keeps_completed_results_when_next_model_request_fails(
+    span_exporter,
+) -> None:
+    import json
+    from uuid import uuid4
+
+    from langchain_core.messages import ToolMessage
+    from opentelemetry.trace import StatusCode
+
+    from lightspeed_agentic.audit import AuditLogger
+    from lightspeed_agentic.inspection.inspector import InspectionResult
+
+    call_ids = ("successful-call", "errored-call")
+    messages = (
+        ToolMessage(content="SUCCESSFUL-RESULT", name="execute", tool_call_id=call_ids[0]),
+        ToolMessage(
+            content="ERRORED-RESULT-SECRET",
+            name="execute",
+            tool_call_id=call_ids[1],
+            status="error",
+        ),
+    )
+    mock_agent = MagicMock()
+    mock_create = MagicMock(return_value=mock_agent)
+
+    def assert_tool_spans_complete() -> None:
+        tool_spans = {
+            dict(span.attributes)["gen_ai.tool.call.id"]: span
+            for span in span_exporter.get_finished_spans()
+            if span.name == "execute_tool execute"
+        }
+        assert set(tool_spans) == set(call_ids)
+
+        successful = tool_spans[call_ids[0]]
+        successful_attributes = dict(successful.attributes)
+        assert successful.status.status_code == StatusCode.UNSET
+        assert json.loads(successful_attributes["gen_ai.tool.call.result"]) == "SUCCESSFUL-RESULT"
+
+        errored = tool_spans[call_ids[1]]
+        errored_attributes = dict(errored.attributes)
+        assert errored.status.status_code == StatusCode.ERROR
+        assert "gen_ai.tool.call.result" not in errored_attributes
+        assert "ERRORED-RESULT-SECRET" not in repr(errored_attributes)
+
+    async def mock_astream(*_args: Any, **kwargs: Any) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
+        callback = kwargs["config"]["callbacks"][0]
+        run_ids = (uuid4(), uuid4())
+        for call_id, message, run_id in zip(call_ids, messages, run_ids, strict=True):
+            await callback.on_tool_start(
+                {"name": "execute"},
+                '{"command": "printf safe"}',
+                run_id=run_id,
+                inputs={"command": "printf safe"},
+                name="execute",
+                tool_call_id=call_id,
+            )
+            await callback.on_tool_end(message, run_id=run_id)
+            yield message, {"langgraph_node": "tools"}
+
+        middleware = mock_create.call_args.kwargs["middleware"][0]
+
+        async def fail_model_handler(request: Any) -> None:
+            assert request.messages == list(messages)
+            assert_tool_spans_complete()
+            raise RuntimeError("next model request failed before a response")
+
+        await middleware.awrap_model_call(
+            SimpleNamespace(messages=list(messages)),
+            fail_model_handler,
+        )
+
+    mock_agent.astream = mock_astream
+    audit = AuditLogger(
+        phase="execution",
+        model="requested-model",
+        provider="anthropic",
+        agenticrun_uid="run-model-failure",
+    )
+    emitted: list[Any] = []
+    with (
+        _deepagents_provider(mock_create, MagicMock()) as provider,
+        patch(
+            "lightspeed_agentic.providers.deepagents._resolve_model",
+            side_effect=[MagicMock(), MagicMock(profile={"max_input_tokens": 100_000})],
+        ),
+        patch(
+            "lightspeed_agentic.inspection.inspector.inspect_tool_result",
+            new=AsyncMock(return_value=InspectionResult(passed=True)),
+        ),
+    ):
+
+        async def consume() -> None:
+            async for event in provider.query(
+                _base_options(
+                    tool_output_inspection_enabled=True,
+                    audit_logger=audit,
+                )
+            ):
+                emitted.append(event)
+
+        with pytest.raises(RuntimeError, match="next model request failed before a response"):
+            await consume()
+
+    assert_tool_spans_complete()
+    assert not any(isinstance(event, ToolResultEvent) for event in emitted)
 
 
 @pytest.mark.asyncio

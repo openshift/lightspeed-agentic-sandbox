@@ -11,11 +11,24 @@ from pytest_bdd import then
 
 from tests.e2e.analysis_schemas import ANALYSIS_WITH_COMPONENTS_SCHEMA
 from tests.e2e.analysis_tokens import assert_skill_tokens_in_response
+from tests.e2e.credentials import (
+    PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS,
+    PROVIDER_ANTHROPIC_VERTEX_DEEPAGENTS,
+    PROVIDER_GEMINI_VERTEX_ADK,
+    PROVIDER_OPENAI_AGENTS,
+)
 from tests.e2e.mock_mcp_server import MCP_FAIL_SENTINEL
 from tests.e2e.otel_verify import wait_for_otel_audit_logs, wait_for_otel_traces
 from tests.e2e.run_result import E2ERunResult
 from tests.e2e.skills_fixtures import E2E_TOKEN_REL_PATH
 from tests.e2e.suite_setup import BatchE2EConfig
+
+_OTEL_EXPECTED_IDENTITY = {
+    PROVIDER_OPENAI_AGENTS: ("chat", "openai"),
+    PROVIDER_GEMINI_VERTEX_ADK: ("generate_content", "gcp.vertex_ai"),
+    PROVIDER_ANTHROPIC_VERTEX_DEEPAGENTS: ("chat", "gcp.vertex_ai"),
+    PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS: ("chat", "aws.bedrock"),
+}
 
 # SHA-256 of empty string — models sometimes fabricate this instead of running echo-token.sh
 _EMPTY_STRING_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -73,9 +86,16 @@ def assert_otel_traces_received(
     batch_e2e_config: BatchE2EConfig,
     k8s_core_client: CoreV1Api,
 ) -> None:
-    """Assert the e2e OTEL collector debug output includes spans for this batch run."""
+    """Assert the expected provider inference span is exported for this batch run."""
     run_uid = _require_run_uid(bdd_context)
-    wait_for_otel_traces(k8s_core_client, batch_e2e_config.namespace, run_uid)
+    expected_operation, expected_provider = _OTEL_EXPECTED_IDENTITY[batch_e2e_config.provider_name]
+    wait_for_otel_traces(
+        k8s_core_client,
+        batch_e2e_config.namespace,
+        run_uid,
+        expected_operation=expected_operation,
+        expected_provider=expected_provider,
+    )
 
 
 @then("the OTEL collector received audit logs with agenticrun attributes")
@@ -84,14 +104,17 @@ def assert_otel_audit_logs_received(
     batch_e2e_config: BatchE2EConfig,
     k8s_core_client: CoreV1Api,
 ) -> None:
-    """Assert bridged audit OTLP logs include agenticrun uid/phase for this batch run."""
+    """Assert span-derived logs include correlated trace context and a standard body."""
     run_uid = _require_run_uid(bdd_context)
     phase = str(bdd_context.get("run_step", "analysis"))
+    expected_operation, expected_provider = _OTEL_EXPECTED_IDENTITY[batch_e2e_config.provider_name]
     wait_for_otel_audit_logs(
         k8s_core_client,
         batch_e2e_config.namespace,
         run_uid,
         phase=phase,
+        expected_operation=expected_operation,
+        expected_provider=expected_provider,
     )
 
 

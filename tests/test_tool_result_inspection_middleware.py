@@ -86,10 +86,39 @@ async def test_unserializable_tool_result_fails_closed_before_inspector_or_model
 
 
 @pytest.mark.asyncio
+async def test_rejected_result_does_not_reach_model() -> None:
+    model_called = False
+
+    async def inspect(_tool: str, _result_type: str, _content: Any, _call_id: str) -> Any:
+        return SimpleNamespace(passed=False)
+
+    async def handler(_request: ModelRequest) -> str:
+        nonlocal model_called
+        model_called = True
+        return "model response"
+
+    middleware = ToolResultInspectionMiddleware(inspect)
+    request = ModelRequest(
+        [
+            ToolMessage(
+                content="REJECTED-RESULT-SECRET",
+                name="execute",
+                tool_call_id="call-rejected",
+            )
+        ]
+    )
+
+    with pytest.raises(ToolResultSafetyInspectionFailed):
+        await middleware.awrap_model_call(request, handler)
+
+    assert not model_called
+
+
+@pytest.mark.asyncio
 async def test_model_boundary_inspects_tool_error_as_error() -> None:
     observed: list[tuple[str, str, Any]] = []
     middleware = ToolResultInspectionMiddleware(
-        lambda tool, result_type, content, _call_id: _record(observed, tool, result_type, content)
+        lambda tool, result_type, content, _call_id: _record(observed, tool, result_type, content),
     )
     request = ModelRequest(
         [
@@ -112,7 +141,7 @@ async def test_model_boundary_inspects_tool_error_as_error() -> None:
 async def test_model_boundary_deduplicates_same_effective_result() -> None:
     observed: list[tuple[str, str, Any]] = []
     middleware = ToolResultInspectionMiddleware(
-        lambda tool, result_type, content, _call_id: _record(observed, tool, result_type, content)
+        lambda tool, result_type, content, _call_id: _record(observed, tool, result_type, content),
     )
     message = ToolMessage(content="same", name="execute", tool_call_id="call-3")
 
@@ -126,7 +155,7 @@ async def test_model_boundary_deduplicates_same_effective_result() -> None:
 async def test_model_boundary_reinspects_changed_content_with_same_id() -> None:
     observed: list[tuple[str, str, Any]] = []
     middleware = ToolResultInspectionMiddleware(
-        lambda tool, result_type, content, _call_id: _record(observed, tool, result_type, content)
+        lambda tool, result_type, content, _call_id: _record(observed, tool, result_type, content),
     )
 
     for content in ("before", "after"):
@@ -193,6 +222,7 @@ async def test_inspection_failure_prevents_model_call_and_is_payload_free() -> N
 
 @pytest.mark.asyncio
 async def test_inspection_cancellation_becomes_safety_failure() -> None:
+
     async def inspect(_tool: str, _result_type: str, _content: Any, _call_id: str) -> None:
         raise asyncio.CancelledError
 

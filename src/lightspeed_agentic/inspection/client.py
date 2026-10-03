@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from lightspeed_agentic.audit import AuditLogger
 
 from lightspeed_agentic.inspection.errors import ClassifierResponseError
 from lightspeed_agentic.inspection.models import ClassifierDecision, ClassifierRequest
@@ -83,8 +86,16 @@ def _decision_from_text(text: str) -> ClassifierDecision:
 class LangChainClassifierClient:
     """Run a strict, tool-free classifier call through a LangChain chat model."""
 
-    def __init__(self, model: ChatModel) -> None:
+    def __init__(
+        self,
+        model: ChatModel,
+        *,
+        audit_logger: AuditLogger | None = None,
+        requested_model: str | None = None,
+    ) -> None:
         self._model = model
+        self._audit_logger = audit_logger
+        self._requested_model = requested_model
 
     async def classify(
         self,
@@ -99,9 +110,34 @@ class LangChainClassifierClient:
             SystemMessage(content=CLASSIFIER_SYSTEM_INSTRUCTION),
             HumanMessage(content=json.dumps(request.model_dump(by_alias=True), ensure_ascii=False)),
         ]
+        callback_handler = None
+        if self._audit_logger is not None:
+            from lightspeed_agentic.providers.deepagents_telemetry import (
+                create_callback_handler,
+            )
+
+            callback_handler = create_callback_handler(
+                self._audit_logger,
+                model=self._requested_model or "",
+                output_type="json",
+                capture_content=False,
+            )
         # LangGraph's messages stream otherwise forwards this nested classifier reply
         # as if it were an agent reply (including into audit and result text).
-        response = await self._model.ainvoke(
-            messages, max_tokens=128, config={"tags": ["nostream"]}
-        )
+        config: dict[str, Any] = {"tags": ["nostream"]}
+        if callback_handler is not None:
+            config["callbacks"] = [callback_handler]
+        request_error: BaseException | None = None
+        try:
+            response = await self._model.ainvoke(
+                messages,
+                max_tokens=128,
+                config=config,
+            )
+        except BaseException as exc:
+            request_error = exc
+            raise
+        finally:
+            if callback_handler is not None:
+                callback_handler.close(error=request_error)
         return _decision_from_text(_response_text(response))

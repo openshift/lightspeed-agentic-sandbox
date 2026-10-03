@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -1677,7 +1677,7 @@ openai = [
 [package.metadata]
 requires-dist = [
     { name = "deepagents", marker = "extra == 'deepagents'", specifier = ">=0.7.18" },
-    { name = "google-adk", marker = "extra == 'gemini'", specifier = ">=1.33.0" },
+    { name = "google-adk", marker = "extra == 'gemini'", specifier = ">=2.5.0" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28.1" },
     { name = "httpx", marker = "extra == 'e2e'", specifier = ">=0.28.1" },
     { name = "jsonschema", marker = "extra == 'e2e'", specifier = ">=4.26.0" },

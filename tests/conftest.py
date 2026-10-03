@@ -18,6 +18,37 @@ from lightspeed_agentic.types import (
 )
 
 
+class AuditRecorder:
+    """Collect adapter observations without exporting spans."""
+
+    def __init__(self) -> None:
+        self.inference_starts: list[tuple[object, dict[str, Any]]] = []
+        self.inference_ends: list[tuple[object, dict[str, Any]]] = []
+        self.tool_starts: list[tuple[object, dict[str, Any]]] = []
+        self.tool_ends: list[tuple[object, dict[str, Any]]] = []
+
+    def start_inference(self, **attributes: Any) -> object:
+        span = object()
+        self.inference_starts.append((span, attributes))
+        return span
+
+    def end_inference(self, span: object, **attributes: Any) -> None:
+        self.inference_ends.append((span, attributes))
+
+    def start_tool(self, **attributes: Any) -> object:
+        span = object()
+        self.tool_starts.append((span, attributes))
+        return span
+
+    def end_tool(self, span: object, **attributes: Any) -> None:
+        self.tool_ends.append((span, attributes))
+
+
+@pytest.fixture
+def audit_recorder() -> AuditRecorder:
+    return AuditRecorder()
+
+
 class MockProvider(AgentProvider):
     """Provider that yields a configurable sequence of events."""
 
@@ -29,12 +60,14 @@ class MockProvider(AgentProvider):
                 output_tokens=50,
             ),
         ]
+        self.last_options: ProviderQueryOptions | None = None
 
     @property
     def name(self) -> str:
         return "mock"
 
-    async def query(self, _options: ProviderQueryOptions) -> AsyncIterator[ProviderEvent]:
+    async def query(self, options: ProviderQueryOptions) -> AsyncIterator[ProviderEvent]:
+        self.last_options = options
         for event in self._events:
             yield event
 

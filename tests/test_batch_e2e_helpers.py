@@ -305,32 +305,201 @@ class TestResolveHelpers:
 
 class TestOtelVerify:
     RUN_UID = "a" * 32
+    EXPECTED_OPERATION = "chat"
+    EXPECTED_PROVIDER = "openai"
 
-    def test_traces_positive(self) -> None:
-        logs = f"ResourceSpans #0\nSpan #0\n     -> agenticrun.uid: Str({self.RUN_UID})"
-        assert logs_contain_traces_for_run(logs, self.RUN_UID)
+    def _span_block(
+        self,
+        *,
+        span_uid: str | None,
+        resource_uid: str | None = None,
+        resource_phase: str | None = None,
+        operation: str = "chat",
+        provider: str = "openai",
+        trace_id: str = "1" * 32,
+        span_id: str = "2" * 16,
+        service_name: str = "lightspeed-agentic-sandbox",
+    ) -> str:
+        resource_attributes = [f"     -> service.name: Str({service_name})"]
+        if resource_uid is not None:
+            resource_attributes.append(f"     -> agenticrun.uid: Str({resource_uid})")
+        if resource_phase is not None:
+            resource_attributes.append(f"     -> agenticrun.phase: Str({resource_phase})")
+        span_attributes = [
+            f"     -> gen_ai.operation.name: Str({operation})",
+            f"     -> gen_ai.provider.name: Str({provider})",
+        ]
+        if span_uid is not None:
+            span_attributes.insert(0, f"     -> agenticrun.uid: Str({span_uid})")
+        lines = [
+            "ResourceSpans #0",
+            "Resource Schema URL: https://opentelemetry.io/schemas/1.41.0",
+            "Resource attributes:",
+            *resource_attributes,
+            "ScopeSpans #0",
+            "ScopeSpans Schema URL: https://opentelemetry.io/schemas/1.41.0",
+            "InstrumentationScope lightspeed_agentic.audit",
+            "Span #0",
+            f"    Trace ID       : {trace_id}",
+            f"    ID             : {span_id}",
+            f"    Name           : {operation} model",
+            "    Kind           : Client",
+            "    Status code    : Unset",
+            "Attributes:",
+            *span_attributes,
+        ]
+        return "\n".join(lines) + "\n"
 
-    def test_traces_negative_without_span_markers(self) -> None:
-        logs = f"agenticrun.uid={self.RUN_UID}"
-        assert not logs_contain_traces_for_run(logs, self.RUN_UID)
+    def _log_block(
+        self,
+        *,
+        uid: str | None = None,
+        phase: str | None = "analysis",
+        event: str | None = "chat",
+        body: str = '{"gen_ai.operation.name":"chat","gen_ai.provider.name":"openai"}',
+        trace_id: str = "1" * 32,
+        span_id: str = "2" * 16,
+        resource_uid: str | None = None,
+        resource_phase: str | None = None,
+        service_name: str = "lightspeed-agentic-sandbox",
+    ) -> str:
+        resource_attributes = [f"     -> service.name: Str({service_name})"]
+        if resource_uid is not None:
+            resource_attributes.append(f"     -> agenticrun.uid: Str({resource_uid})")
+        if resource_phase is not None:
+            resource_attributes.append(f"     -> agenticrun.phase: Str({resource_phase})")
+        attributes = []
+        if uid is not None:
+            attributes.append(f"     -> agenticrun.uid: Str({uid})")
+        if phase is not None:
+            attributes.append(f"     -> agenticrun.phase: Str({phase})")
+        if event is not None:
+            attributes.append(f"     -> event: Str({event})")
+        lines = [
+            "ResourceLogs #0",
+            "Resource Schema URL: https://opentelemetry.io/schemas/1.41.0",
+            "Resource attributes:",
+            *resource_attributes,
+            "ScopeLogs #0",
+            "ScopeLogs Schema URL: https://opentelemetry.io/schemas/1.41.0",
+            "InstrumentationScope lightspeed_agentic.audit",
+            "LogRecord #0",
+            f"    Body: Str({body})",
+            "Attributes:",
+            *attributes,
+            f"    Trace ID       : {trace_id}",
+            f"    Span ID        : {span_id}",
+        ]
+        return "\n".join(lines) + "\n"
 
-    def test_audit_logs_positive(self) -> None:
-        logs = (
-            "LogsExporter\nLogRecord #0\n"
-            f"     -> agenticrun.uid: Str({self.RUN_UID})\n"
-            "     -> agenticrun.phase: Str(analysis)\n"
-            "     -> event: Str(gen_ai.choice)"
+    @pytest.mark.parametrize(
+        ("span_options", "log_options", "expected_traces", "expected_audit"),
+        [
+            pytest.param({}, None, True, False, id="trace-only"),
+            pytest.param({}, {}, True, True, id="correlated-trace-and-audit"),
+            pytest.param(None, None, False, False, id="no-span-markers"),
+            pytest.param(
+                {"span_uid": None, "resource_uid": RUN_UID},
+                {},
+                False,
+                False,
+                id="resource-uid-is-not-span-uid",
+            ),
+            pytest.param({"trace_id": "0" * 32}, {}, False, False, id="zero-trace-id"),
+            pytest.param({"span_id": "0" * 16}, {}, False, False, id="zero-span-id"),
+            pytest.param(
+                {"operation": "generate_content"},
+                {},
+                False,
+                False,
+                id="wrong-operation",
+            ),
+            pytest.param(
+                {"provider": "gcp.vertex_ai"},
+                {},
+                False,
+                False,
+                id="wrong-provider",
+            ),
+            pytest.param({}, {"phase": "execution"}, True, False, id="wrong-phase"),
+            pytest.param({}, {"trace_id": "3" * 32}, True, False, id="unmatched-context"),
+            pytest.param(None, {}, False, False, id="audit-without-source-span"),
+            pytest.param({"span_uid": "b" * 32}, {}, False, False, id="different-run"),
+            pytest.param({}, {"event": "invoke_agent"}, True, False, id="event-body-mismatch"),
+            pytest.param(
+                {},
+                {"body": '{"gen_ai.operation.name":"chat","gen_ai.provider.name":"gcp.vertex_ai"}'},
+                True,
+                False,
+                id="wrong-body-provider",
+            ),
+            pytest.param({}, {"trace_id": "malformed"}, True, False, id="invalid-log-trace-id"),
+            pytest.param({}, {"span_id": "0" * 16}, True, False, id="zero-log-span-id"),
+            pytest.param(
+                {},
+                {"body": '{"gen_ai.operation.name":'},
+                True,
+                False,
+                id="malformed-body",
+            ),
+            pytest.param(
+                {"resource_uid": RUN_UID},
+                {
+                    "uid": None,
+                    "resource_uid": RUN_UID,
+                    "body": '{"gen_ai.operation.name":"chat","gen_ai.provider.name":"openai",'
+                    f'"agenticrun.uid":"{RUN_UID}"}}',
+                },
+                True,
+                False,
+                id="uid-required-on-record",
+            ),
+            pytest.param(
+                {"resource_phase": "analysis"},
+                {
+                    "phase": None,
+                    "resource_phase": "analysis",
+                    "body": '{"gen_ai.operation.name":"chat","gen_ai.provider.name":"openai",'
+                    '"agenticrun.phase":"analysis"}',
+                },
+                True,
+                False,
+                id="phase-required-on-record",
+            ),
+            pytest.param({}, {"event": None}, True, False, id="event-required-on-record"),
+        ],
+    )
+    def test_correlated_telemetry_verifier(
+        self,
+        span_options: dict[str, Any] | None,
+        log_options: dict[str, Any] | None,
+        expected_traces: bool,
+        expected_audit: bool,
+    ) -> None:
+        logs = f"agenticrun.uid={self.RUN_UID}\n"
+        if span_options is not None:
+            logs += self._span_block(**{"span_uid": self.RUN_UID, **span_options})
+        if log_options is not None:
+            logs += self._log_block(**{"uid": self.RUN_UID, **log_options})
+        assert (
+            logs_contain_traces_for_run(
+                logs,
+                self.RUN_UID,
+                expected_operation=self.EXPECTED_OPERATION,
+                expected_provider=self.EXPECTED_PROVIDER,
+            )
+            is expected_traces
         )
-        assert logs_contain_audit_logs_for_run(logs, self.RUN_UID, phase="analysis")
-
-    def test_audit_logs_negative_wrong_phase(self) -> None:
-        logs = (
-            "LogsExporter\nLogRecord #0\n"
-            f"     -> agenticrun.uid: Str({self.RUN_UID})\n"
-            "     -> agenticrun.phase: Str(execution)\n"
-            "     -> event: Str(gen_ai.choice)"
+        assert (
+            logs_contain_audit_logs_for_run(
+                logs,
+                self.RUN_UID,
+                phase="analysis",
+                expected_operation=self.EXPECTED_OPERATION,
+                expected_provider=self.EXPECTED_PROVIDER,
+            )
+            is expected_audit
         )
-        assert not logs_contain_audit_logs_for_run(logs, self.RUN_UID, phase="analysis")
 
 
 class TestBuildJobSpec:

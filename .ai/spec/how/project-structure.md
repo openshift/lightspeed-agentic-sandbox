@@ -22,7 +22,7 @@ Do not maintain a duplicate path inventory here.
 - **Provider modules:** one file per provider in `providers/`, named after the SDK (`deepagents.py`, `gemini.py`, `openai.py`). Each exports a single `XProvider` class.
 - **Batch / agent:** `batch.py` (entrypoint + input reading), `run_agent.py` (provider query loop).
 - **Publish results:** `publish_results/publish.py`, `publish_results/status.py`.
-- **Observability modules:** `audit.py` (span events), `metrics.py` (histograms), `tracing.py` (TracerProvider + traceparent parsing).
+- **Observability modules:** `audit.py` (GenAI agent/model/tool spans), `metrics.py` (histograms), `tracing.py` (TracerProvider + traceparent parsing).
 - **Config / MCP / readiness:** `config.py` maps `LIGHTSPEED_*` → SDK env; `mcp.py` parses `LIGHTSPEED_MCP_SERVERS`; `readiness.py` runs `run_readiness_checks()` at batch startup (see `health-probes.md`).
 - **Test layout:** `tests/` mirrors source. `tests/e2e/` holds batch cluster BDD (feature files, `batch_runner.py`, `suite_setup.py`). Live provider coverage runs via `make e2e` (see [e2e-testing.md](../what/e2e-testing.md)).
 

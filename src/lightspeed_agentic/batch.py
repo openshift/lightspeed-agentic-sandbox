@@ -197,16 +197,14 @@ def main() -> None:
         provider = create_provider(sdk.name)
         startup_model = resolve_startup_model(sdk.name)
         audit_enabled = os.environ.get("LIGHTSPEED_AUDIT_ENABLED", "").strip().lower() == "true"
-        capture_content = _resolve_capture_content(audit_enabled)
         skills_dir = os.environ.get("LIGHTSPEED_SKILLS_DIR", DEFAULT_SKILLS_DIR)
         model = resolve_router_model(provider.name, startup_model)
 
         logger.info(
-            "provider=%s model=%s audit=%s capture_content=%s",
+            "provider=%s model=%s audit=%s",
             provider.name,
             model,
             audit_enabled,
-            capture_content,
         )
 
         system_prompt = _build_system_prompt(
@@ -230,8 +228,6 @@ def main() -> None:
                 mcp_servers=provider_mcp_servers,
                 reasoning_config=reasoning_config,
                 tool_output_inspection_enabled=tool_output_inspection_enabled,
-                audit_enabled=audit_enabled,
-                capture_content=capture_content,
                 agenticrun_uid=agenticrun_uid,
                 traceparent=traceparent,
                 step=agenticrun_phase,
@@ -308,20 +304,6 @@ def _resolve_traceparent() -> str | None:
     """Read W3C traceparent from TRACEPARENT env (operator phase span linkage)."""
     raw = os.environ.get(TRACEPARENT_ENV, "").strip()
     return raw or None
-
-
-def _resolve_capture_content(audit_enabled: bool) -> bool:
-    """Resolve whether ``gen_ai.choice`` events include completion/reasoning text.
-
-    Defaults to ``audit_enabled`` when ``LIGHTSPEED_CAPTURE_CONTENT`` is unset.
-    Explicit ``true`` / ``false`` overrides the default.
-    """
-    raw = os.environ.get("LIGHTSPEED_CAPTURE_CONTENT", "").strip().lower()
-    if raw == "false":
-        return False
-    if raw == "true":
-        return True
-    return audit_enabled
 
 
 if __name__ == "__main__":

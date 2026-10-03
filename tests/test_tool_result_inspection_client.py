@@ -306,3 +306,259 @@ async def test_classifier_client_rejects_non_strict_responses(response: str) -> 
                 content="output",
             )
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("malicious", [False, True])
+async def test_classifier_inference_is_metadata_only_for_valid_decisions(
+    span_exporter,
+    malicious: bool,
+) -> None:
+    from uuid import uuid4
+
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    from lightspeed_agentic.audit import AuditLogger
+
+    category = "unknown" if malicious else "none"
+
+    class CallbackModel(FakeModel):
+        async def ainvoke(self, messages: list[Any], **kwargs: Any) -> Any:
+            self.messages = messages
+            self.parameters = kwargs
+            callback = kwargs["config"]["callbacks"][0]
+            run_id = uuid4()
+            await callback.on_chat_model_start(
+                {"name": "ChatAnthropic"},
+                [messages],
+                run_id=run_id,
+                invocation_params={"model": "requested-classifier"},
+            )
+            response = AIMessage(
+                content=json.dumps({"injectionDetected": malicious, "category": category}),
+                usage_metadata={"input_tokens": 7, "output_tokens": 2, "total_tokens": 9},
+                response_metadata={"model": "observed-classifier", "stop_reason": "end_turn"},
+            )
+            await callback.on_llm_end(
+                LLMResult(
+                    generations=[[ChatGeneration(message=response)]],
+                    llm_output={"model_name": "observed-classifier"},
+                ),
+                run_id=run_id,
+            )
+            return response
+
+    model = CallbackModel(None)
+    audit = AuditLogger(
+        phase="analysis",
+        model="requested-classifier",
+        provider="anthropic",
+        agenticrun_uid="run-classifier",
+    )
+    decision = await LangChainClassifierClient(
+        model,
+        audit_logger=audit,
+        requested_model="requested-classifier",
+    ).classify(
+        ClassifierRequest(
+            toolName="execute",
+            resultType="result",
+            chunkIndex=0,
+            chunkCount=1,
+            content="CLASSIFIER-RAW-TOOL-RESULT",
+        )
+    )
+
+    assert decision == ClassifierDecision(
+        injectionDetected=malicious,
+        category=category,
+    )
+    assert model.parameters["config"]["tags"] == ["nostream"]
+    assert len(model.parameters["config"]["callbacks"]) == 1
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    attributes = dict(spans[0].attributes)
+    assert spans[0].name == "chat requested-classifier"
+    assert spans[0].status.status_code.name == "UNSET"
+    assert attributes["gen_ai.request.model"] == "requested-classifier"
+    assert attributes["gen_ai.output.type"] == "json"
+    assert attributes["gen_ai.response.model"] == "observed-classifier"
+    assert attributes["gen_ai.usage.input_tokens"] == 7
+    assert attributes["gen_ai.usage.output_tokens"] == 2
+    assert attributes["gen_ai.response.finish_reasons"] == ("end_turn",)
+    assert attributes["agenticrun.uid"] == "run-classifier"
+    assert attributes["agenticrun.phase"] == "analysis"
+    for field in (
+        "gen_ai.input.messages",
+        "gen_ai.system_instructions",
+        "gen_ai.tool.definitions",
+        "gen_ai.output.messages",
+    ):
+        assert field not in attributes
+    assert "CLASSIFIER-RAW-TOOL-RESULT" not in repr(attributes)
+
+
+@pytest.mark.asyncio
+async def test_classifier_inference_error_records_type_without_request_or_error_content(
+    span_exporter,
+) -> None:
+    from uuid import uuid4
+
+    from lightspeed_agentic.audit import AuditLogger
+
+    class FailingCallbackModel(FakeModel):
+        async def ainvoke(self, messages: list[Any], **kwargs: Any) -> Any:
+            callback = kwargs["config"]["callbacks"][0]
+            run_id = uuid4()
+            await callback.on_chat_model_start(
+                {"name": "ChatAnthropic"},
+                [messages],
+                run_id=run_id,
+                invocation_params={"model": "requested-classifier"},
+            )
+            error = RuntimeError("CLASSIFIER-RAW-ERROR")
+            await callback.on_llm_error(error, run_id=run_id)
+            raise error
+
+    audit = AuditLogger(
+        phase="analysis",
+        model="requested-classifier",
+        provider="anthropic",
+        agenticrun_uid="run-classifier-error",
+    )
+    client = LangChainClassifierClient(
+        FailingCallbackModel(None),
+        audit_logger=audit,
+        requested_model="requested-classifier",
+    )
+    with pytest.raises(RuntimeError):
+        await client.classify(
+            ClassifierRequest(
+                toolName="execute",
+                resultType="result",
+                chunkIndex=0,
+                chunkCount=1,
+                content="CLASSIFIER-ERROR-TOOL-RESULT",
+            )
+        )
+
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    attributes = dict(span.attributes)
+    assert span.status.status_code.name == "ERROR"
+    assert attributes["error.type"] == "RuntimeError"
+    assert attributes["gen_ai.request.model"] == "requested-classifier"
+    assert attributes["gen_ai.output.type"] == "json"
+    assert attributes["agenticrun.uid"] == "run-classifier-error"
+    assert "gen_ai.usage.input_tokens" not in attributes
+    assert "gen_ai.usage.output_tokens" not in attributes
+    assert "gen_ai.input.messages" not in attributes
+    assert "gen_ai.system_instructions" not in attributes
+    assert "gen_ai.output.messages" not in attributes
+    assert "CLASSIFIER-ERROR-TOOL-RESULT" not in repr(attributes)
+    assert "CLASSIFIER-RAW-ERROR" not in repr(attributes)
+    assert "CLASSIFIER-RAW-ERROR" not in (span.status.description or "")
+
+
+@pytest.mark.asyncio
+async def test_overlapping_classifier_requests_close_only_their_own_spans(
+    span_exporter,
+) -> None:
+    import asyncio
+    from uuid import uuid4
+
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    from lightspeed_agentic.audit import AuditLogger
+
+    started = [asyncio.Event(), asyncio.Event()]
+    release = [asyncio.Event(), asyncio.Event()]
+
+    class OverlappingModel:
+        async def ainvoke(self, messages: list[Any], **kwargs: Any) -> Any:
+            request = json.loads(messages[1].content)
+            index = request["chunkIndex"]
+            callback = kwargs["config"]["callbacks"][0]
+            assert kwargs["config"]["tags"] == ["nostream"]
+            run_id = uuid4()
+            await callback.on_chat_model_start(
+                {"name": "ChatAnthropic"},
+                [messages],
+                run_id=run_id,
+                invocation_params={"model": "requested-classifier"},
+            )
+            started[index].set()
+            await release[index].wait()
+            if index == 0:
+                error = RuntimeError("PRIVATE-CLASSIFIER-ERROR")
+                await callback.on_llm_error(error, run_id=run_id)
+                raise error
+            response = AIMessage(
+                content='{"injectionDetected": false, "category": "none"}',
+                usage_metadata={"input_tokens": 21, "output_tokens": 5, "total_tokens": 26},
+                response_metadata={
+                    "model": "observed-classifier",
+                    "stop_reason": "end_turn",
+                },
+            )
+            await callback.on_llm_end(
+                LLMResult(generations=[[ChatGeneration(message=response)]]),
+                run_id=run_id,
+            )
+            return response
+
+    audit = AuditLogger(
+        phase="analysis",
+        model="requested-classifier",
+        provider="anthropic",
+        agenticrun_uid="run-classifier-overlap",
+    )
+    client = LangChainClassifierClient(
+        OverlappingModel(),
+        audit_logger=audit,
+        requested_model="requested-classifier",
+    )
+
+    def request(index: int) -> ClassifierRequest:
+        return ClassifierRequest(
+            toolName="execute",
+            resultType="result",
+            chunkIndex=index,
+            chunkCount=2,
+            content=f"PRIVATE-TOOL-RESULT-{index}",
+        )
+
+    failed_request = asyncio.create_task(client.classify(request(0)))
+    await started[0].wait()
+    successful_request = asyncio.create_task(client.classify(request(1)))
+    await started[1].wait()
+
+    release[0].set()
+    with pytest.raises(RuntimeError):
+        await failed_request
+    completed = span_exporter.get_finished_spans()
+    assert len(completed) == 1
+    assert dict(completed[0].attributes)["error.type"] == "RuntimeError"
+
+    release[1].set()
+    decision = await successful_request
+    assert decision == ClassifierDecision(injectionDetected=False, category="none")
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 2
+    failed = next(span for span in spans if span.status.status_code.name == "ERROR")
+    succeeded = next(span for span in spans if span.status.status_code.name == "UNSET")
+    success_attributes = dict(succeeded.attributes)
+    assert success_attributes["gen_ai.response.model"] == "observed-classifier"
+    assert success_attributes["gen_ai.usage.input_tokens"] == 21
+    assert success_attributes["gen_ai.usage.output_tokens"] == 5
+    for span in (failed, succeeded):
+        attributes = dict(span.attributes)
+        assert "gen_ai.input.messages" not in attributes
+        assert "gen_ai.system_instructions" not in attributes
+        assert "gen_ai.output.messages" not in attributes
+        assert not any(f"PRIVATE-TOOL-RESULT-{index}" in repr(attributes) for index in (0, 1))
+    assert "PRIVATE-CLASSIFIER-ERROR" not in repr(dict(failed.attributes))
+    assert "PRIVATE-CLASSIFIER-ERROR" not in (failed.status.description or "")

@@ -36,7 +36,7 @@ The stored artifact remains unchanged.
 
 Existing output limits and artifact offload occur first.
 When enabled, SAFE-01 inspects the effective content before SAFE-02 adds its markers.
-A rejected result retains the existing fail-closed path and does not reach model context or audit content events.
+A rejected result remains excluded from model context and normalized result events, but does not suppress its completed native source span: the span retains the raw callback result from execution completion, before inspection. Content-enabled compliance copies may retain a result later rejected; content-disabled copies filter the six standard content fields only, without mutating source spans or trace export.
 
 ### Fixed delimiters
 
@@ -79,8 +79,8 @@ Repeated model calls receive exactly one sandbox-owned wrapper per result repres
 Tool names, call IDs, result status, and message ordering remain unchanged.
 
 Inspection-pass correlation continues to use the original effective content.
-Normalized result events and approved audit/content records retain that complete content without sandbox-added markers.
-Existing payload-free developer logging and rejected-result suppression rules remain active.
+After inspection passes, normalized result events retain the complete effective content without sandbox-added markers. Independently, a completed native tool span retains the complete raw callback result at execution completion; content-enabled compliance copies may retain it even when later rejected.
+Existing payload-free developer logging and model/application-event rejected-result suppression rules remain active; approved compliance-copy capture follows the source-span contract.
 
 ### Token usage
 
@@ -98,16 +98,17 @@ The sandbox does not add Classic service budget enforcement or assume a fixed wr
 
 ## Verification
 
-Offline tests cover the requirements in `provider-contract.md`.
-They exercise actual main-agent/subagent model requests, original normalized events, enabled/disabled inspection, repeated calls, and rejected results.
-They also cover control-message exclusions, preserved operator instructions, wrapper token usage, and unchanged Gemini/OpenAI behavior.
+[PLANNED: OLS-3929] The offline cases below are SAFE-02 acceptance criteria, not completed verification.
+Offline tests MUST cover the requirements in `provider-contract.md`.
+They MUST exercise actual main-agent/subagent model requests, original normalized events, enabled/disabled inspection, repeated calls, rejected results, control-message exclusions, preserved operator instructions, wrapper token usage, and unchanged Gemini/OpenAI behavior.
+Current OLS-3928 inspection/source-retention evidence is documented in [sandbox audit-logging.md](../what/audit-logging.md#verification); it does not verify SAFE-02, and no live cluster was exercised.
 No code, dependency, CRD, or operator change belongs to this spec-only update.
 
 ## Consequences and Limits
 
 The model receives a consistent signal that external tool output is reference data, not an instruction source.
 The middleware must preserve separate model-facing and event-facing representations.
-This separation prevents wrapping from breaking existing inspection-pass correlation or content-event fidelity.
+This separation prevents wrapping from breaking existing inspection-pass correlation, application events, or full-content span-attribute fidelity.
 
 Delimiters and instructions mitigate prompt injection. They do not enforce a security boundary or guarantee compliant model behavior.
 External content can contain marker text. The formatter does not treat that text as proof of prior sandbox-owned wrapping.

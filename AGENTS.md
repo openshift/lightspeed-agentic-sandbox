@@ -121,7 +121,7 @@ src/lightspeed_agentic/
 ├── factory.py            # create_provider(name) — SDK name from config.resolve_sdk()
 ├── readiness.py          # R1 credential checks; run_readiness_checks() at batch startup
 ├── mcp.py                # parse_mcp_servers(); header resolution
-├── audit.py              # AuditLogger GenAI spans/events
+├── audit.py              # AuditLogger standard GenAI agent/model/tool spans
 ├── metrics.py            # Prometheus histograms (in-process; no /metrics route)
 ├── tracing.py            # TracerProvider, traceparent helpers
 ├── logging.py            # EventLogger (debug thinking buffer)
@@ -241,13 +241,13 @@ The Konflux pipeline will prefetch the new versions on the next PR.
 | `LIGHTSPEED_PROVIDER_PROJECT` | Cloud project ID (Vertex) |
 | `LIGHTSPEED_PROVIDER_REGION` | Cloud region (Vertex, Bedrock) |
 | `LIGHTSPEED_PROVIDER_API_VERSION` | API version (Azure) |
-| `LIGHTSPEED_AUDIT_ENABLED` | Enable audit span exporters / choice events (see audit-logging.md) |
-| `LIGHTSPEED_CAPTURE_CONTENT` | Opt-out (`false`) for content on `gen_ai.choice` events; defaults on when audit is enabled |
+| `LIGHTSPEED_AUDIT_ENABLED` | Enable compliance stdout and completed-GenAI-span log projections (see audit-logging.md) |
+| `LIGHTSPEED_CAPTURE_CONTENT` | Filter six standard content attributes from compliance copies only; source span content is unaffected |
 | `LIGHTSPEED_MCP_SERVERS` | JSON array of MCP server configs |
 | `LIGHTSPEED_REASONING_CONFIG` | JSON object with reasoning/thinking params, parsed at startup, passed to adapters |
 | `LIGHTSPEED_SKILLS_DIR` | Skills root mounted in the sandbox pod, default `/app/skills` |
-| `LIGHTSPEED_AGENTICRUN_UID` | AgenticRun UID on bridged OTLP log record attrs (templog); set by operator with OTEL endpoint |
-| `LIGHTSPEED_AGENTICRUN_STEP` | AgenticRun step → `agenticrun.phase` on bridged OTLP log records |
+| `LIGHTSPEED_AGENTICRUN_UID` | AgenticRun UID on source spans and bridged OTLP log record attrs when set |
+| `LIGHTSPEED_AGENTICRUN_STEP` | AgenticRun step → `agenticrun.phase` on source spans and bridged OTLP log records when set |
 | `ANTHROPIC_MODEL` | Default Anthropic model for query routes |
 | `GEMINI_MODEL` | Default Gemini model for query routes |
 | `OPENAI_MODEL` | Default OpenAI model for query routes |

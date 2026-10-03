@@ -22,7 +22,7 @@ output, and OTEL without flaky free-text LLM assertions.
 | Area | Approach | Artifact |
 |------|----------|----------|
 | Context reaches the model | **Structured echo**: prepared `context` (`targetNamespaces`, `previousAttempts`, `approvedOption`) + `outputSchema`; model echoes back as response fields | [sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature) |
-| OTEL traces and audit logs | Batch Job with audit enabled; poll in-cluster collector debug exporter | [sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature) |
+| OTEL traces and compliance logs | Batch Job with audit enabled; poll the collector for correlated traces and completed GenAI span-derived log records | [sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature) |
 | Structured output / skills | Batch Job per scenario | [structured_output.feature](../../../tests/e2e/features/structured_output.feature), [skills.feature](../../../tests/e2e/features/skills.feature) |
 | MCP connectivity | In-cluster mock MCP (`scripts/e2e-install-fixtures.sh`); `LIGHTSPEED_MCP_SERVERS` on Jobs | [mcp.feature](../../../tests/e2e/features/mcp.feature) |
 | Reasoning config | `LIGHTSPEED_REASONING_CONFIG` on Jobs (defaults per provider in `e2e-containers.sh`) | [reasoning_config.feature](../../../tests/e2e/features/reasoning_config.feature) |

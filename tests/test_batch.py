@@ -229,81 +229,6 @@ class TestBatchMain:
         write_log.assert_called_once_with("ToolResultSafetyInspectionFailed")
         exit_mock.assert_called_once_with(1)
 
-    def test_capture_content_defaults_on_when_audit_enabled(self) -> None:
-        """Unset LIGHTSPEED_CAPTURE_CONTENT captures content when audit is on."""
-        with (
-            patch.dict("os.environ", {"LIGHTSPEED_AUDIT_ENABLED": "true"}, clear=False),
-            patch("lightspeed_agentic.batch.read_batch_inputs", return_value=_INPUTS),
-            patch("lightspeed_agentic.batch.resolve_sdk", return_value=_MOCK_SDK),
-            patch("lightspeed_agentic.batch.parse_reasoning_config", return_value=None),
-            patch("lightspeed_agentic.batch.parse_mcp_servers", return_value=[]),
-            patch("lightspeed_agentic.batch.parse_agent_timeout", return_value=300),
-            patch("lightspeed_agentic.batch.parse_max_turns", return_value=200),
-            patch(
-                "lightspeed_agentic.batch.run_readiness_checks",
-                return_value=(True, {"provider_env": "ok"}),
-            ),
-            patch("lightspeed_agentic.batch.parse_reasoning_config", return_value=None),
-            patch("lightspeed_agentic.batch.parse_mcp_servers", return_value=[]),
-            patch("lightspeed_agentic.batch.parse_agent_timeout", return_value=300),
-            patch("lightspeed_agentic.batch.parse_max_turns", return_value=200),
-            patch("lightspeed_agentic.batch.create_provider") as create_provider,
-            patch("lightspeed_agentic.batch.resolve_router_model", return_value="test-model"),
-            patch("lightspeed_agentic.batch.run_agent_query", new_callable=AsyncMock) as run_query,
-            patch("lightspeed_agentic.batch.publish_agent_result"),
-            patch("lightspeed_agentic.batch.otel_runtime_enabled", return_value=False),
-        ):
-            provider = create_provider.return_value
-            provider.name = "deepagents"
-            run_query.return_value = AgentResult(
-                output={"success": True, "summary": "done", "options": [], "actionRequired": False},
-            )
-
-            from lightspeed_agentic.batch import main
-
-            main()
-
-            assert run_query.call_args.kwargs["capture_content"] is True
-
-    def test_capture_content_opt_out_when_audit_enabled(self) -> None:
-        with (
-            patch.dict(
-                "os.environ",
-                {"LIGHTSPEED_AUDIT_ENABLED": "true", "LIGHTSPEED_CAPTURE_CONTENT": "false"},
-                clear=False,
-            ),
-            patch("lightspeed_agentic.batch.read_batch_inputs", return_value=_INPUTS),
-            patch("lightspeed_agentic.batch.resolve_sdk", return_value=_MOCK_SDK),
-            patch("lightspeed_agentic.batch.parse_reasoning_config", return_value=None),
-            patch("lightspeed_agentic.batch.parse_mcp_servers", return_value=[]),
-            patch("lightspeed_agentic.batch.parse_agent_timeout", return_value=300),
-            patch("lightspeed_agentic.batch.parse_max_turns", return_value=200),
-            patch(
-                "lightspeed_agentic.batch.run_readiness_checks",
-                return_value=(True, {"provider_env": "ok"}),
-            ),
-            patch("lightspeed_agentic.batch.parse_reasoning_config", return_value=None),
-            patch("lightspeed_agentic.batch.parse_mcp_servers", return_value=[]),
-            patch("lightspeed_agentic.batch.parse_agent_timeout", return_value=300),
-            patch("lightspeed_agentic.batch.parse_max_turns", return_value=200),
-            patch("lightspeed_agentic.batch.create_provider") as create_provider,
-            patch("lightspeed_agentic.batch.resolve_router_model", return_value="test-model"),
-            patch("lightspeed_agentic.batch.run_agent_query", new_callable=AsyncMock) as run_query,
-            patch("lightspeed_agentic.batch.publish_agent_result"),
-            patch("lightspeed_agentic.batch.otel_runtime_enabled", return_value=False),
-        ):
-            provider = create_provider.return_value
-            provider.name = "deepagents"
-            run_query.return_value = AgentResult(
-                output={"success": True, "summary": "done"},
-            )
-
-            from lightspeed_agentic.batch import main
-
-            main()
-
-            assert run_query.call_args.kwargs["capture_content"] is False
-
     def test_passes_traceparent_env_to_run_agent_query(self) -> None:
         """TRACEPARENT env from operator pod spec is forwarded to run_agent_query."""
         traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
@@ -320,10 +245,6 @@ class TestBatchMain:
                 "lightspeed_agentic.batch.run_readiness_checks",
                 return_value=(True, {"provider_env": "ok"}),
             ),
-            patch("lightspeed_agentic.batch.parse_reasoning_config", return_value=None),
-            patch("lightspeed_agentic.batch.parse_mcp_servers", return_value=[]),
-            patch("lightspeed_agentic.batch.parse_agent_timeout", return_value=300),
-            patch("lightspeed_agentic.batch.parse_max_turns", return_value=200),
             patch("lightspeed_agentic.batch.create_provider") as create_provider,
             patch("lightspeed_agentic.batch.resolve_router_model", return_value="test-model"),
             patch("lightspeed_agentic.batch.run_agent_query", new_callable=AsyncMock) as run_query,

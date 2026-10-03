@@ -1,37 +1,31 @@
 # Agentic Data Collection
 
-Sandbox-owned contract for producing literal agent-interaction events as OTLP trace span events. The parent cross-repository contract is `ols/.ai/spec/what/agentic-data-collection.md`; it is authoritative for canonical correlation, event semantics, and all downstream collection behavior. This file defines only `lightspeed-agentic-sandbox` runtime and provider-adapter behavior. All behavior in this file is planned under OLS-3569.
+Sandbox-owned boundary for the source spans used by cross-repository Agentic product collection. The parent contract is `ols/.ai/spec/what/agentic-data-collection.md`; it owns product eligibility, collection state, and downstream interpretation. This file defines only the sandbox producer behavior.
 
 ## Producer Boundary
 
-1. [PLANNED: OLS-3569] When the trace runtime described by `run-api.md` is active, the sandbox MUST emit the content events in this specification as OTLP trace span events. Trace export MUST use the existing shared `OTEL_EXPORTER_OTLP_ENDPOINT`; the sandbox MUST NOT introduce a product-specific endpoint or handoff key.
-2. [PLANNED: OLS-3569] The sandbox MUST NOT write product-data files or receive or evaluate downstream collection state. Its collection responsibility ends after emitting correlated traces through the ordinary OTLP runtime.
-3. [PLANNED: OLS-3569] The sandbox MUST emit these content atoms through the tracing API only and MUST NOT add an OTel Logs API emission path for them. The existing compliance audit bridge remains governed by `audit-logging.md`.
-4. [PLANNED: OLS-3569] Content events MUST retain complete literal values. The sandbox and provider adapters MUST NOT redact or truncate PII, secrets, prompts, context, tool payloads, skill content, reasoning, or final responses. Existing developer-log truncation MAY remain because developer logs are not these trace events.
+1. The sandbox MUST represent its agent invocation, actual model requests, and actual tool executions with the standard v1.41.0 spans described in `audit-logging.md`, and export them through the existing shared `OTEL_EXPORTER_OTLP_ENDPOINT`. It MUST NOT add a product-specific endpoint or handoff key.
 
-## Content Event Contract
+2. The sandbox MUST NOT write product-data files, receive or evaluate downstream collection state, or assemble product Actions/Transcripts. Its producer responsibility ends after exporting correlated source spans through the normal OTLP trace path.
 
-5. [PLANNED: OLS-3569] The sandbox MUST implement the exact provider-neutral event names, required attributes, literal meanings, and optional-value rules in the parent contract's Transcript candidate interface. This repository owns how its runtime and provider adapters obtain and emit those values; it MUST NOT define a second event schema.
+3. When a source span is recording, `invoke_agent lightspeed` and every non-classifier inference span, including main-agent, shape, and subagent requests, MUST retain full available input, output, instruction, and tool-definition content in standard span attributes, independent of `LIGHTSPEED_CAPTURE_CONTENT`. The agent span MUST record the exact post-shaped `AgentResult.output` whenever a terminal result is normally produced, including domain `success=false`; pre-terminal failures have no fabricated output. Each successful native tool span MUST retain available arguments and the complete raw callback result at actual SDK completion, independently of inspection; only native execution failures omit the success-only result. Do not redact or truncate captured content beyond upstream SDK/adapter limits. Adapters pass structured Python values to `AuditLogger`, which JSON-serializes them only when the span is recording. Missing model/usage observations remain absent; an observed zero is valid.
+Standalone safety-classifier inference MUST retain timing, endpoint provider, requested/observed model, observed usage, and error status/type but MUST omit input messages, output messages, and system instructions even when recording, as required by the parent tool-result-inspection contract. Valid benign or malicious `tool_result.inspection` outcomes are `UNSET`; `classifier_error`, including cancellation, is `ERROR` with controlled metadata. A fail-closed rejection or classifier failure leaves the enclosing invocation `ERROR` with no terminal output and MUST keep rejected content out of model context, application result events, Result CRs, and termination messages. Inference span inputs reflect the available content actually visible to the provider; SAFE-02 wrappers appear there only if and when the separately planned OLS-3929 behavior is implemented. This telemetry contract does not implement or imply SAFE-02, and tool spans retain the complete raw native result, not a model-facing wrapper.
 
-6. [PLANNED: OLS-3569] `gen_ai.input` MUST be emitted once on the inference span immediately before provider invocation. Completion, reasoning, tool, and skill events MUST be emitted when their normalized provider signals are observed. `gen_ai.output` MUST be emitted once on the inference span after provider processing succeeds and before the span ends.
-7. [PLANNED: OLS-3569] `gen_ai.input.prompt` MUST contain the effective prompt after `run-api.md` context-prefix formatting. `gen_ai.input.context` and `gen_ai.input.output_schema` MUST contain the complete canonical JSON source values separately; the event MUST NOT include unrelated process environment.
-8. [PLANNED: OLS-3569] Tool call/result events MUST coexist with the operational `execute_tool {name}` span and use the same tool name and call ID. When the SDK omits a call ID, the adapter MUST assign one stable ID to the matching call, result, and tool span. Skill events MUST come only from explicit load/use signals available to the sandbox or provider adapter and MUST NOT be inferred from completion text or generic tool output.
-9. [PLANNED: OLS-3569] `gen_ai.output` is distinct from preceding `gen_ai.choice` events: choices preserve provider event granularity, while output records the exact terminal value consumed by Result shaping. The sandbox MUST emit both without synthesizing output by concatenating choices.
+4. GenAI input, output, instructions, tools, and content belong in the v1.41.0 span attributes described by `audit-logging.md`. The sandbox MUST NOT emit parallel `gen_ai.choice` or other GenAI content span events, define a product-specific input/output event catalog, or derive a second telemetry source from normalized `ProviderEvent` messages.
 
-## Correlation and Ordering
+5. Compliance stdout and templog content are separate filtered projections governed by `audit-logging.md`. Compliance filters MUST NOT mutate the source spans used by the existing trace endpoint.
 
-10. [PLANNED: OLS-3569] Every product-eligible sandbox inference or tool span MUST carry non-empty literal `agenticrun.uid` and valid `agenticrun.phase` as span attributes. The sandbox receives those values through the existing batch correlation configuration (`LIGHTSPEED_AGENTICRUN_UID` and `LIGHTSPEED_AGENTICRUN_STEP`) and MUST NOT use resource attributes as a fallback or invent missing values.
-11. [PLANNED: OLS-3569] Every content event MUST be attached to the run's `chat {gen_ai.request.model}` inference span, which also carries `gen_ai.provider.name` and `gen_ai.request.model`. Events MUST be added sequentially in normalized provider observation order and retain their native OTEL event timestamps.
-12. [PLANNED: OLS-3569] Each literal content atom MUST be emitted exactly once. Provider delta buffering MAY combine contiguous deltas only at the existing semantic flush boundary and MUST preserve their content and position relative to intervening completion, reasoning, tool, skill, and result signals.
+## Correlation
 
-## Provider Normalization
+6. When supplied through the existing invocation configuration, `LIGHTSPEED_AGENTICRUN_UID` and `LIGHTSPEED_AGENTICRUN_STEP` MUST be translated to the literal `agenticrun.uid` and `agenticrun.phase` span attributes on agent, inference, tool, and `tool_result.inspection` spans. Inspection spans MUST copy only these supplied values; missing values remain absent and MUST NOT be filled from a Resource, re-read process environment, parent context, or another span. Product eligibility requires both values on each span; Resource attributes are not a fallback.
 
-13. [PLANNED: OLS-3569] DeepAgents, Gemini, and OpenAI MUST produce the same event names and required values. Adapter-specific normalization, terminal-value handling, model/token fallbacks, tool correlation, and explicit skill-signal rules are defined by `provider-contract.md` rules 39–46; provider SDK object shapes MUST stop at the adapter boundary.
+7. The sandbox MUST use the incoming W3C `TRACEPARENT` as the parent of `invoke_agent lightspeed` when valid. Each actual model request and tool execution is parented to that agent span; missing or invalid trace context creates a new trace.
+8. The sandbox MUST reuse provider/SDK-assigned tool-call IDs unchanged only when exposed. Gemini observes finalized ADK Events to capture late SDK-assigned IDs on model output and actual tool spans; IDs that ADK strips from later effective requests remain absent, and supplied provider IDs remain unchanged. Missing IDs MUST NOT be synthesized; exact joins require a common exposed ID.
 
 ## Cross-References
 
-- Parent contract: `ols/.ai/spec/what/agentic-data-collection.md`
-- Accepted architecture decision: `ols/.ai/spec/decisions/0042-agentic-data-collection-via-otel.md`
-- `audit-logging.md` — inference/tool spans and the shared OTLP trace runtime
-- `provider-contract.md` — provider-specific normalization and fallbacks
+- Parent product contract: `ols/.ai/spec/what/agentic-data-collection.md`
+- `audit-logging.md` — v1.41.0 agent/model/tool spans, content attributes, and compliance projections
+- `provider-contract.md` — provider SDK lifecycle instrumentation
 - `run-api.md` — effective input construction and batch trace lifecycle
+- [Official OpenTelemetry GenAI Semantic Conventions v1.41.0](https://github.com/open-telemetry/semantic-conventions/tree/v1.41.0/docs/gen-ai)

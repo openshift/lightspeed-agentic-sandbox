@@ -24,6 +24,22 @@ TOKEN_BUCKETS = (
     16777216,
     67108864,
 )
+OPERATION_DURATION_BUCKETS = (
+    0.01,
+    0.02,
+    0.04,
+    0.08,
+    0.16,
+    0.32,
+    0.64,
+    1.28,
+    2.56,
+    5.12,
+    10.24,
+    20.48,
+    40.96,
+    81.92,
+)
 
 token_usage = Histogram(
     "gen_ai_client_token_usage",
@@ -35,7 +51,8 @@ token_usage = Histogram(
 operation_duration = Histogram(
     "gen_ai_client_operation_duration_seconds",
     "LLM operation duration",
-    ["gen_ai_request_model", "gen_ai_provider_name", "gen_ai_operation_name"],
+    ["gen_ai_request_model", "gen_ai_provider_name", "gen_ai_operation_name", "error_type"],
+    buckets=OPERATION_DURATION_BUCKETS,
 )
 
 tool_duration = Histogram(

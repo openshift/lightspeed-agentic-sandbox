@@ -121,6 +121,146 @@ async def test_malicious_span_has_category_but_no_content(caplog: pytest.LogCapt
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("malicious", [False, True])
+async def test_real_inspection_decisions_are_unset(
+    span_exporter,
+    malicious: bool,
+) -> None:
+    from opentelemetry import trace
+    from opentelemetry.trace import StatusCode
+
+    category = "instruction_override" if malicious else "none"
+    result = await inspect_tool_result(
+        FakeClient({"injectionDetected": malicious, "category": category}),
+        tool_name="execute",
+        result_type="result",
+        value="RAW-INSPECTION-SECRET",
+        tool_call_id="inspected-call",
+        codec=CharacterCodec(),
+        context_window_tokens=640,
+        instruction_tokens=20,
+        output_tokens=20,
+        correlation_attributes={
+            "agenticrun.uid": " run-inspected ",
+            "agenticrun.phase": "execution",
+            "unrelated.attribute": "not-copied",
+        },
+        tracer=trace.get_tracer("test-inspection"),
+        sleep=no_sleep,
+    )
+
+    span = next(
+        span for span in span_exporter.get_finished_spans() if span.name == "tool_result.inspection"
+    )
+    attributes = dict(span.attributes)
+    assert result.passed is (not malicious)
+    assert result.category == category
+    assert span.status.status_code == StatusCode.UNSET
+    assert attributes["inspection.outcome"] == ("malicious" if malicious else "benign")
+    assert attributes["gen_ai.tool.call.id"] == "inspected-call"
+    assert attributes["agenticrun.uid"] == " run-inspected "
+    assert attributes["agenticrun.phase"] == "execution"
+    assert "unrelated.attribute" not in attributes
+    assert "error.type" not in attributes
+    assert "RAW-INSPECTION-SECRET" not in repr(attributes)
+
+
+@pytest.mark.asyncio
+async def test_inspection_span_does_not_fallback_to_environment_resource_or_parent(
+    span_exporter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+    monkeypatch.setenv("LIGHTSPEED_AGENTICRUN_UID", "environment-uid")
+    monkeypatch.setenv("LIGHTSPEED_AGENTICRUN_STEP", "environment-phase")
+    provider = TracerProvider(
+        resource=Resource.create(
+            {
+                "agenticrun.uid": "resource-uid",
+                "agenticrun.phase": "resource-phase",
+            }
+        )
+    )
+    provider.add_span_processor(SimpleSpanProcessor(span_exporter))
+    tracer = provider.get_tracer("test-inspection")
+
+    with tracer.start_as_current_span(
+        "parent",
+        attributes={
+            "agenticrun.uid": "parent-uid",
+            "agenticrun.phase": "parent-phase",
+        },
+    ):
+        await inspect_tool_result(
+            FakeClient({"injectionDetected": False, "category": "none"}),
+            tool_name="execute",
+            result_type="result",
+            value="INSPECTED-CONTENT",
+            codec=CharacterCodec(),
+            context_window_tokens=640,
+            instruction_tokens=20,
+            output_tokens=20,
+            correlation_attributes={
+                "agenticrun.uid": "",
+                "agenticrun.phase": "",
+            },
+            tracer=tracer,
+            sleep=no_sleep,
+        )
+
+    span = next(
+        span for span in span_exporter.get_finished_spans() if span.name == "tool_result.inspection"
+    )
+    attributes = dict(span.attributes)
+    assert span.parent is not None
+    assert span.resource.attributes["agenticrun.uid"] == "resource-uid"
+    assert span.resource.attributes["agenticrun.phase"] == "resource-phase"
+    assert "agenticrun.uid" not in attributes
+    assert "agenticrun.phase" not in attributes
+
+
+@pytest.mark.asyncio
+async def test_classifier_error_span_does_not_export_raw_exception(span_exporter) -> None:
+    from opentelemetry import trace
+    from opentelemetry.trace import StatusCode
+
+    class FailingClient:
+        async def classify(self, _request: object, *, deadline: float | None = None) -> object:
+            del deadline
+            raise RuntimeError("CLASSIFIER-RAW-OUTPUT")
+
+    with pytest.raises(InspectionError):
+        await inspect_tool_result(
+            FailingClient(),
+            tool_name="get_pods",
+            result_type="result",
+            value="TOOL-RESULT-SECRET",
+            codec=CharacterCodec(),
+            context_window_tokens=640,
+            instruction_tokens=20,
+            output_tokens=20,
+            tracer=trace.get_tracer("test-inspection"),
+            sleep=no_sleep,
+        )
+
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    attributes = dict(span.attributes)
+    assert span.status.status_code == StatusCode.ERROR
+    assert attributes["inspection.outcome"] == "classifier_error"
+    assert attributes["inspection.failure_type"] == "provider_error"
+    assert attributes["error.type"] == "provider_error"
+    assert "CLASSIFIER-RAW-OUTPUT" not in (span.status.description or "")
+    assert "CLASSIFIER-RAW-OUTPUT" not in repr(attributes)
+    assert "TOOL-RESULT-SECRET" not in repr(attributes)
+    assert not span.events
+
+
+@pytest.mark.asyncio
 async def test_classifier_error_telemetry_is_controlled(caplog: pytest.LogCaptureFixture) -> None:
     tracer = FakeTracer()
     caplog.set_level(logging.WARNING)
@@ -237,20 +377,30 @@ async def test_provider_error_telemetry_contains_safe_http_metadata(
 
 
 @pytest.mark.asyncio
-async def test_classifier_error_span_does_not_export_raw_exception(span_exporter) -> None:
-    class FailingClient:
-        async def classify(self, _request: object, *, deadline: float | None = None) -> object:
-            del deadline
-            raise RuntimeError("CLASSIFIER-RAW-OUTPUT")
+async def test_classifier_cancellation_errors_span_without_payload_and_propagates(
+    span_exporter,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import asyncio
 
     from opentelemetry import trace
+    from opentelemetry.trace import StatusCode
 
-    with pytest.raises(InspectionError):
+    caplog.set_level(logging.WARNING)
+    cancellation = asyncio.CancelledError("CLASSIFIER-CANCEL-SECRET")
+
+    class CancelledClient:
+        async def classify(self, _request: object, *, deadline: float | None = None) -> object:
+            del deadline
+            raise cancellation
+
+    with pytest.raises(asyncio.CancelledError) as error:
         await inspect_tool_result(
-            FailingClient(),
-            tool_name="get_pods",
+            CancelledClient(),
+            tool_name="execute",
             result_type="result",
             value="TOOL-RESULT-SECRET",
+            tool_call_id="cancelled-call-id",
             codec=CharacterCodec(),
             context_window_tokens=640,
             instruction_tokens=20,
@@ -259,13 +409,19 @@ async def test_classifier_error_span_does_not_export_raw_exception(span_exporter
             sleep=no_sleep,
         )
 
+    assert error.value is cancellation
     spans = span_exporter.get_finished_spans()
-    assert spans
-    assert all(
-        "CLASSIFIER-RAW-OUTPUT" not in str(value)
-        for span in spans
-        for event in span.events
-        for value in event.attributes.values()
-    )
-    assert all(event.name != "exception" for span in spans for event in span.events)
-    assert all("CLASSIFIER-RAW-OUTPUT" not in (span.status.description or "") for span in spans)
+    assert len(spans) == 1
+    span = spans[0]
+    attributes = dict(span.attributes)
+    assert span.status.status_code == StatusCode.ERROR
+    assert span.status.description is None
+    assert attributes["inspection.outcome"] == "classifier_error"
+    assert attributes["inspection.failure_type"] == "cancelled"
+    assert attributes["error.type"] == "cancelled"
+    assert "inspection.attempt_count" not in attributes
+    assert not span.events
+    for secret in ("CLASSIFIER-CANCEL-SECRET", "TOOL-RESULT-SECRET"):
+        assert secret not in repr(attributes)
+        assert secret not in repr(span.events)
+        assert secret not in caplog.text

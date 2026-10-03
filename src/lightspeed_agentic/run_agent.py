@@ -11,21 +11,16 @@ from typing import Any
 
 from opentelemetry import context as otel_context
 from opentelemetry import trace
-from opentelemetry.trace import SpanKind
+from opentelemetry.context import Context
+from opentelemetry.trace import SpanKind, StatusCode
 
-from lightspeed_agentic.audit import AuditLogger
+from lightspeed_agentic.audit import AuditLogger, resolve_provider_name
 from lightspeed_agentic.inspection.errors import ToolResultSafetyInspectionFailed
 from lightspeed_agentic.logging import EventLogger
 from lightspeed_agentic.mcp import AdmittedMCPProviderServer
-from lightspeed_agentic.metrics import operation_duration, token_usage
 from lightspeed_agentic.tools import DEFAULT_ALLOWED_TOOLS
 from lightspeed_agentic.tracing import get_tracer, parse_traceparent
-from lightspeed_agentic.types import (
-    AgentProvider,
-    ProviderQueryOptions,
-    ToolCallEvent,
-    ToolResultEvent,
-)
+from lightspeed_agentic.types import AgentProvider, ProviderQueryOptions
 
 logger = logging.getLogger("lightspeed_agentic")
 
@@ -42,17 +37,6 @@ class AgentResult:
 
 class ContextFormatError(ValueError):
     """``context`` JSON is present but missing fields required for prefix formatting."""
-
-
-def _developer_log_event(provider_name: str, event: Any) -> Any:
-    """Remove DeepAgents tool payloads from developer logs, retaining safe metadata."""
-    if provider_name != "deepagents":
-        return event
-    if event.type == "tool_call":
-        return ToolCallEvent(name=event.name, call_id=event.call_id)
-    if event.type == "tool_result":
-        return ToolResultEvent(call_id=event.call_id)
-    return event
 
 
 def _require_mapping(value: Any, path: str) -> dict[str, Any]:
@@ -165,17 +149,15 @@ async def run_agent_query(
     mcp_servers: list[AdmittedMCPProviderServer] | None = None,
     reasoning_config: dict[str, Any] | None = None,
     tool_output_inspection_enabled: bool = True,
-    audit_enabled: bool = False,
-    capture_content: bool = False,
     agenticrun_uid: str = "",
     traceparent: str | None = None,
     step: str = "",
 ) -> AgentResult:
     """Run the provider agent and return structured output for Result CR publishing.
 
-    When ``traceparent`` is set (W3C value from operator ``TRACEPARENT`` env),
-    inference spans are children of the operator phase span. When unset or
-    invalid, a new trace ID is generated (graceful degradation).
+    When a valid ``traceparent`` is supplied from the operator ``TRACEPARENT``
+    env, ``invoke_agent`` is its child and model/tool spans are its children.
+    Without a valid parent, a new trace ID is generated (graceful degradation).
     """
     if context:
         try:
@@ -184,78 +166,76 @@ async def run_agent_query(
             return AgentResult(output={"success": False, "summary": str(exc)})
         prompt = f"{prefix}\n\n{prompt}"
 
-    trace_id, trace_ctx = parse_traceparent(traceparent)
+    _, traceparent_context = parse_traceparent(traceparent)
+    agent_parent_context = traceparent_context if traceparent_context is not None else Context()
     tracer = get_tracer()
+    provider_name = resolve_provider_name(provider.name)
     audit_logger = AuditLogger(
         phase=step,
         model=model,
-        provider=provider.name,
-        enabled=audit_enabled,
-        capture_content=capture_content,
+        provider=provider_name,
         agenticrun_uid=agenticrun_uid,
     )
 
-    logger.info(
-        "[agent] Starting query (model=%s, provider=%s, trace_id=%s)",
-        model,
-        provider.name,
-        trace_id,
-    )
-
-    start_time = time.monotonic()
+    run_started = time.monotonic()
     text = ""
     input_tokens = 0
     output_tokens = 0
-    reasoning_tokens = 0
-    response_model = ""
-
-    otel_provider_name = {"deepagents": "anthropic", "gemini": "google"}.get(
-        provider.name, provider.name
-    )
     span_attrs: dict[str, Any] = {
-        "gen_ai.operation.name": "chat",
-        "gen_ai.request.model": model,
-        "gen_ai.provider.name": otel_provider_name,
+        "gen_ai.operation.name": "invoke_agent",
+        "gen_ai.agent.name": "lightspeed",
+        "gen_ai.provider.name": provider_name,
     }
+    if model:
+        span_attrs["gen_ai.request.model"] = model
+    if output_schema is not None:
+        span_attrs["gen_ai.output.type"] = "json"
     if step:
         span_attrs["agenticrun.phase"] = step
     if agenticrun_uid:
         span_attrs["agenticrun.uid"] = agenticrun_uid
-    chat_span = tracer.start_span(
-        f"chat {model}",
-        kind=SpanKind.CLIENT,
-        context=trace_ctx,
+    agent_span = tracer.start_span(
+        "invoke_agent lightspeed",
+        kind=SpanKind.INTERNAL,
+        context=agent_parent_context,
         attributes=span_attrs,
     )
-    span_ctx = trace.set_span_in_context(chat_span)
-    audit_logger.set_parent_context(span_ctx)
+    span_context = agent_span.get_span_context()
+    trace_id = f"{span_context.trace_id:032x}" if span_context.is_valid else ""
+    logger.info(
+        "[agent] Starting query (model=%s, provider=%s, trace_id=%s)",
+        model,
+        provider_name,
+        trace_id,
+    )
+    agent_context = trace.set_span_in_context(agent_span, agent_parent_context)
+    audit_logger.set_parent_context(agent_context)
+    if agent_span.is_recording():
+        agent_span.set_attribute(
+            "gen_ai.input.messages",
+            json.dumps(
+                [{"role": "user", "parts": [{"type": "text", "content": prompt}]}],
+                ensure_ascii=False,
+            ),
+        )
+        agent_span.set_attribute(
+            "gen_ai.system_instructions",
+            json.dumps([{"type": "text", "content": system_prompt}], ensure_ascii=False),
+        )
 
-    def _record_metrics(*, in_tokens: int, out_tokens: int, elapsed: float) -> None:
-        if in_tokens:
-            token_usage.labels(
-                gen_ai_token_type="input",  # noqa: S106
-                gen_ai_request_model=model,
-                gen_ai_provider_name=provider.name,
-                gen_ai_operation_name="chat",
-            ).observe(in_tokens)
-        if out_tokens:
-            token_usage.labels(
-                gen_ai_token_type="output",  # noqa: S106
-                gen_ai_request_model=model,
-                gen_ai_provider_name=provider.name,
-                gen_ai_operation_name="chat",
-            ).observe(out_tokens)
-        operation_duration.labels(
-            gen_ai_request_model=model,
-            gen_ai_provider_name=provider.name,
-            gen_ai_operation_name="chat",
-        ).observe(elapsed)
+    failure: BaseException | str | None = None
+
+    def _set_agent_error(error: BaseException | str) -> None:
+        if agent_span.is_recording():
+            error_type = error if isinstance(error, str) else type(error).__name__
+            agent_span.set_attribute("error.type", error_type)
+            agent_span.set_status(StatusCode.ERROR)
 
     try:
 
         async def run() -> None:
-            nonlocal text, input_tokens, output_tokens, reasoning_tokens, response_model
-            token = otel_context.attach(span_ctx)
+            nonlocal text, input_tokens, output_tokens
+            token = otel_context.attach(agent_context)
             try:
                 result = provider.query(
                     ProviderQueryOptions(
@@ -269,33 +249,27 @@ async def run_agent_query(
                         mcp_servers=mcp_servers or [],
                         reasoning_config=reasoning_config,
                         tool_output_inspection_enabled=tool_output_inspection_enabled,
+                        audit_logger=audit_logger,
                         deadline=time.monotonic() + timeout_seconds,
                     )
                 )
                 event_logger = EventLogger("run")
                 async for event in result:
-                    event_logger.log(_developer_log_event(provider.name, event))
-                    audit_logger.process_event(event)
+                    event_logger.log(event)
                     if event.type == "result":
                         text = event.text
                         input_tokens = event.input_tokens
                         output_tokens = event.output_tokens
-                        reasoning_tokens = event.reasoning_tokens
-                        response_model = event.response_model
                         break
             finally:
                 otel_context.detach(token)
 
         await asyncio.wait_for(run(), timeout=timeout_seconds)
 
-    except TimeoutError:
-        elapsed = time.monotonic() - start_time
-        audit_logger.complete(
-            success=False,
-            input_tokens=0,
-            output_tokens=0,
-            span=chat_span,
-        )
+    except TimeoutError as exc:
+        failure = exc
+        _set_agent_error(exc)
+        elapsed = time.monotonic() - run_started
         timeout_msg = (
             f"Agent invocation exceeded timeout of {timeout_seconds}s after {elapsed:.1f}s"
         )
@@ -306,35 +280,29 @@ async def run_agent_query(
             },
             timed_out=True,
         )
+    except ToolResultSafetyInspectionFailed as exc:
+        failure = exc
+        _set_agent_error(exc)
+        raise
+    except asyncio.CancelledError as exc:
+        failure = exc
+        _set_agent_error(exc)
+        raise
     except Exception as exc:
-        if isinstance(exc, ToolResultSafetyInspectionFailed):
-            audit_logger.complete(
-                success=False,
-                input_tokens=0,
-                output_tokens=0,
-                span=chat_span,
-            )
-            raise
-        audit_logger.complete(
-            success=False,
-            input_tokens=0,
-            output_tokens=0,
-            span=chat_span,
-        )
-        logger.exception("[agent] query error")
+        failure = exc
+        _set_agent_error(exc)
+        logger.error("[agent] query error (error_type=%s)", type(exc).__name__)
         return AgentResult(
             output={"success": False, "summary": f"Agent error: {exc}"},
         )
+    except BaseException as exc:
+        failure = exc
+        _set_agent_error(exc)
+        raise
     else:
         if not text:
-            audit_logger.complete(
-                success=False,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                reasoning_tokens=reasoning_tokens,
-                response_model=response_model,
-                span=chat_span,
-            )
+            failure = "empty_response"
+            _set_agent_error(failure)
             return AgentResult(
                 output={"success": False, "summary": "Agent returned empty response"},
                 input_tokens=input_tokens,
@@ -350,18 +318,8 @@ async def run_agent_query(
             parsed = None
             success = True
 
-        audit_logger.complete(
-            success=success,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            reasoning_tokens=reasoning_tokens,
-            response_model=response_model,
-            span=chat_span,
-        )
-
         if parsed is not None:
-            logger.info("[agent] query complete: success=%s", success)
-            return AgentResult(
+            result = AgentResult(
                 output={
                     "success": success,
                     "summary": parsed.get("summary", text),
@@ -370,17 +328,37 @@ async def run_agent_query(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
             )
+            logger.info("[agent] query complete: success=%s", bool(success))
+        else:
+            result = AgentResult(
+                output={"success": True, "summary": text},
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+            logger.info("[agent] query complete (text response)")
 
-        logger.info("[agent] query complete (text response)")
-        return AgentResult(
-            output={"success": True, "summary": text},
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-        )
+        if agent_span.is_recording():
+            agent_span.set_attribute(
+                "gen_ai.output.messages",
+                json.dumps(
+                    [
+                        {
+                            "role": "assistant",
+                            "parts": [
+                                {
+                                    "type": "text",
+                                    "content": json.dumps(result.output, ensure_ascii=False),
+                                }
+                            ],
+                            "finish_reason": "unknown",
+                        }
+                    ],
+                    ensure_ascii=True,
+                ),
+            )
+        return result
     finally:
-        chat_span.end()
-        _record_metrics(
-            in_tokens=input_tokens,
-            out_tokens=output_tokens,
-            elapsed=time.monotonic() - start_time,
-        )
+        try:
+            audit_logger.close(failure or "operation_cancelled")
+        finally:
+            agent_span.end()

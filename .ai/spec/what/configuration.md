@@ -20,7 +20,7 @@ Cross-references: how options are consumed in code → `how/provider-architectur
     | `LIGHTSPEED_REASONING_CONFIG` | No | JSON-serialized reasoning config from `Agent.spec.reasoningConfig`. When absent, SDK defaults apply. |
     | `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` | Yes [PLANNED: OLS-3743] | Whole-agent invocation budget resolved from the selected Agent step timeout or the operator default. |
     | `LIGHTSPEED_AGENT_MAX_TURNS` | Yes [PLANNED: OLS-3743] | Provider iteration cap resolved from `Agent.spec.maxTurns` or the operator default of 200. |
-    | `LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED` | No [PLANNED: OLS-3928] | Enable DeepAgents tool-result inspection. Default: `true`. |
+    | `LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED` | No | Enable DeepAgents tool-result inspection. Default: `true`. |
 
     Credentials are mounted via `envFrom` (all secret keys as env vars) AND as files at `/var/run/secrets/llm-credentials/`.
 
@@ -28,13 +28,13 @@ Cross-references: how options are consumed in code → `how/provider-architectur
 
     | Env var | Required | Description |
     | --- | --- | --- |
-    | `LIGHTSPEED_AUDIT_ENABLED` | No | When `"true"`, structured audit event logging is enabled. Default: disabled. |
-    | `LIGHTSPEED_CAPTURE_CONTENT` | No | When `"true"`, `gen_ai.completion` and `gen_ai.reasoning_content` are recorded on `gen_ai.choice` span events. When unset, defaults to the same value as `LIGHTSPEED_AUDIT_ENABLED` (content on when audit is on). Set `"false"` to opt out. The operator does not set this env today. [DEFERRED] Separate CRD field for user-controllable opt-in/out planned per parent spec. |
-    | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | Shared OTLP collector endpoint for span **and** log export. When absent, OTLP export is off (stdout audit JSON still applies when audit is enabled). |
+    | `LIGHTSPEED_AUDIT_ENABLED` | No | When `"true"`, enables compliance stdout and completed-GenAI-span log projections. Default: disabled. It does not gate source OTLP trace export. |
+    | `LIGHTSPEED_CAPTURE_CONTENT` | No | Filters the six standard content attributes from compliance copies only; when unset, follows `LIGHTSPEED_AUDIT_ENABLED`. It never filters source spans. The operator does not set this env today. [DEFERRED] Separate CRD field for user-controllable opt-in/out planned per parent spec. |
+    | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | Shared base endpoint for source trace and stdlib log export. With `http/protobuf`, exporters append `/v1/traces` and `/v1/logs` to the URL path, preserving any configured base path and query; `grpc` uses the shared endpoint unchanged. When absent, OTLP export is off (stdout compliance JSON still applies when audit is enabled). |
     | `OTEL_EXPORTER_OTLP_PROTOCOL` | No | `grpc` (default) or `http/protobuf`. |
-    | `LIGHTSPEED_AGENTICRUN_UID` | No | AgenticRun `metadata.uid` for this sandbox pod. Stamped on bridged OTLP log **record** attributes. Required by collector templog INSERT. Set by operator with the OTEL endpoint. |
-    | `LIGHTSPEED_AGENTICRUN_STEP` | No | AgenticRun step/phase for this pod (`analysis`, `execution`, …). Mapped to `agenticrun.phase` on bridged OTLP log records. Set by operator with the OTEL endpoint. |
-    | `TRACEPARENT` | No | W3C trace context from the operator phase span. When set, links sandbox inference spans as children of the operator trace. When absent, sandbox generates a new trace ID. |
+    | `LIGHTSPEED_AGENTICRUN_UID` | No | AgenticRun `metadata.uid` for this sandbox pod. Stamped on source spans and bridged OTLP log record attributes when set; required by collector templog INSERT. Set by operator with the OTEL endpoint. |
+    | `LIGHTSPEED_AGENTICRUN_STEP` | No | AgenticRun step/phase for this pod (`analysis`, `execution`, …). Mapped to `agenticrun.phase` on source spans and bridged OTLP log records when set. Set by operator with the OTEL endpoint. |
+    | `TRACEPARENT` | No | W3C trace context from the operator phase span. When set, `invoke_agent lightspeed` is its child; model/tool spans are children of the agent span. When absent or invalid, the sandbox starts a new trace. |
     | `LIGHTSPEED_MCP_SERVERS` | No | JSON array of MCP server configs. See rule 20a. When absent, no MCP servers are configured. |
     | `LIGHTSPEED_TLS_PROFILE` | No | Optional resolved OpenShift TLS profile type from the operator handoff. Runtime defaults apply when unset. |
     | `LIGHTSPEED_TLS_MIN_VERSION` | No | Optional resolved minimum TLS version from the operator handoff. Runtime defaults apply when unset. |
@@ -157,7 +157,7 @@ OPENAI_API_KEY: <token-or-placeholder>
 
  2. **MCP transport.** The sandbox MUST use Streamable HTTP as the MCP transport when connecting to remote MCP servers. SSE transport (deprecated in MCP spec since 2025-03-26) MUST NOT be used for new connections.
 
-22a. **Tool-result inspection** [PLANNED: OLS-3928]. Configuration MUST conform to `openshift/ols/.ai/spec/what/tool-result-inspection.md`. `LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED` controls the local DeepAgents middleware.
+22a. **Tool-result inspection.** Configuration MUST conform to `openshift/ols/.ai/spec/what/tool-result-inspection.md`. `LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED` controls the local DeepAgents middleware.
 
 22b. The value MUST default to `true` when the variable is absent or empty.
 
@@ -202,11 +202,11 @@ OPENAI_API_KEY: <token-or-placeholder>
 | `/var/run/secrets/llm-credentials/{aws_access_key_id,aws_secret_access_key,role_arn}` | Bedrock IAM files; `role_arn` (optional) selects STS assume-role, refreshed by botocore (rule 9b). Mounted by operator. |
 | `GOOGLE_GENAI_USE_VERTEXAI` | Internal: Vertex mode for Gemini adapter. Set by configuration mapping. |
 | `OPENAI_BASE_URL` | Internal: OpenAI-compatible endpoint. Set by configuration mapping. |
-| `LIGHTSPEED_AUDIT_ENABLED` | Audit event logging toggle. Set by operator from `AgenticOLSConfig`. |
-| `LIGHTSPEED_CAPTURE_CONTENT` | Content capture for `gen_ai.completion`/`gen_ai.reasoning_content` on choice events. When unset, defaults to audit enabled; `"false"` opts out. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Shared OTLP endpoint for span and log export. Set by operator from `AgenticOLSConfig`. |
-| `LIGHTSPEED_AGENTICRUN_UID` | AgenticRun UID on bridged OTLP log record attrs (templog). Set by operator with OTEL endpoint. |
-| `LIGHTSPEED_AGENTICRUN_STEP` | AgenticRun step → `agenticrun.phase` on bridged OTLP log records. Set by operator with OTEL endpoint. |
+| `LIGHTSPEED_AUDIT_ENABLED` | Compliance stdout and completed-GenAI-span log projection toggle. Set by operator from `AgenticOLSConfig`; source trace export remains endpoint-controlled. |
+| `LIGHTSPEED_CAPTURE_CONTENT` | Filters standard content fields from compliance copies only; when unset, follows audit enablement. It does not filter source spans. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Shared base endpoint for source span and stdlib log export. With `http/protobuf`, exporters append `/v1/traces` and `/v1/logs` to the URL path, preserving any configured base path and query; `grpc` uses the shared endpoint unchanged. Set by operator from `AgenticOLSConfig`. |
+| `LIGHTSPEED_AGENTICRUN_UID` | AgenticRun UID on source span and bridged OTLP log-record attributes when set. |
+| `LIGHTSPEED_AGENTICRUN_STEP` | AgenticRun step → `agenticrun.phase` on source spans and bridged OTLP log records when set. |
 | `LIGHTSPEED_MCP_SERVERS` | JSON array of MCP server configs with URLs, timeouts, and header sources. Set by operator from `ToolsSpec.mcpServers` and auto-injected defaults. |
 | `LIGHTSPEED_TLS_PROFILE` | Resolved OpenShift TLS profile type from the operator handoff. |
 | `LIGHTSPEED_TLS_MIN_VERSION` | Resolved minimum TLS version from the operator handoff. |
@@ -218,7 +218,7 @@ OPENAI_API_KEY: <token-or-placeholder>
 | `/var/secrets/mcp/<secretName>` or `/var/secrets/mcp/<secretName>/` | MCP header Secret value mounted by the operator for `Secret`-sourced headers; the runtime supports a direct single-value file or a directory containing the single value. |
 | `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` | [PLANNED: OLS-3743] Required whole-agent invocation timeout from the operator. |
 | `LIGHTSPEED_AGENT_MAX_TURNS` | [PLANNED: OLS-3743] Required provider iteration cap from the operator. |
-| `LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED` | [PLANNED: OLS-3928] DeepAgents tool-result inspection; defaults to `true`. |
+| `LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED` | DeepAgents tool-result inspection; defaults to `true`. |
 | `resolve_router_model()`, `resolve_startup_model()` | Model resolution from env (see `config.py`). |
 
 ## Constraints
@@ -236,10 +236,12 @@ OPENAI_API_KEY: <token-or-placeholder>
 - [test_mcp.py](../../../tests/test_mcp.py) verifies filtered-tool and removed-server logs include server/tool names, authentication classification, and safe reason codes without exception details, descriptions, credentials, or RBAC payloads.
 - Live batch: [mcp.feature](../../../tests/e2e/features/mcp.feature) (`LIGHTSPEED_MCP_SERVERS`), [reasoning_config.feature](../../../tests/e2e/features/reasoning_config.feature) (`LIGHTSPEED_REASONING_CONFIG`)
 - [PLANNED: OLS-3743] Unit tests cover required timeout/max-turn parsing, invalid values, and propagation into `run_agent_query()`.
+- Controller-reported integrated focused offline suite: 295 passed. The compliance-copy/source-span behavior is covered by [test_tracing.py](../../../tests/test_tracing.py) and [test_logging.py](../../../tests/test_logging.py); the existing configuration and provider tests above retain their narrower env-mapping and selection coverage.
+- The real local HTTP OTLP proof exercised the shared base endpoint and trace/log signal paths. A receiver regression also covers a base path with a query and verifies exact per-signal request targets plus decoded protobuf delivery/correlation; offline native SDK and HTTP evidence is detailed in [audit-logging.md](audit-logging.md), Verification. No live cluster was exercised; the batch BDD links above require a configured cluster.
+- Controller-reported final repository checks: `make verify` passed (hermetic requirements alignment, Ruff formatting/lint, mypy on 33 source files); `make test` passed all 669 tests with 15 warnings. The GNU patch workaround and warning details are recorded in [audit-logging.md](audit-logging.md), Verification. No live cluster was exercised.
 
 ## Planned Changes
 
 - OLS-3857 per-MCP-server trust selection remains out of scope.
 - Konflux pipeline and lockfile policy updates as Red Hat platform requirements evolve. [PLANNED: OLS-2894]
 - [PLANNED: OLS-3743] Require operator-resolved `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` and `LIGHTSPEED_AGENT_MAX_TURNS`; remove the sandbox-owned timeout and turn defaults.
-- [PLANNED: OLS-3928] Add DeepAgents-only tool-result inspection controlled by `LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED`.

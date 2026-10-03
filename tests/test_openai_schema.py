@@ -169,6 +169,23 @@ def test_custom_endpoint_keeps_schema_non_strict() -> None:
     assert "additionalProperties" not in wrapper.json_schema()
 
 
+def test_openai_init_disables_sdk_tracing_without_verbose_content_logging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lightspeed_agentic.providers import openai as provider
+
+    monkeypatch.setattr(provider, "_openai_initialized", False)
+    with (
+        patch("agents.tracing.set_tracing_disabled") as set_tracing_disabled,
+        patch("agents.enable_verbose_stdout_logging") as verbose_logging,
+        patch.object(provider, "_patch_exec_command_args"),
+    ):
+        provider._ensure_openai_init()
+
+    set_tracing_disabled.assert_called_once_with(True)
+    verbose_logging.assert_not_called()
+
+
 def test_build_manifest_parent_of_cwd(monkeypatch: pytest.MonkeyPatch) -> None:
     """Manifest root should be cwd's parent so exec_command reaches the full workspace."""
     monkeypatch.delenv("E2E_OUTPUT_DIR", raising=False)
@@ -537,3 +554,175 @@ class TestExecCommandShellCoercion:
             assert captured == [expected]
         finally:
             type.__setattr__(ExecCommandTool, "run", original_run)
+
+
+@pytest.mark.asyncio
+async def test_overlapping_custom_openai_runs_isolate_function_tool_hooks(
+    span_exporter,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    from contextvars import ContextVar
+    from types import SimpleNamespace
+
+    from agents.tool import function_tool
+    from opentelemetry.trace import StatusCode
+
+    import lightspeed_agentic.function_tools as function_tools
+    from lightspeed_agentic.audit import AuditLogger
+    from lightspeed_agentic.providers.openai import OpenAIProvider
+    from lightspeed_agentic.types import ProviderQueryOptions
+
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://offline.test/v1")
+    monkeypatch.delenv("E2E_OUTPUT_DIR", raising=False)
+    started = {name: asyncio.Event() for name in ("failure", "success")}
+    release = {name: asyncio.Event() for name in ("failure", "success")}
+    tool_outputs: dict[str, Any] = {}
+    current_run: ContextVar[str] = ContextVar("current_openai_run")
+
+    async def controlled_read(query: str) -> dict[str, str]:
+        """Wait for both provider queries before returning their distinct outcomes."""
+        run = current_run.get()
+        if run in started:
+            started[run].set()
+            await release[run].wait()
+        if run == "failure":
+            raise ValueError("private controlled tool failure")
+        return {"run": run, "query": query}
+
+    async def format_failure(context: Any, _error: Exception) -> str:
+        return f"handled:{context.tool_call_id}"
+
+    shared_tool = function_tool(
+        name_override="read_file",
+        description_override="Read the controlled test value.",
+        failure_error_function=format_failure,
+        strict_mode=False,
+    )(controlled_read)
+    monkeypatch.setattr(function_tools, "read_file", shared_tool)
+
+    class _RunnerResult:
+        def __init__(self, agent: Any, hooks: Any, query: str) -> None:
+            self.agent = agent
+            self.hooks = hooks
+            self.query = query
+            self.final_output = "completed"
+            self.context_wrapper = SimpleNamespace(
+                usage=SimpleNamespace(
+                    input_tokens=0,
+                    output_tokens=0,
+                    output_tokens_details=None,
+                )
+            )
+
+        async def stream_events(self) -> AsyncIterator[Any]:
+            tool = next(tool for tool in self.agent.tools if tool.name == "read_file")
+            raw_arguments = '{"query":"shared-input"}'
+            context = SimpleNamespace(
+                tool_name=tool.name,
+                tool_call_id=f"call-{self.query}",
+                tool_arguments=raw_arguments,
+                run_config=None,
+            )
+            await self.hooks.on_tool_start(context, self.agent, tool)
+            invoke = tool.on_invoke_tool
+            token = current_run.set(self.query)
+            try:
+                tool_outputs[self.query] = await invoke(context, raw_arguments)
+            finally:
+                current_run.reset(token)
+            await self.hooks.on_tool_end(context, self.agent, tool, tool_outputs[self.query])
+            if False:
+                yield None
+
+    def run_streamed(agent: Any, prompt: str, **kwargs: Any) -> _RunnerResult:
+        return _RunnerResult(agent, kwargs["hooks"], prompt)
+
+    async def collect(query: str) -> None:
+        audit = AuditLogger(
+            phase="analysis",
+            model="overlapping-openai-test",
+            provider="openai",
+            agenticrun_uid=f"run-{query}",
+        )
+        options = ProviderQueryOptions(
+            prompt=query,
+            system_prompt="You are an offline test agent.",
+            model="overlapping-openai-test",
+            max_turns=1,
+            allowed_tools=[],
+            cwd=str(tmp_path),
+            audit_logger=audit,
+        )
+        async for _event in OpenAIProvider().query(options):
+            pass
+
+    with (
+        patch(
+            "agents.sandbox.SandboxAgent", side_effect=lambda **kwargs: SimpleNamespace(**kwargs)
+        ),
+        patch("agents.Runner.run_streamed", side_effect=run_streamed),
+        patch("agents.models.openai_chatcompletions.OpenAIChatCompletionsModel"),
+        patch("openai.AsyncOpenAI"),
+    ):
+        failure_query = asyncio.create_task(collect("failure"))
+        success_query = asyncio.create_task(collect("success"))
+        await asyncio.wait_for(
+            asyncio.gather(*(event.wait() for event in started.values())),
+            timeout=5,
+        )
+        release["failure"].set()
+        try:
+            await failure_query
+        finally:
+            release["success"].set()
+            await success_query
+
+    assert tool_outputs["failure"] == "handled:call-failure"
+    assert tool_outputs["success"] == {"run": "success", "query": "shared-input"}
+    tool_spans = [
+        span for span in span_exporter.get_finished_spans() if span.name == "execute_tool read_file"
+    ]
+    assert len(tool_spans) == 2
+    spans_by_call_id = {span.attributes["gen_ai.tool.call.id"]: span for span in tool_spans}
+    failure_span = spans_by_call_id["call-failure"]
+    failure_attributes = dict(failure_span.attributes)
+    assert failure_span.status.status_code == StatusCode.ERROR
+    assert failure_attributes["error.type"] == "ValueError"
+    assert "gen_ai.tool.call.result" not in failure_attributes
+    assert "private controlled tool failure" not in str(failure_attributes)
+
+    success_span = spans_by_call_id["call-success"]
+    success_attributes = dict(success_span.attributes)
+    assert success_span.status.status_code == StatusCode.UNSET
+    assert json.loads(success_attributes["gen_ai.tool.call.result"]) == {
+        "run": "success",
+        "query": "shared-input",
+    }
+
+    future_context = SimpleNamespace(
+        tool_name="read_file",
+        tool_call_id="call-future",
+        tool_arguments='{"query":"future"}',
+        run_config=None,
+    )
+    token = current_run.set("future")
+    try:
+        future_result = await shared_tool.on_invoke_tool(
+            future_context,
+            '{"query":"future"}',
+        )
+    finally:
+        current_run.reset(token)
+    assert future_result == {"run": "future", "query": "future"}
+    assert (
+        len(
+            [
+                span
+                for span in span_exporter.get_finished_spans()
+                if span.name == "execute_tool read_file"
+            ]
+        )
+        == 2
+    )
