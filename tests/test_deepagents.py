@@ -693,6 +693,64 @@ class TestEventMapping:
         assert result_events[0].output_tokens == 10
 
     @pytest.mark.asyncio
+    async def test_structured_output_rejects_unparsed_shape_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed shape pass must not become an empty terminal response."""
+        monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+
+        mock_ai_message = MagicMock()
+        mock_ai_message.type = "ai"
+        mock_ai_message.content = "agent answer"
+        mock_ai_message.tool_calls = []
+        mock_ai_message.usage_metadata = {"input_tokens": 3, "output_tokens": 4}
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "agent answer"
+        mock_ai_message.content_blocks = [text_block]
+
+        async def mock_astream(*_args: Any, **_kwargs: Any) -> AsyncIterator[Any]:
+            yield (mock_ai_message, {"langgraph_node": "agent"})
+
+        mock_agent = MagicMock()
+        mock_agent.astream = mock_astream
+        mock_create = MagicMock(return_value=mock_agent)
+
+        mock_structured_runnable = MagicMock()
+        mock_structured_runnable.ainvoke = AsyncMock(
+            return_value={
+                "parsed": None,
+                "raw": MagicMock(usage_metadata={"input_tokens": 5, "output_tokens": 6}),
+                "parsing_error": ValueError("invalid structured response"),
+            }
+        )
+        mock_format_model = MagicMock()
+        mock_format_model.with_structured_output = MagicMock(
+            return_value=mock_structured_runnable
+        )
+
+        output_schema = {
+            "type": "object",
+            "properties": {"status": {"type": "string"}},
+            "required": ["status"],
+        }
+
+        with patch.dict(sys.modules, _mock_deepagents_modules(mock_create, MagicMock())):
+            import importlib
+
+            import lightspeed_agentic.providers.deepagents as mod
+
+            importlib.reload(mod)
+            with patch.object(mod, "_resolve_model", return_value=mock_format_model):
+                provider = mod.DeepAgentsProvider()
+                with pytest.raises(ValueError, match="structured output parsing failed"):
+                    await _collect_events(
+                        provider,
+                        _base_options(output_schema=output_schema),
+                    )
+
+    @pytest.mark.asyncio
     async def test_two_phase_structured_output_with_thinking(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

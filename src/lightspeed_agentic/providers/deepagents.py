@@ -259,6 +259,8 @@ async def _shape_structured_output(
     finally:
         await _close_model_clients(format_model)
     if isinstance(result, dict) and "parsed" in result:
+        if result.get("parsing_error") is not None or result.get("parsed") is None:
+            raise ValueError("structured output parsing failed")
         parsed = result["parsed"]
         in_tok, out_tok = _usage_from_message(result.get("raw"))
         return parsed, in_tok, out_tok
