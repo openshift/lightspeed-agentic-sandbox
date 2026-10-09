@@ -498,20 +498,21 @@ async def test_chat_completions_converter_preserves_output_order_and_actual_resp
     span_exporter: Any, tmp_path: Path
 ) -> None:
     from agents.models.chatcmpl_converter import Converter
-
-    tool_call = SimpleNamespace(
-        type="function",
-        id="call-chat-1",
-        function=SimpleNamespace(name="lookup", arguments='{"pod": "pod-b"}'),
-        extra_content=None,
+    from openai.types.chat import (
+        ChatCompletionMessage,
+        ChatCompletionMessageFunctionToolCall,
     )
-    message = SimpleNamespace(
+
+    tool_call = ChatCompletionMessageFunctionToolCall(
+        id="call-chat-1",
+        type="function",
+        function={"name": "lookup", "arguments": '{"pod": "pod-b"}'},
+    )
+
+    message = ChatCompletionMessage(
         role="assistant",
-        reasoning_content="think-first",
-        thinking_blocks=None,
         content="say-second",
-        refusal=None,
-        audio=None,
+        reasoning_content="think-first",
         tool_calls=[tool_call],
     )
     output_items = Converter.message_to_output_items(

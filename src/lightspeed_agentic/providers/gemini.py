@@ -12,8 +12,8 @@ import os
 import pathlib
 import shlex
 import time
-from collections.abc import AsyncIterator
-from typing import Any
+from collections.abc import AsyncIterator, Mapping
+from typing import Any, cast
 
 from lightspeed_agentic.types import (
     MAX_TOOL_RETURN_CHARS,
@@ -53,6 +53,85 @@ def _trim_tool_response(
     }
 
 
+def _field(value: Any, name: str) -> Any:
+    return value.get(name) if isinstance(value, Mapping) else getattr(value, name, None)
+
+
+def _raw_sdk_fields(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    model_dump = getattr(value, "model_dump", None)
+    if model_dump is not None:
+        return cast(dict[str, Any], model_dump(mode="json", exclude_unset=True))
+    return {}
+
+
+def _generation_output_part(part: Any) -> dict[str, Any] | None:
+    text = _field(part, "text")
+    if text is not None:
+        return {
+            "type": "reasoning" if _field(part, "thought") else "text",
+            "content": text,
+        }
+
+    function_call = _field(part, "function_call")
+    if function_call is not None:
+        output: dict[str, Any] = {"type": "tool_call"}
+        for source, target in (
+            ("id", "id"),
+            ("name", "name"),
+            ("args", "arguments"),
+        ):
+            value = _field(function_call, source)
+            if value is not None:
+                output[target] = value
+        return output
+
+    if _field(part, "function_response") is not None:
+        return None
+
+    tool_call = _field(part, "tool_call")
+    if tool_call is not None:
+        tool_type = _field(tool_call, "tool_type")
+        if tool_type is None:
+            return {**_raw_sdk_fields(tool_call), "type": "tool_call"}
+        tool_type_name = getattr(tool_type, "value", tool_type)
+        server_tool_call: dict[str, Any] = {"type": tool_type_name}
+        args = _field(tool_call, "args")
+        if args is not None:
+            server_tool_call["args"] = args
+        output = {
+            "type": "server_tool_call",
+            "name": tool_type_name,
+            "server_tool_call": server_tool_call,
+        }
+        call_id = _field(tool_call, "id")
+        if call_id is not None:
+            output["id"] = call_id
+        return output
+
+    tool_response = _field(part, "tool_response")
+    if tool_response is not None:
+        tool_type = _field(tool_response, "tool_type")
+        if tool_type is None:
+            return {**_raw_sdk_fields(tool_response), "type": "tool_response"}
+        tool_type_name = getattr(tool_type, "value", tool_type)
+        server_tool_response: dict[str, Any] = {"type": tool_type_name}
+        response = _field(tool_response, "response")
+        if response is not None:
+            server_tool_response["response"] = response
+        output = {
+            "type": "server_tool_call_response",
+            "server_tool_call_response": server_tool_response,
+        }
+        call_id = _field(tool_response, "id")
+        if call_id is not None:
+            output["id"] = call_id
+        return output
+
+    return None
+
+
 def _load_skills_toolset(skills_dir: str) -> Any:
     try:
         from google.adk.code_executors.unsafe_local_code_executor import (
@@ -87,6 +166,16 @@ class GeminiProvider(AgentProvider):
         return "gemini"
 
     async def query(self, options: ProviderQueryOptions) -> AsyncIterator[ProviderEvent]:
+        from opentelemetry import context as otel_context
+        from opentelemetry.trace import Status, StatusCode
+
+        from lightspeed_agentic.tracing import (
+            set_json_span_attribute,
+            start_generation_span,
+        )
+
+        parent_context = otel_context.get_current()
+
         from google.adk.agents import Agent, RunConfig
         from google.adk.agents.run_config import StreamingMode  # type: ignore[attr-defined]
         from google.adk.models import Gemini
@@ -168,11 +257,47 @@ class GeminiProvider(AgentProvider):
                 ),
             },
         )
+        gen_ai_provider = "gcp.vertex_ai" if is_vertex else "gcp.gemini"
+        generation_span: Any = None
+        generation_end_time: int | None = None
+
+        def before_model_callback(callback_context: Any, llm_request: Any) -> None:
+            nonlocal generation_span, generation_end_time
+            _ = callback_context, llm_request
+            close_open_generation("generation_interrupted")
+            generation_span = start_generation_span(
+                "generate_content",
+                options.model,
+                gen_ai_provider,
+                parent_context=parent_context,
+            )
+            generation_end_time = None
+            return None
+
+        def after_model_callback(callback_context: Any, llm_response: Any) -> None:
+            nonlocal generation_end_time
+            _ = callback_context
+            if not llm_response.partial:
+                generation_end_time = time.time_ns()
+            return None
+
+        def close_open_generation(error_type: str) -> None:
+            nonlocal generation_span, generation_end_time
+            if generation_span is None:
+                return
+            generation_span.set_attribute("error.type", error_type)
+            generation_span.set_status(Status(StatusCode.ERROR, error_type))
+            generation_span.end()
+            generation_span = None
+            generation_end_time = None
+
         agent_kwargs: dict[str, Any] = {
             "name": "lightspeed",
             "model": gemini_model,
             "instruction": options.system_prompt,
             "tools": tools,
+            "before_model_callback": before_model_callback,
+            "after_model_callback": after_model_callback,
             "after_tool_callback": _trim_tool_response,
             "generate_content_config": types.GenerateContentConfig(**gen_content_kwargs),
         }
@@ -220,6 +345,72 @@ class GeminiProvider(AgentProvider):
                 ),
                 run_config=run_config,
             ):
+                if event.author == agent.name and generation_span is not None:
+                    content = event.content
+                    empty_terminal = (
+                        (content is None or (not content.parts and content.role in (None, "model")))
+                        and not event.partial
+                        and generation_end_time is not None
+                        and event.is_final_response()
+                    )
+                    is_model_event = content is not None and content.role == "model"
+                    if is_model_event or empty_terminal:
+                        if is_model_event and content is not None:
+                            parts = [
+                                output_part
+                                for source_part in content.parts or []
+                                if (output_part := _generation_output_part(source_part)) is not None
+                            ]
+                            set_json_span_attribute(
+                                generation_span,
+                                "gen_ai.output.messages",
+                                [{"role": "assistant", "parts": parts}],
+                            )
+
+                        model_version = event.model_version
+                        if model_version is not None:
+                            generation_span.set_attribute("gen_ai.response.model", model_version)
+
+                        finish_reason = event.finish_reason
+                        if finish_reason is not None:
+                            generation_span.set_attribute(
+                                "gen_ai.response.finish_reasons",
+                                [
+                                    str(
+                                        getattr(
+                                            finish_reason,
+                                            "value",
+                                            finish_reason,
+                                        )
+                                    )
+                                ],
+                            )
+
+                        usage = event.usage_metadata
+                        for source, target in (
+                            ("prompt_token_count", "gen_ai.usage.input_tokens"),
+                            ("candidates_token_count", "gen_ai.usage.output_tokens"),
+                            (
+                                "thoughts_token_count",
+                                "gen_ai.usage.reasoning.output_tokens",
+                            ),
+                        ):
+                            value = _field(usage, source)
+                            if value is not None:
+                                generation_span.set_attribute(target, value)
+
+                        error_code = event.error_code
+                        if error_code is not None:
+                            error_type = str(getattr(error_code, "value", error_code))
+                            generation_span.set_attribute("error.type", error_type)
+                            generation_span.set_status(Status(StatusCode.ERROR, error_type))
+
+                        # ADK can queue partial events after the final callback ran.
+                        # Consume its timestamp only with the finalized response.
+                        if generation_end_time is not None and not event.partial:
+                            generation_span.end(end_time=generation_end_time)
+                            generation_span = None
+                            generation_end_time = None
                 if not event.content or not event.content.parts:
                     continue
 
@@ -251,16 +442,29 @@ class GeminiProvider(AgentProvider):
 
                     if hasattr(part, "function_response") and part.function_response:
                         fr = part.function_response
+                        response = fr.response
+                        tool_error_type: str | None = None
+                        if isinstance(response, Mapping) and response.get("error"):
+                            error_code = response.get("error_code")
+                            if isinstance(error_code, str) and error_code:
+                                tool_error_type = error_code
                         yield ToolResultEvent(
-                            output=stringify(fr.response),
+                            output=stringify(response),
                             call_id=getattr(fr, "id", "") or "",
+                            error_type=tool_error_type,
                         )
 
                 usage = getattr(event, "usage_metadata", None)
                 if usage:
                     total_input_tokens = getattr(usage, "prompt_token_count", 0) or 0
                     total_output_tokens = getattr(usage, "candidates_token_count", 0) or 0
+        except BaseException as exc:
+            if not isinstance(exc, GeneratorExit):
+                close_open_generation(type(exc).__name__)
+            raise
         finally:
+            if generation_span is not None:
+                close_open_generation("generation_interrupted")
             for toolset in mcp_toolsets:
                 await toolset.close()
 

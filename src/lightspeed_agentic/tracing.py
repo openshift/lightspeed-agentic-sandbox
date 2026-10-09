@@ -93,6 +93,30 @@ class OTLPJsonStdoutExporter(SpanExporter):
         pass
 
 
+class _AdkSpanFilteringExporter(SpanExporter):
+    """Exclude native ADK spans and delegate remaining exporter operations."""
+
+    def __init__(self, exporter: SpanExporter) -> None:
+        self._exporter = exporter
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        filtered_spans = [
+            span
+            for span in spans
+            if span.instrumentation_scope is None
+            or span.instrumentation_scope.name != "gcp.vertex.agent"
+        ]
+        if not filtered_spans:
+            return SpanExportResult.SUCCESS
+        return self._exporter.export(filtered_spans)
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return self._exporter.force_flush(timeout_millis)
+
+    def shutdown(self) -> None:
+        self._exporter.shutdown()
+
+
 class _SpanEventsToLogsProcessor(SpanProcessor):
     """Forward span events through stdlib logging (templog via LoggingHandler).
 
@@ -252,7 +276,9 @@ def init_tracer(
 
     _state.tracer_provider = TracerProvider(resource=resource)
     if audit:
-        _state.tracer_provider.add_span_processor(SimpleSpanProcessor(OTLPJsonStdoutExporter()))
+        _state.tracer_provider.add_span_processor(
+            SimpleSpanProcessor(_AdkSpanFilteringExporter(OTLPJsonStdoutExporter()))
+        )
     if endpoint and audit:
         # Same gate as stdout audit: only forward when audit is enabled.
         _state.tracer_provider.add_span_processor(
@@ -275,7 +301,7 @@ def _configure_trace_exporter(provider: TracerProvider, *, endpoint: str, protoc
     else:
         exporter = GrpcSpanExporter(endpoint=endpoint)
 
-    provider.add_span_processor(BatchSpanProcessor(exporter))
+    provider.add_span_processor(BatchSpanProcessor(_AdkSpanFilteringExporter(exporter)))
 
 
 def _configure_log_exporter(provider: LoggerProvider, *, endpoint: str, protocol: str) -> None:

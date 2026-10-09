@@ -20,7 +20,7 @@ These specs define the behavioral rules and codebase navigation for the lightspe
 | [configuration.md](what/configuration.md) | Environment variables, provider selection, model resolution, container layout, build system |
 | [health-probes.md](what/health-probes.md) | Readiness checks at batch startup (R1); HTTP probes superseded |
 | [audit-logging.md](what/audit-logging.md) | OTel GenAI invocation/generation/tool spans, legacy choice events, and audit-log projections |
-| [data-collection.md](what/data-collection.md) | Implemented invocation/tool and DeepAgents/OpenAI generation profile; Gemini capture and native ADK normalization planned for PR3 |
+| [data-collection.md](what/data-collection.md) | Three-provider GenAI invocation/tool/generation profile and exact `gcp.vertex.agent` exclusion from stdout/OTLP trace exports |
 | [e2e-testing.md](what/e2e-testing.md) | Batch cluster BDD harness: OpenShift Jobs, fixtures, live vs unit split |
 
 ### how/ — Architecture Specifications
@@ -70,7 +70,7 @@ AI agents. Content is optimized for precision and machine consumption.
 | `what/configuration.md` | `how/provider-architecture.md` (container build, implementation notes) |
 | `what/health-probes.md` | `how/project-structure.md` (readiness.py) |
 | `what/audit-logging.md` | `how/provider-architecture.md` (observability integration) |
-| `what/data-collection.md` | `how/provider-architecture.md` (shared root/tool capture and planned provider hooks) |
+| `what/data-collection.md` | `how/provider-architecture.md` (shared invocation/tool capture and provider-generation capture) |
 
 ## Conventions
 

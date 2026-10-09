@@ -5,11 +5,32 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Sequence
 
 import pytest
+from google.protobuf.json_format import ParseDict
 from opentelemetry import trace
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceRequest,
+)
+from opentelemetry.sdk._logs.export import (
+    InMemoryLogRecordExporter,
+    SimpleLogRecordProcessor,
+)
+from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.sdk.trace.export import (
+    SimpleSpanProcessor,
+    SpanExporter,
+    SpanExportResult,
+)
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import (
+    Link,
+    NonRecordingSpan,
+    SpanContext,
+    Status,
+    StatusCode,
+    TraceFlags,
 )
 
 import lightspeed_agentic.tracing as _tracing_mod
@@ -387,3 +408,247 @@ async def test_json_span_attributes_survive_otlp_protobuf_round_trip(span_export
         assert r"\ud800" in value
         assert r"\udfff" in value
         assert "café 🌍" in value
+
+
+class _RecordingTraceExporter(SpanExporter):
+    def __init__(self) -> None:
+        self.requests: list[ExportTraceServiceRequest] = []
+        self.batches: list[list[ReadableSpan]] = []
+        self.force_flush_timeouts: list[int] = []
+        self.shutdown_count = 0
+        self.force_flush_result = True
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        self.batches.append(list(spans))
+        self.requests.append(_tracing_mod.encode_spans(spans))
+        return SpanExportResult.SUCCESS
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        self.force_flush_timeouts.append(timeout_millis)
+        return self.force_flush_result
+
+    def shutdown(self) -> None:
+        self.shutdown_count += 1
+
+
+def _span_records(requests: Sequence[ExportTraceServiceRequest]) -> dict:
+    return {
+        span.name: (
+            resource_span.resource,
+            resource_span.schema_url,
+            scope_span.scope,
+            scope_span.schema_url,
+            span,
+        )
+        for request in requests
+        for resource_span in request.resource_spans
+        for scope_span in resource_span.scope_spans
+        for span in scope_span.spans
+    }
+
+
+@pytest.mark.parametrize("protocol", ["http/protobuf", "grpc"])
+def test_init_tracer_filters_adk_spans_from_exporters_and_preserves_native_logs(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    protocol: str,
+) -> None:
+    otlp_endpoint = "http://collector.example/v1/traces"
+    recorded_exporter = _RecordingTraceExporter()
+    selected_protocols: list[str] = []
+
+    def exporter_factory(selected_protocol: str):
+        def create(*, endpoint: str) -> _RecordingTraceExporter:
+            assert endpoint == otlp_endpoint
+            selected_protocols.append(selected_protocol)
+            return recorded_exporter
+
+        return create
+
+    monkeypatch.setattr(_tracing_mod, "HttpSpanExporter", exporter_factory("http/protobuf"))
+    monkeypatch.setattr(_tracing_mod, "GrpcSpanExporter", exporter_factory("grpc"))
+    # Keep log export in-memory while exercising the real span-event bridge.
+    monkeypatch.setattr(_tracing_mod, "_configure_log_exporter", lambda *_a, **_k: None)
+    monkeypatch.setenv("LIGHTSPEED_AUDIT_ENABLED", "true")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", otlp_endpoint)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", protocol)
+    monkeypatch.setenv("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", "8")
+    monkeypatch.setenv("OTEL_SPAN_EVENT_COUNT_LIMIT", "1")
+    monkeypatch.setenv("OTEL_SPAN_LINK_COUNT_LIMIT", "1")
+    init_tracer(agenticrun_uid="test-run", agenticrun_phase="execution")
+
+    provider = _tracing_mod._state.tracer_provider
+    logger_provider = _tracing_mod._state.logger_provider
+    assert provider is not None
+    assert logger_provider is not None
+    native_exporter = InMemorySpanExporter()  # type: ignore[no-untyped-call]
+    log_exporter = InMemoryLogRecordExporter()  # type: ignore[no-untyped-call]
+    provider.add_span_processor(SimpleSpanProcessor(native_exporter))
+    logger_provider.add_log_record_processor(SimpleLogRecordProcessor(log_exporter))
+
+    parent_context = SpanContext(
+        trace_id=int("4bf92f3577b34da6a3ce929d0e0e4736", 16),
+        span_id=int("00f067aa0ba902b7", 16),
+        is_remote=True,
+        trace_flags=TraceFlags(0x01),
+    )
+    parent = trace.set_span_in_context(NonRecordingSpan(parent_context))
+    link_context = SpanContext(
+        trace_id=int("7bba9f33312b3c44c8a6d5e2b0835d9b", 16),
+        span_id=int("1d0f4a1e2b3c4d5e", 16),
+        is_remote=True,
+    )
+    link = Link(link_context, {"link.metadata": "preserved"})
+    discarded_link = Link(parent_context, {"link.metadata": "dropped"})
+    start_time = 1_718_000_000_000_000_000
+
+    tracer = provider.get_tracer("lightspeed_agentic.test", "test-1")
+    invocation_span = tracer.start_span(
+        "invoke_agent",
+        context=parent,
+        kind=trace.SpanKind.SERVER,
+        attributes={
+            "gen_ai.operation.name": "invoke_agent",
+            "gcp.vertex.agent.llm_request": "keep non-ADK attributes",
+            "custom.metadata": "unchanged",
+        },
+        start_time=start_time,
+    )
+    invocation_context = trace.set_span_in_context(invocation_span)
+
+    adk_schema_url = "https://opentelemetry.io/schemas/1.36.0"
+    adk_span = provider.get_tracer("gcp.vertex.agent", "2.11.0", adk_schema_url).start_span(
+        "call_llm",
+        context=invocation_context,
+        kind=trace.SpanKind.CLIENT,
+        attributes={
+            "overflow.metadata": "dropped by the SDK",
+            "gen_ai.output.messages": "native model output",
+            "gen_ai.usage.input_tokens": 17,
+            "gcp.vertex.agent.llm_request": "raw request",
+            "gcp.vertex.agent.llm_response": "raw response",
+            "gcp.vertex.agent.tool_call_args": "raw tool arguments",
+            "gcp.vertex.agent.tool_response": "raw tool response",
+            "gcp.vertex.agent.llm_request_extra": "preserve exact-neighbor metadata",
+            "custom.metadata": "preserved",
+        },
+        links=[discarded_link, link],
+        start_time=start_time + 1_000,
+    )
+    adk_span.add_event("discarded.event", timestamp=start_time + 1_250)
+    adk_span.add_event(
+        "gen_ai.choice",
+        {"gen_ai.completion": "native event payload"},
+        timestamp=start_time + 1_500,
+    )
+    adk_span.set_status(Status(StatusCode.ERROR, "native ADK failure"))
+    adk_span.end(end_time=start_time + 10_000)
+
+    vendor_other_span = provider.get_tracer("gcp.vertex.agent.other", "test-1").start_span(
+        "vendor.other",
+        context=invocation_context,
+        kind=trace.SpanKind.INTERNAL,
+        attributes={"custom.metadata": "vendor passthrough"},
+        start_time=start_time + 11_000,
+    )
+    vendor_other_span.end(end_time=start_time + 11_500)
+
+    generation_span = tracer.start_span(
+        "generate_content gemini-test",
+        context=invocation_context,
+        kind=trace.SpanKind.CLIENT,
+        attributes={
+            "gen_ai.operation.name": "generate_content",
+            "gen_ai.request.model": "gemini-test",
+            "custom.metadata": "canonical generation",
+        },
+        start_time=start_time + 12_000,
+    )
+    generation_span.set_status(Status(StatusCode.ERROR, "canonical status preserved"))
+    generation_span.end(end_time=start_time + 20_000)
+    invocation_span.end(end_time=start_time + 30_000)
+
+    assert provider.force_flush(timeout_millis=5000)
+    assert logger_provider.force_flush(timeout_millis=5000)
+
+    stdout_requests = [
+        ParseDict(json.loads(line), ExportTraceServiceRequest())
+        for line in capsys.readouterr().out.splitlines()
+        if line.strip()
+    ]
+    stdout_spans = _span_records(stdout_requests)
+    otlp_spans = _span_records(recorded_exporter.requests)
+    expected_order = ["vendor.other", "generate_content gemini-test", "invoke_agent"]
+    assert selected_protocols == [protocol]
+    assert list(stdout_spans) == expected_order
+    assert [span.name for batch in recorded_exporter.batches for span in batch] == expected_order
+    assert stdout_spans == otlp_spans
+    assert all(record[2].name != "gcp.vertex.agent" for record in stdout_spans.values())
+
+    native_spans = {span.name: span for span in native_exporter.get_finished_spans()}
+    native = native_spans["call_llm"]
+    vendor_other = native_spans["vendor.other"]
+    generation = native_spans["generate_content gemini-test"]
+    invocation = native_spans["invoke_agent"]
+    assert native.attributes["gen_ai.output.messages"] == "native model output"
+    assert native.attributes["gcp.vertex.agent.llm_request"] == "raw request"
+    assert native.events[0].attributes["gen_ai.completion"] == "native event payload"
+    assert native.status.status_code == StatusCode.ERROR
+    assert (
+        native.dropped_attributes,
+        native.dropped_events,
+        native.dropped_links,
+    ) == (1, 1, 1)
+
+    assert generation.parent is not None
+    assert generation.parent.span_id == invocation.context.span_id
+    assert generation.parent.span_id != native.context.span_id
+    invocation_record = _span_records([_tracing_mod.encode_spans([invocation])])["invoke_agent"]
+    generation_record = _span_records([_tracing_mod.encode_spans([generation])])[
+        "generate_content gemini-test"
+    ]
+    vendor_record = _span_records([_tracing_mod.encode_spans([vendor_other])])["vendor.other"]
+    assert stdout_spans["vendor.other"] == vendor_record
+    assert vendor_record[2].name == "gcp.vertex.agent.other"
+    assert stdout_spans["invoke_agent"] == invocation_record
+    assert stdout_spans["generate_content gemini-test"] == generation_record
+    assert generation_record[4].parent_span_id == invocation_record[4].span_id
+    _, _, invocation_scope, _, invocation_proto = stdout_spans["invoke_agent"]
+    invocation_attributes = {
+        attribute.key: attribute.value for attribute in invocation_proto.attributes
+    }
+    assert invocation_proto.name == "invoke_agent"
+    assert invocation_attributes["gen_ai.operation.name"].string_value == "invoke_agent"
+    assert invocation_attributes["gcp.vertex.agent.llm_request"].string_value == (
+        "keep non-ADK attributes"
+    )
+    assert invocation_scope.name == "lightspeed_agentic.test"
+
+    mixed_exporter = _RecordingTraceExporter()
+    filtered_exporter = _tracing_mod._AdkSpanFilteringExporter(mixed_exporter)
+    assert (
+        filtered_exporter.export([native, vendor_other, generation, invocation])
+        == SpanExportResult.SUCCESS
+    )
+    assert len(mixed_exporter.batches) == 1
+    assert mixed_exporter.batches[0][0] is vendor_other
+    assert mixed_exporter.batches[0][1] is generation
+    assert mixed_exporter.batches[0][2] is invocation
+    assert filtered_exporter.export([native]) == SpanExportResult.SUCCESS
+    assert len(mixed_exporter.batches) == 1
+    assert len(mixed_exporter.requests) == 1
+    mixed_exporter.force_flush_result = False
+    assert not filtered_exporter.force_flush(timeout_millis=4321)
+    assert mixed_exporter.force_flush_timeouts == [4321]
+    filtered_exporter.shutdown()
+    assert mixed_exporter.shutdown_count == 1
+
+    logs = log_exporter.get_finished_logs()
+    assert len(logs) == 1
+    record = logs[0].log_record
+    assert record.attributes["event"] == "gen_ai.choice"
+    assert json.loads(str(record.body)) == {"gen_ai.completion": "native event payload"}
+    assert record.trace_id == native.context.trace_id
+    assert record.span_id == native.context.span_id
+    assert record.attributes["agenticrun.uid"] == "test-run"
+    assert record.attributes["agenticrun.phase"] == "execution"
