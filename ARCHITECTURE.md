@@ -11,18 +11,22 @@ graph LR
     Operator["Lightspeed Operator<br/>(workflow engine)"]
     Sandbox["Agentic Sandbox<br/>(batch process)"]
     K8s["Kubernetes API<br/>(Result CR)"]
-    Anthropic["Anthropic API<br/>(via DeepAgents)"]
-    Gemini["Gemini API<br/>(Google)"]
-    OpenAI["OpenAI API"]
+    Anthropic["Anthropic API<br/>(direct)"]
+    Vertex["Google Vertex AI<br/>(Claude / Gemini / OpenAI models)"]
+    Bedrock["AWS Bedrock<br/>(Claude models)"]
+    OpenAIAPI["OpenAI API<br/>(native + compatible endpoints)"]
+    Azure["Azure OpenAI"]
     Skills["Skills<br/>(mounted volume)"]
 
     Operator -->|"ConfigMap /input/*"| Sandbox
     Operator -->|"creates pod"| Sandbox
     Sandbox -->|"kubernetes client"| K8s
     K8s -->|"Result CR status"| Operator
-    Sandbox -->|provider SDK| Anthropic
-    Sandbox -->|provider SDK| Gemini
-    Sandbox -->|provider SDK| OpenAI
+    Sandbox -->|deepagents| Anthropic
+    Sandbox -->|"deepagents / gemini / openai"| Vertex
+    Sandbox -->|deepagents| Bedrock
+    Sandbox -->|openai-agents| OpenAIAPI
+    Sandbox -->|openai-agents| Azure
     Sandbox -->|filesystem| Skills
 ```
 
@@ -59,6 +63,7 @@ graph TD
 
     subgraph "Provider Adapters"
         DeepAgentsP["deepagents.py"]
+        Inspection["inspection/<br/>tool-result safety middleware"]
         GeminiP["gemini.py"]
         OpenAIP["openai.py"]
     end
@@ -77,6 +82,7 @@ graph TD
     Factory -->|lazy import| DeepAgentsP
     Factory -->|lazy import| GeminiP
     Factory -->|lazy import| OpenAIP
+    DeepAgentsP -.->|default on| Inspection
 ```
 
 ## Batch Run Flow
@@ -119,11 +125,25 @@ Result CR lifecycle uses the **`kubernetes` Python client** (`CustomObjectsApi`)
 
 Each adapter is a thin wrapper. The SDK owns tool execution, skill discovery, and multi-turn orchestration. Adapters map SDK events to normalized `ProviderEvent` objects and extract token usage.
 
-| Provider | SDK | Structured Output | Skills | Tools |
+| Provider | SDK | Structured output | Skills | Tools |
 |---|---|---|---|---|
-| DeepAgents | `deepagents` + `langchain-anthropic` | `ProviderStrategy` when thinking configured, else `ToolStrategy` via `response_format` | Skills dirs passed to `create_deep_agent()` | `LocalShellBackend` + MCP tools |
-| Gemini | `google-adk` | Response schema on content config | `SkillToolset` from directory | `ExecuteBashTool` + web tools |
-| OpenAI | `openai-agents` | `output_type` wrapper | `Skills` capability | `SandboxAgent` shell/filesystem |
+| DeepAgents | `deepagents` + `langchain-anthropic` / `-google-vertexai` / `-aws` | Tool-free shape pass via `with_structured_output` (`function_calling` on direct/Bedrock, `json_schema` on Vertex) | Skills dirs passed to `create_deep_agent()` | `LocalShellBackend` + MCP tools; tool-result inspection middleware (default on) |
+| Gemini | `google-adk` | Native `response_schema` on `GenerateContentConfig` | `SkillToolset` from directory | `ExecuteBashTool` + search tools (AI Studio only, not Vertex) |
+| OpenAI | `openai-agents` | `output_type` JSON-schema wrapper (strict on native) | `Skills` capability | `SandboxAgent` shell/filesystem (manual filesystem function tools on Chat Completions) |
+
+### Provider to SDK mapping
+
+`config.resolve_sdk()` maps the operator-set `LIGHTSPEED_PROVIDER` (plus `LIGHTSPEED_MODEL_PROVIDER` for Vertex) to exactly one agent SDK:
+
+| `LIGHTSPEED_PROVIDER` | `LIGHTSPEED_MODEL_PROVIDER` | Agent SDK | Model client | Models |
+|---|---|---|---|---|
+| `anthropic` (default) | — | `deepagents` | `ChatAnthropic` (`langchain-anthropic`) | Anthropic Claude (e.g. `claude-opus-4-6` default, `claude-sonnet-4-6`, `claude-haiku-4-5`); Anthropic-compatible endpoints (e.g. vLLM) via `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` |
+| `vertex` | `Anthropic` | `deepagents` | `ChatAnthropicVertex` (`langchain-google-vertexai`) | Claude on Vertex (e.g. `claude-sonnet-4-20250514`) |
+| `vertex` | `Google` | `gemini` | ADK `Gemini` model (`google-adk` + `google-genai`, `GOOGLE_GENAI_USE_VERTEXAI=true`) | Gemini (e.g. `gemini-2.5-pro`, `gemini-2.5-flash`) |
+| `vertex` | `OpenAI` | `openai` | `OpenAIChatCompletionsModel` pointed at the Vertex OpenAI endpoint (`OPENAI_BASE_URL`) | OpenAI models hosted on Vertex |
+| `openai` | — | `openai` | `OpenAIResponsesModel` (native `api.openai.com`) or `OpenAIChatCompletionsModel` (vLLM / custom `OPENAI_BASE_URL`) | GPT (e.g. `gpt-5-mini`, `gpt-4.1`); any OpenAI-compatible model on vLLM (e.g. `gpt-oss-20b`) |
+| `azure` | — | `openai` | OpenAI SDK native Azure client (`AsyncAzureOpenAI`, provider-contract rule 29; OLS-3050) | Azure OpenAI deployments (GPT family) |
+| `bedrock` | — | `deepagents` | `ChatAnthropicBedrock` (`langchain-aws` + `anthropic` Bedrock client) | Claude on Bedrock (e.g. `global.anthropic.claude-haiku-4-5-20251001-v1:0`) |
 
 ## Container & Deployment
 
@@ -157,7 +177,7 @@ The container runs as non-root user `agent`. `catatonit` is PID 1. The batch mod
 
 ## Key Decisions
 
-- **One provider per pod:** Selected at startup via `LIGHTSPEED_PROVIDER` (mapped to an SDK name by `config.resolve_sdk()`).
+- **One provider per pod:** Selected at startup via `LIGHTSPEED_PROVIDER` (mapped to an SDK name by `config.resolve_sdk()`); for Vertex, `LIGHTSPEED_MODEL_PROVIDER` (`Anthropic` / `Google` / `OpenAI`) selects the model stack. Bedrock currently supports Anthropic models only.
 
 - **Thin adapters:** Provider modules map SDK events to a normalized union type; they do not re-implement SDK behavior.
 
