@@ -12,6 +12,18 @@ sandbox image (`SANDBOX_IMAGE`, default Konflux `:main` tag). Pytest on the host
 creates input ConfigMaps + Jobs per scenario; step definitions assert on Result CR
 status and, when needed, pod log enrichment (see [Response bodies](#response-bodies)).
 
+## Proposed route qualification [PLANNED: OLS-4434]
+
+[DeepAgents migration](deepagents-migration.md) requires the existing batch scenarios
+to qualify model routes through the shared runtime, not merely through their old
+agent SDKs. The matrix IDs and run commands below describe the current harness;
+they are not evidence that Gemini/OpenAI already execute under DeepAgents. Target
+qualification records model/endpoint/client versions and covers tools/MCP, skills,
+reasoning where supported, structured output, streaming/events, and Result output.
+Custom/vLLM routes require deployed-model/tool-parser evidence; Azure requires both
+API paths and API-key/Entra coverage. Vertex/OpenAI remains unresolved pending a
+working endpoint and refresh path. Offline proof is separate from live qualification.
+
 ## Spike findings (OLS-3220)
 
 Investigation goal: add BDD coverage for context prefix, MCP, reasoning, structured

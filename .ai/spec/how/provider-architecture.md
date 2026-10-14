@@ -3,6 +3,23 @@
 Audience: AI agents. File paths and symbols allowed here.
 Package tree: `AGENTS.md`. Behavioral rules: `what/run-api.md`, `what/provider-contract.md`, `what/configuration.md`, `what/audit-logging.md`.
 
+## Proposed target [PLANNED: OLS-4434]
+
+[DeepAgents migration](../what/deepagents-migration.md) separates model construction
+from execution. Configuration/readiness resolves host, family, model, endpoint,
+API mode, credentials, and TLS; a model resolver constructs the selected LangChain
+chat client; one DeepAgents adapter receives that instance and owns agent execution,
+tools, skills, middleware, and normalized events. Auxiliary classifier/shaping
+clients derive from the same route without main-agent reasoning. Provider identity
+and API mode remain available to telemetry rather than being inferred as Anthropic.
+
+The target removes ADK/OpenAI Agents adapters and imports, not required vendor
+model clients. Shared LangChain callbacks replace agent-SDK-specific generation
+capture. Model construction, streaming/event normalization, structured output,
+authentication/TLS, and cleanup require the target spec's verification gates. The
+data flow and integration notes below describe current mechanisms until migration;
+this section is not an implementation plan or evidence of parity.
+
 ## Data Flow
 
 1. Startup: `batch.main()` reads `/input/`, then calls `resolve_sdk()`, `parse_reasoning_config()`, and `parse_mcp_servers()` (fail-fast on bad env), `run_readiness_checks()`, `init_tracer()` when `otel_runtime_enabled()`, and `create_provider()`. [PLANNED: OLS-3743] Startup also requires and validates `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` and `LIGHTSPEED_AGENT_MAX_TURNS` before provider invocation.
@@ -60,7 +77,7 @@ configuration rather than independent CA arguments.
 
 - **DeepAgents model routing:** `_resolve_model()` checks `CLAUDE_CODE_USE_VERTEX` and `CLAUDE_CODE_USE_BEDROCK`.
 - **OpenAI/Azure adapter (`providers/openai.py`):** branches on `LIGHTSPEED_PROVIDER`. For `azure`, builds `AsyncAzureOpenAI` from `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_API_VERSION` / deployment; Entra ID mode (per `_resolve_azure()` in `config.py`, `what/configuration.md` rule 9a) reads `client_id`/`tenant_id`/`client_secret` from `/var/run/secrets/llm-credentials/` and passes `azure_ad_token_provider`; API-key mode passes `api_key`. Fail-fast on definitive token-acquisition failure — do not construct or use a broken client.
-- **Bedrock credentials (`config.py::_resolve_bedrock`):** [OLS-4092] the Anthropic-on-Bedrock model path (`ChatBedrockConverse` via `deepagents`) is unchanged; only credential resolution grows. Reads `aws_access_key_id` / `aws_secret_access_key` / optional `role_arn` from `/var/run/secrets/llm-credentials/` (`what/configuration.md` rule 9b). With `role_arn`, `botocore` performs STS assume-role and owns short-lived-credential refresh (delegated-token principle, `what/provider-contract.md` rule 38); without it, static keys are used. `boto3`/`botocore` are already present via `langchain-aws` — no new dependency.
+- **Bedrock credentials (`config.py::_resolve_bedrock`):** [OLS-4092] the Anthropic-on-Bedrock model path (`ChatAnthropicBedrock` via `deepagents`) is unchanged; only credential resolution grows. Reads `aws_access_key_id` / `aws_secret_access_key` / optional `role_arn` from `/var/run/secrets/llm-credentials/` (`what/configuration.md` rule 9b). With `role_arn`, `botocore` performs STS assume-role and owns short-lived-credential refresh (delegated-token principle, `what/provider-contract.md` rule 38); without it, static keys are used. `boto3`/`botocore` are already present via `langchain-aws` — no new dependency.
 - **DeepAgents streaming:** `astream(stream_mode="messages")`.
 - **DeepAgents result inspection [PLANNED: OLS-3928]:** Install middleware after artifact offload. Run inspection before result delivery to the model and before `ToolResultEvent` emission. Route each model-visible preview, normal result, error, file read, and search result through it.
 - **DeepAgents result boundary:** `inspection/middleware.py` applies the boundary at `awrap_model_call()`, after effective-result transformations. Boundary installation stays independent of `options.tool_output_inspection_enabled`. The adapter constructs classifier resources only when inspection is enabled. The middleware also applies to the general-purpose subagent model path.

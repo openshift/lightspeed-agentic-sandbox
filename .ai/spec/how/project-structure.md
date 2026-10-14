@@ -26,6 +26,16 @@ Do not maintain a duplicate path inventory here.
 - **Config / MCP / readiness:** `config.py` maps `LIGHTSPEED_*` → SDK env; `mcp.py` parses `LIGHTSPEED_MCP_SERVERS`; `readiness.py` runs `run_readiness_checks()` at batch startup (see `health-probes.md`).
 - **Test layout:** `tests/` mirrors source. `tests/e2e/` holds batch cluster BDD (feature files, `batch_runner.py`, `suite_setup.py`). Live provider coverage runs via `make e2e` (see [e2e-testing.md](../what/e2e-testing.md)).
 
+## Proposed runtime structure [PLANNED: OLS-4434]
+
+[DeepAgents migration](../what/deepagents-migration.md) replaces the three agent
+adapters with one execution path plus provider-specific model construction. The
+current entry points/extras below are not the target dependency inventory. The
+migration removes `google-adk` and `openai-agents`, declares needed LangChain model
+integrations directly, and retains required vendor/auth libraries. Lazy optional
+imports, image completeness, and local/hermetic graph consistency remain required.
+No dependency or source-file layout is changed by this spec proposal.
+
 ## Dependency Organization
 
 The project uses optional extras to gate provider SDKs:

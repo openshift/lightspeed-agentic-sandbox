@@ -17,6 +17,7 @@ These specs define the behavioral rules and codebase navigation for the lightspe
 | [system-overview.md](what/system-overview.md) | System role, component inventory, lifecycle, integration boundaries |
 | [run-api.md](what/run-api.md) | Batch entrypoint: `/input/` files, agent run, Result CR publishing, context prefix, timeouts |
 | [provider-contract.md](what/provider-contract.md) | AgentProvider ABC, event model, structured output, thin-adapter principle, skills delegation |
+| [deepagents-migration.md](what/deepagents-migration.md) | [PLANNED: OLS-4434] Proposed single-DeepAgents-runtime design, explicit model clients/API routing, unresolved routes, and qualification gates |
 | [configuration.md](what/configuration.md) | Environment variables, provider selection, model resolution, container layout, build system |
 | [health-probes.md](what/health-probes.md) | Readiness checks at batch startup (R1); HTTP probes superseded |
 | [audit-logging.md](what/audit-logging.md) | OTel GenAI invocation/generation/tool spans, legacy choice events, and audit-log projections |
@@ -35,6 +36,7 @@ These specs define the behavioral rules and codebase navigation for the lightspe
 | Decision | Description |
 |---|---|
 | [0001-tool-output-boundary.md](decisions/0001-tool-output-boundary.md) | DeepAgents-only SAFE-02 boundaries, trust instruction, and model/event separation |
+| [0002-single-deepagents-runtime.md](decisions/0002-single-deepagents-runtime.md) | Proposed OLS-4434 consolidation; retain model clients while removing ADK/OpenAI Agents agent SDKs |
 
 ## Scope
 
@@ -51,6 +53,7 @@ AI agents. Content is optimized for precision and machine consumption.
 | Understand the system | `what/system-overview.md` |
 | Understand the batch entrypoint | `what/run-api.md` |
 | Add or modify a provider | `what/provider-contract.md` + `how/provider-architecture.md` |
+| Review the proposed DeepAgents consolidation | `what/deepagents-migration.md` + `decisions/0002-single-deepagents-runtime.md` |
 | Understand DeepAgents tool-output boundaries | `what/provider-contract.md` (SAFE-02) + `decisions/0001-tool-output-boundary.md` |
 | Understand env vars and deployment | `what/configuration.md` |
 | Navigate the codebase | `how/project-structure.md` |

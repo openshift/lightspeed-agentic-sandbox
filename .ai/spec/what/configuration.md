@@ -4,6 +4,18 @@ Audience: AI agents (Claude). Precision over narrative.
 
 Cross-references: how options are consumed in code → `how/provider-architecture.md`. Batch input and agent behavior → `run-api.md`. Provider options → `provider-contract.md`.
 
+## Proposed model routing [PLANNED: OLS-4434]
+
+[DeepAgents migration](deepagents-migration.md) specifies the proposed replacement
+for the SDK-selection mapping below: provider/host configuration selects an explicit
+LangChain chat model and API mode, while all established routes execute through
+DeepAgents. Operator inputs and credential/TLS contracts remain stable. Native
+OpenAI retains Responses; custom/vLLM OpenAI-compatible endpoints explicitly use
+`use_responses_api=False`; Azure retains version-based selection subject to client
+verification. Vertex/OpenAI remains unresolved, not newly supported or removed.
+The existing mapping and adapter-specific rules below describe current behavior
+until that migration is implemented.
+
 ## Behavioral Rules
 
 1. **Operator env var contract.** The operator sets generic `LIGHTSPEED_*` env vars on the sandbox pod template. The sandbox MUST NOT depend on the operator setting any SDK-specific env vars. The operator sets:
@@ -79,7 +91,7 @@ Cross-references: how options are consumed in code → `how/provider-architectur
 
 11. **Anthropic via Vertex.** When `LIGHTSPEED_PROVIDER=vertex` and `LIGHTSPEED_MODEL_PROVIDER=anthropic`, the configuration mapping resolves to SDK name `deepagents` and sets Vertex env vars for `ChatAnthropicVertex`.
 
-9b. **AWS Bedrock credential resolution (static keys / STS assume-role).** For `LIGHTSPEED_PROVIDER=bedrock`, the sandbox resolves AWS credentials from the mounted files at `/var/run/secrets/llm-credentials/` (`aws_access_key_id`, `aws_secret_access_key`, and optional `role_arn`), matching the classic OLS service's IAM credential shape ([OLS-1895]). This does **not** change the existing Bedrock model path (Anthropic models via the `deepagents` SDK / `ChatBedrockConverse`); it governs credentials only.
+9b. **AWS Bedrock credential resolution (static keys / STS assume-role).** For `LIGHTSPEED_PROVIDER=bedrock`, the sandbox resolves AWS credentials from the mounted files at `/var/run/secrets/llm-credentials/` (`aws_access_key_id`, `aws_secret_access_key`, and optional `role_arn`), matching the classic OLS service's IAM credential shape ([OLS-1895]). This does **not** change the existing Bedrock model path (Anthropic models via the `deepagents` SDK / `ChatAnthropicBedrock`); it governs credentials only.
 
     - **Static keys** when `aws_access_key_id` and `aws_secret_access_key` are present and non-empty and `role_arn` is absent: use them directly as long-lived credentials (no refresh needed).
     - **STS assume-role (short-lived)** when `role_arn` is also present: the AWS SDK (`botocore` credential-provider chain) performs the assume-role and mints/refreshes the short-lived credentials transparently for the life of the run — the sandbox performs no manual token acquisition, caching, or refresh, per the short-lived-token principle in `provider-contract.md` rule 38.
@@ -238,6 +250,8 @@ OPENAI_API_KEY: <token-or-placeholder>
 - [PLANNED: OLS-3743] Unit tests cover required timeout/max-turn parsing, invalid values, and propagation into `run_agent_query()`.
 
 ## Planned Changes
+
+- [PLANNED: OLS-4434] Separate model-client/API resolution from the shared DeepAgents runtime; preserve host, credential, endpoint, and TLS inputs. See [deepagents-migration.md](deepagents-migration.md) for the route matrix and qualification gates.
 
 - OLS-3857 per-MCP-server trust selection remains out of scope.
 - Konflux pipeline and lockfile policy updates as Red Hat platform requirements evolve. [PLANNED: OLS-2894]

@@ -4,6 +4,18 @@ Audience: AI agents (Claude). Precision over narrative.
 
 Cross-references: batch agent invocation → `run-api.md`. Env and build → `configuration.md`. Sandbox trace profile → `data-collection.md`.
 
+## Proposed execution consolidation [PLANNED: OLS-4434]
+
+[DeepAgents migration](deepagents-migration.md) defines the proposed target: one
+DeepAgents execution path with explicitly configured provider-specific chat models,
+not one shared model API. It replaces ADK/OpenAI Agents execution mechanisms only
+when implemented; the rules below remain the current contract. In the target,
+Gemini/OpenAI/Azure models also use the DeepAgents tools, MCP, skills, inspection,
+and SAFE-02 boundaries. Current statements excluding the other agent adapters from
+those boundaries do not exempt their models after migration. Reasoning, shaping,
+events, and telemetry require the route-specific qualification in the target spec.
+No live-model parity is established by this proposal.
+
 ## Behavioral Rules
 
 1. **AgentProvider.** Each backend implements a `name` property and a `query` method accepting `ProviderQueryOptions` and returning an async iterator of `ProviderEvent`.
@@ -218,6 +230,8 @@ Decision record: [0001-tool-output-boundary.md](../decisions/0001-tool-output-bo
 - [PLANNED: OLS-3472] Gemma 4 support assumes that the selected vLLM deployment exposes the OpenAI-compatible operations required by the existing adapter and product-e2e core scenarios.
 
 ## Planned Changes
+
+- [PLANNED: OLS-4434] Consolidate execution under DeepAgents; retain explicit model clients and API routing per [deepagents-migration.md](deepagents-migration.md). Remove ADK/OpenAI Agents agent SDKs only through the proposed migration and its acceptance gates.
 
 - Parity improvements across providers (tools, streaming, structured output edge cases). [PLANNED: OLS-3047–OLS-3053]
 - BYOK and RAG integration hooks without breaking the thin-adapter rule. [PLANNED: OLS-3054–OLS-3057]

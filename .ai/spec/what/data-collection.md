@@ -4,6 +4,17 @@ Sandbox producer contract for the named three-provider GenAI trace profile, alig
 
 For the sandbox producer only, this profile supersedes conflicting candidate/event producer requirements in `ols/.ai/spec/what/agentic-data-collection.md`. The parent contract and downstream collection requirements remain unchanged. Invocation/tool spans, DeepAgents/OpenAI generation capture, Gemini generation capture, and exact-scope `gcp.vertex.agent` exclusion at stdout and OTLP trace exporters are implemented.
 
+## Proposed migration boundary [PLANNED: OLS-4434]
+
+[DeepAgents migration](deepagents-migration.md) defines the target model-boundary
+capture after ADK/OpenAI Agents removal. Gemini moves to shared `chat` generations;
+model-host/API identity and observed LangChain metadata replace assumptions tied
+to the removed SDKs. Invocation/tool contracts, safety release gates, aggregate
+versus generation usage, and downstream collection scope remain unchanged. The
+SDK-specific mappings and smoke results below describe the current baseline and
+do not establish replacement-client or live-model parity. See the migration spec
+for required scripted-runtime, wire, and live-route evidence.
+
 ## Producer Boundary
 
 1. When the existing trace runtime records spans, canonical profile content is stored in span attributes. Do not add a custom transcript attribute/event or skill events, and do not infer skill use from text or generic tool output.

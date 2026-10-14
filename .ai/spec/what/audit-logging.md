@@ -4,6 +4,17 @@ Implementation spec for compliance logging and the named three-provider trace pr
 
 Telemetry follows the named [OTel GenAI profile pinned at commit `4f85037ef86e92c510d2ef881a58f1076f6fc0e4`](https://github.com/open-telemetry/semantic-conventions-genai/tree/4f85037ef86e92c510d2ef881a58f1076f6fc0e4/docs/gen-ai). Upstream status at that revision is Development; this does not claim every optional convention or add a dependency.
 
+## Proposed shared-runtime capture [PLANNED: OLS-4434]
+
+[DeepAgents migration](deepagents-migration.md) replaces agent-SDK-specific capture
+with shared LangChain model-boundary capture. All migrated chat clients use `chat`
+generations, including Gemini (currently ADK `generate_content`). Actual host/API
+identity, real call IDs, observed output/usage, raw shaping capture, canonical
+parentage, auxiliary-generation exclusions, and audit/content gates remain required.
+The target must not fabricate ADK/OpenAI Agents records. Current mechanisms and
+historical verification below remain baseline evidence, not migration proof; the
+parent collection contract is unchanged.
+
 ## Behavioral Rules
 
 ### Span Naming and Kinds
