@@ -19,6 +19,8 @@ PROVIDER_ANTHROPIC_VERTEX_DEEPAGENTS = "anthropic-vertex-deepagents"
 PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS = "anthropic-bedrock-deepagents"
 PROVIDER_GEMINI_VERTEX_ADK = "gemini-vertex-adk"
 PROVIDER_OPENAI_AGENTS = "openai-agents"
+PROVIDER_ANTHROPIC_DEEPAGENTS = "anthropic-deepagents"
+PROVIDER_AZURE_OPENAI_AGENTS = "azure-openai-agents"
 
 # Konflux workspace secrets mount at /var/run/credentials/token (data key: token).
 KONFLUX_CREDENTIAL_MOUNT = "/var/run/credentials/token"
@@ -382,11 +384,69 @@ def _check_openai_agents() -> ProviderCredentialStatus:
     )
 
 
+def _check_anthropic_deepagents() -> ProviderCredentialStatus:
+    name = PROVIDER_ANTHROPIC_DEEPAGENTS
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return ProviderCredentialStatus(name, True, "env", "ANTHROPIC_API_KEY set")
+    apitoken_path = os.path.join(KONFLUX_CREDENTIAL_DIR, "apitoken")
+    if os.path.isfile(apitoken_path):
+        ok, detail = _validate_plaintext_credential_file(apitoken_path, "anthropic-apitoken")
+        if not ok:
+            return ProviderCredentialStatus(name, False, "none", detail)
+        return ProviderCredentialStatus(
+            name, True, "env", f"anthropic-apitoken file ({apitoken_path})"
+        )
+    return ProviderCredentialStatus(
+        name,
+        False,
+        "none",
+        "ANTHROPIC_API_KEY not set (or mount anthropic-apitoken secret with key apitoken)",
+    )
+
+
+def _check_azure_openai_agents() -> ProviderCredentialStatus:
+    name = PROVIDER_AZURE_OPENAI_AGENTS
+    if os.environ.get("AZURE_OPENAI_API_KEY"):
+        return ProviderCredentialStatus(name, True, "env", "AZURE_OPENAI_API_KEY set")
+    client_id_env = os.environ.get("AZURE_CLIENT_ID", "").strip()
+    if client_id_env:
+        return ProviderCredentialStatus(
+            name, True, "env", "Entra ID credentials set (AZURE_CLIENT_ID env)"
+        )
+    token_path = os.path.join(KONFLUX_CREDENTIAL_DIR, "token")
+    if os.path.isfile(token_path):
+        ok, detail = _validate_plaintext_credential_file(token_path, "azureopenai-apitoken")
+        if not ok:
+            return ProviderCredentialStatus(name, False, "none", detail)
+        return ProviderCredentialStatus(
+            name, True, "env", f"azureopenai-apitoken file ({token_path})"
+        )
+    client_id_path = os.path.join(KONFLUX_CREDENTIAL_DIR, "client_id")
+    client_secret_path = os.path.join(KONFLUX_CREDENTIAL_DIR, "client_secret")
+    tenant_id_path = os.path.join(KONFLUX_CREDENTIAL_DIR, "tenant_id")
+    if (
+        os.path.isfile(client_id_path)
+        and os.path.isfile(client_secret_path)
+        and os.path.isfile(tenant_id_path)
+    ):
+        return ProviderCredentialStatus(
+            name, True, "env", f"Entra ID credential files ({KONFLUX_CREDENTIAL_DIR})"
+        )
+    return ProviderCredentialStatus(
+        name,
+        False,
+        "none",
+        "AZURE_OPENAI_API_KEY not set (or mount azureopenai-apitoken/azureopenai-entra-id secret)",
+    )
+
+
 _CHECKERS = {
     PROVIDER_ANTHROPIC_VERTEX_DEEPAGENTS: _check_anthropic_vertex_deepagents,
     PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS: _check_anthropic_bedrock_deepagents,
     PROVIDER_GEMINI_VERTEX_ADK: _check_gemini_vertex_adk,
     PROVIDER_OPENAI_AGENTS: _check_openai_agents,
+    PROVIDER_ANTHROPIC_DEEPAGENTS: _check_anthropic_deepagents,
+    PROVIDER_AZURE_OPENAI_AGENTS: _check_azure_openai_agents,
 }
 
 PROVIDER_NAMES = list(_CHECKERS.keys())

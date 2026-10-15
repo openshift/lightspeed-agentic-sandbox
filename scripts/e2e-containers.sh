@@ -79,17 +79,18 @@ fi
 export E2E_BATCH_VERIFY_FIXTURES="${E2E_BATCH_VERIFY_FIXTURES:-1}"
 export E2E_NAMESPACE
 
-PROVIDERS=(anthropic-vertex-deepagents anthropic-bedrock-deepagents gemini-vertex-adk openai-agents)
+PROVIDERS=(anthropic-vertex-deepagents anthropic-bedrock-deepagents gemini-vertex-adk openai-agents anthropic-deepagents azure-openai-agents)
 
 source_e2e_config() {
-    local anthropic bedrock gemini openai
-    read -r anthropic bedrock gemini openai < <(
-        env -i bash -c "set -a; source \"${CONFIG_ENV}\"; set +a; printf '%s %s %s %s\n' \"\$ANTHROPIC_MODEL\" \"\$ANTHROPIC_BEDROCK_MODEL\" \"\$GEMINI_MODEL\" \"\$OPENAI_MODEL\""
+    local anthropic bedrock gemini openai azure
+    read -r anthropic bedrock gemini openai azure < <(
+        env -i bash -c "set -a; source \"${CONFIG_ENV}\"; set +a; printf '%s %s %s %s %s\n' \"\$ANTHROPIC_MODEL\" \"\$ANTHROPIC_BEDROCK_MODEL\" \"\$GEMINI_MODEL\" \"\$OPENAI_MODEL\" \"\$AZURE_OPENAI_MODEL\""
     )
     export ANTHROPIC_MODEL="${anthropic}"
     export ANTHROPIC_BEDROCK_MODEL="${bedrock}"
     export GEMINI_MODEL="${gemini}"
     export OPENAI_MODEL="${openai}"
+    export AZURE_OPENAI_MODEL="${azure}"
 }
 
 apply_model_override() {
@@ -100,6 +101,8 @@ apply_model_override() {
     anthropic-bedrock-deepagents) export ANTHROPIC_BEDROCK_MODEL="${model}" ;;
     gemini-vertex-adk) export GEMINI_MODEL="${model}" ;;
     openai-agents) export OPENAI_MODEL="${model}" ;;
+    anthropic-deepagents) export ANTHROPIC_MODEL="${model}" ;;
+    azure-openai-agents) export AZURE_OPENAI_MODEL="${model}" ;;
     *)
         echo "e2e: unknown provider for model override: ${provider}" >&2
         exit 1
@@ -126,6 +129,14 @@ sync_provider_model() {
     openai-agents)
         export LIGHTSPEED_MODEL="${OPENAI_MODEL:-}"
         export OPENAI_MODEL="${LIGHTSPEED_MODEL}"
+        ;;
+    anthropic-deepagents)
+        export LIGHTSPEED_MODEL="${ANTHROPIC_MODEL:-}"
+        export ANTHROPIC_MODEL="${LIGHTSPEED_MODEL}"
+        ;;
+    azure-openai-agents)
+        export LIGHTSPEED_MODEL="${AZURE_OPENAI_MODEL:-}"
+        export AZURE_OPENAI_MODEL="${LIGHTSPEED_MODEL}"
         ;;
     *)
         echo "e2e: unknown provider: ${provider}" >&2
@@ -189,6 +200,12 @@ _install_provider_cluster_creds() {
     anthropic-bedrock-deepagents)
         bash "${ROOT}/scripts/e2e-install-bedrock-creds.sh"
         ;;
+    anthropic-deepagents)
+        bash "${ROOT}/scripts/e2e-install-anthropic-direct-creds.sh"
+        ;;
+    azure-openai-agents)
+        bash "${ROOT}/scripts/e2e-install-azure-creds.sh"
+        ;;
     *)
         echo "e2e: unknown provider: ${provider}" >&2
         exit 1
@@ -214,6 +231,12 @@ _configure_batch_job_env() {
             ;;
         anthropic-bedrock-deepagents)
             export LIGHTSPEED_REASONING_CONFIG='{"thinking":{"type":"enabled","budget_tokens":1024}}'
+            ;;
+        anthropic-deepagents)
+            export LIGHTSPEED_REASONING_CONFIG='{"thinking":{"type":"enabled","budget_tokens":1024}}'
+            ;;
+        azure-openai-agents)
+            export LIGHTSPEED_REASONING_CONFIG='{"effort":"low"}'
             ;;
         esac
     fi
@@ -320,6 +343,12 @@ anthropic-vertex-deepagents)
     ;;
 anthropic-bedrock-deepagents)
     model_override="${ANTHROPIC_BEDROCK_MODEL:-}"
+    ;;
+anthropic-deepagents)
+    model_override="${ANTHROPIC_MODEL:-}"
+    ;;
+azure-openai-agents)
+    model_override="${AZURE_OPENAI_MODEL:-}"
     ;;
 esac
 

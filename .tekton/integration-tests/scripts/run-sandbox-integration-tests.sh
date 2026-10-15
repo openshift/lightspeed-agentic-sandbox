@@ -24,7 +24,7 @@
 set -euo pipefail
 trap 'echo "error: $0 line $LINENO: command \"$BASH_COMMAND\" exited with status $?" >&2' ERR
 
-PROVIDER="${1:?Usage: $0 <provider> (anthropic-vertex-deepagents|anthropic-bedrock-deepagents|gemini-vertex-adk|openai-agents)}"
+PROVIDER="${1:?Usage: $0 <provider> (anthropic-vertex-deepagents|anthropic-bedrock-deepagents|gemini-vertex-adk|openai-agents|anthropic-deepagents|azure-openai-agents)}"
 CRED_DIR="/var/run/credentials"
 CRED_PATH="${CRED_DIR}/token"
 
@@ -73,6 +73,31 @@ case "${PROVIDER}" in
         exit 1
     fi
     export OPENAI_PROVIDER_KEY_PATH="${CRED_PATH}"
+    ;;
+  anthropic-deepagents)
+    if [ ! -f "${CRED_DIR}/apitoken" ]; then
+        echo "error: anthropic-apitoken not found at ${CRED_DIR}/apitoken" >&2
+        exit 1
+    fi
+    export ANTHROPIC_API_KEY
+    ANTHROPIC_API_KEY="$(tr -d '[:space:]' < "${CRED_DIR}/apitoken")"
+    ;;
+  azure-openai-agents)
+    if [ -f "${CRED_PATH}" ]; then
+        # azureopenai-apitoken secret (key: token)
+        export AZURE_OPENAI_API_KEY
+        AZURE_OPENAI_API_KEY="$(tr -d '[:space:]' < "${CRED_PATH}")"
+    elif [ -f "${CRED_DIR}/client_id" ] && [ -f "${CRED_DIR}/client_secret" ] && [ -f "${CRED_DIR}/tenant_id" ]; then
+        # azureopenai-entra-id secret (keys: client_id, client_secret, tenant_id)
+        export AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID
+        AZURE_CLIENT_ID="$(tr -d '[:space:]' < "${CRED_DIR}/client_id")"
+        AZURE_CLIENT_SECRET="$(tr -d '[:space:]' < "${CRED_DIR}/client_secret")"
+        AZURE_TENANT_ID="$(tr -d '[:space:]' < "${CRED_DIR}/tenant_id")"
+    else
+        echo "error: no Azure credentials found under ${CRED_DIR}" >&2
+        echo "  Mount azureopenai-apitoken (key: token) or azureopenai-entra-id" >&2
+        exit 1
+    fi
     ;;
   *)
     echo "error: unknown provider: ${PROVIDER}" >&2

@@ -150,6 +150,69 @@ class TestAnthropicBedrockDeepagents:
         assert os.environ["CLAUDE_CODE_USE_BEDROCK"] == "1"
 
 
+class TestAnthropicDeepagents:
+    def test_api_key_env(self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        status = creds.detect_credentials(creds.PROVIDER_ANTHROPIC_DEEPAGENTS)
+        assert status.available
+        assert "ANTHROPIC_API_KEY" in status.reason
+
+    def test_konflux_apitoken_mount(self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        (cred_dir / "apitoken").write_text("sk-ant-from-file\n", encoding="utf-8")
+        status = creds.detect_credentials(creds.PROVIDER_ANTHROPIC_DEEPAGENTS)
+        assert status.available
+        assert "anthropic-apitoken" in status.reason
+
+    def test_missing_credentials(self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        status = creds.detect_credentials(creds.PROVIDER_ANTHROPIC_DEEPAGENTS)
+        assert not status.available
+        assert "ANTHROPIC_API_KEY" in status.reason
+
+
+class TestAzureOpenAIAgents:
+    def test_api_key_env(self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-key-test")
+        status = creds.detect_credentials(creds.PROVIDER_AZURE_OPENAI_AGENTS)
+        assert status.available
+        assert "AZURE_OPENAI_API_KEY" in status.reason
+
+    def test_konflux_apitoken_mount(self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
+        (cred_dir / "token").write_text("azure-key-from-file\n", encoding="utf-8")
+        status = creds.detect_credentials(creds.PROVIDER_AZURE_OPENAI_AGENTS)
+        assert status.available
+        assert "azureopenai-apitoken" in status.reason
+
+    def test_entra_id_env_vars(self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("AZURE_CLIENT_ID", "client-id-test")
+        monkeypatch.setenv("AZURE_CLIENT_SECRET", "client-secret-test")
+        monkeypatch.setenv("AZURE_TENANT_ID", "tenant-id-test")
+        status = creds.detect_credentials(creds.PROVIDER_AZURE_OPENAI_AGENTS)
+        assert status.available
+        assert "Entra ID" in status.reason
+
+    def test_entra_id_files(self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
+        (cred_dir / "client_id").write_text("cid\n", encoding="utf-8")
+        (cred_dir / "client_secret").write_text("csecret\n", encoding="utf-8")
+        (cred_dir / "tenant_id").write_text("tid\n", encoding="utf-8")
+        status = creds.detect_credentials(creds.PROVIDER_AZURE_OPENAI_AGENTS)
+        assert status.available
+        assert "Entra ID" in status.reason
+
+    def test_missing_credentials(self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
+        status = creds.detect_credentials(creds.PROVIDER_AZURE_OPENAI_AGENTS)
+        assert not status.available
+        assert "AZURE_OPENAI_API_KEY" in status.reason
+
+
 class TestProviderMatrix:
     def test_all_providers_registered(self) -> None:
         names = set(creds.PROVIDER_NAMES)
@@ -158,4 +221,6 @@ class TestProviderMatrix:
             creds.PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS,
             creds.PROVIDER_GEMINI_VERTEX_ADK,
             creds.PROVIDER_OPENAI_AGENTS,
+            creds.PROVIDER_ANTHROPIC_DEEPAGENTS,
+            creds.PROVIDER_AZURE_OPENAI_AGENTS,
         }
