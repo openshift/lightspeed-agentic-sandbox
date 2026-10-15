@@ -152,6 +152,7 @@ class TestAnthropicBedrockDeepagents:
 
 class TestAnthropicDeepagents:
     def test_api_key_env(self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert not list(cred_dir.iterdir())
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         status = creds.detect_credentials(creds.PROVIDER_ANTHROPIC_DEEPAGENTS)
         assert status.available
@@ -165,6 +166,7 @@ class TestAnthropicDeepagents:
         assert "anthropic-apitoken" in status.reason
 
     def test_missing_credentials(self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert not list(cred_dir.iterdir())
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         status = creds.detect_credentials(creds.PROVIDER_ANTHROPIC_DEEPAGENTS)
         assert not status.available
@@ -173,6 +175,7 @@ class TestAnthropicDeepagents:
 
 class TestAzureOpenAIAgents:
     def test_api_key_env(self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert not list(cred_dir.iterdir())
         monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-key-test")
         status = creds.detect_credentials(creds.PROVIDER_AZURE_OPENAI_AGENTS)
         assert status.available
@@ -187,6 +190,7 @@ class TestAzureOpenAIAgents:
         assert "azureopenai-apitoken" in status.reason
 
     def test_entra_id_env_vars(self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert not list(cred_dir.iterdir())
         monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
         monkeypatch.setenv("AZURE_CLIENT_ID", "client-id-test")
         monkeypatch.setenv("AZURE_CLIENT_SECRET", "client-secret-test")
@@ -206,6 +210,7 @@ class TestAzureOpenAIAgents:
         assert "Entra ID" in status.reason
 
     def test_missing_credentials(self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert not list(cred_dir.iterdir())
         monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
         status = creds.detect_credentials(creds.PROVIDER_AZURE_OPENAI_AGENTS)
