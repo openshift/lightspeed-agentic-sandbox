@@ -209,6 +209,28 @@ class TestAzureOpenAIAgents:
         assert status.available
         assert "Entra ID" in status.reason
 
+    def test_partial_entra_id_env_is_rejected(
+        self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert not list(cred_dir.iterdir())
+        monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("AZURE_CLIENT_ID", "only-id-no-secret")
+        monkeypatch.delenv("AZURE_CLIENT_SECRET", raising=False)
+        monkeypatch.delenv("AZURE_TENANT_ID", raising=False)
+        status = creds.detect_credentials(creds.PROVIDER_AZURE_OPENAI_AGENTS)
+        assert not status.available
+
+    def test_empty_entra_id_files_rejected(
+        self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
+        (cred_dir / "client_id").write_text("", encoding="utf-8")
+        (cred_dir / "client_secret").write_text("", encoding="utf-8")
+        (cred_dir / "tenant_id").write_text("", encoding="utf-8")
+        status = creds.detect_credentials(creds.PROVIDER_AZURE_OPENAI_AGENTS)
+        assert not status.available
+
     def test_missing_credentials(self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         assert not list(cred_dir.iterdir())
         monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)

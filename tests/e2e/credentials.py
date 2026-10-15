@@ -409,7 +409,9 @@ def _check_azure_openai_agents() -> ProviderCredentialStatus:
     if os.environ.get("AZURE_OPENAI_API_KEY"):
         return ProviderCredentialStatus(name, True, "env", "AZURE_OPENAI_API_KEY set")
     client_id_env = os.environ.get("AZURE_CLIENT_ID", "").strip()
-    if client_id_env:
+    client_secret_env = os.environ.get("AZURE_CLIENT_SECRET", "").strip()
+    tenant_id_env = os.environ.get("AZURE_TENANT_ID", "").strip()
+    if client_id_env and client_secret_env and tenant_id_env:
         return ProviderCredentialStatus(
             name, True, "env", "Entra ID credentials set (AZURE_CLIENT_ID env)"
         )
@@ -429,6 +431,14 @@ def _check_azure_openai_agents() -> ProviderCredentialStatus:
         and os.path.isfile(client_secret_path)
         and os.path.isfile(tenant_id_path)
     ):
+        for path, label in (
+            (client_id_path, "client_id"),
+            (client_secret_path, "client_secret"),
+            (tenant_id_path, "tenant_id"),
+        ):
+            ok, detail = _validate_plaintext_credential_file(path, f"azureopenai-entra-id {label}")
+            if not ok:
+                return ProviderCredentialStatus(name, False, "none", detail)
         return ProviderCredentialStatus(
             name, True, "env", f"Entra ID credential files ({KONFLUX_CREDENTIAL_DIR})"
         )

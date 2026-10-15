@@ -222,9 +222,13 @@ def _provider_extra_env(provider_name: str) -> dict[str, str]:
         if region:
             extra["LIGHTSPEED_PROVIDER_REGION"] = region
     elif provider_name == PROVIDER_AZURE_OPENAI_AGENTS:
-        url = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
-        if url:
-            extra["LIGHTSPEED_PROVIDER_URL"] = url
+        # LIGHTSPEED_PROVIDER_URL takes precedence (forwarded by _session_job_env);
+        # fall back to AZURE_OPENAI_ENDPOINT so local runs using the Azure-specific
+        # variable name still work without setting LIGHTSPEED_PROVIDER_URL explicitly.
+        if not os.environ.get("LIGHTSPEED_PROVIDER_URL"):
+            url = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
+            if url:
+                extra["LIGHTSPEED_PROVIDER_URL"] = url
         api_version = os.environ.get("LIGHTSPEED_PROVIDER_API_VERSION", "").strip()
         if api_version:
             extra["LIGHTSPEED_PROVIDER_API_VERSION"] = api_version

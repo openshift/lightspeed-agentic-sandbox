@@ -9,11 +9,13 @@
 #
 # Provider ids:
 #   anthropic-vertex-deepagents | anthropic-bedrock-deepagents |
-#   gemini-vertex-adk | openai-agents
+#   gemini-vertex-adk | openai-agents | anthropic-deepagents | azure-openai-agents
 #
 # Expects:
 #   - Provider credentials mounted under /var/run/credentials/
-#     (vertex/openai: token; bedrock: aws_access_key_id, aws_secret_access_key)
+#     (vertex/openai/anthropic-direct: token; bedrock: aws_access_key_id + aws_secret_access_key;
+#      azure api-key: token; azure entra-id: client_id + client_secret + tenant_id)
+#   - AZURE_OPENAI_ENDPOINT set for azure-openai-agents
 #   - KUBECONFIG (Konflux pipeline mounts the hosted cluster's kubeconfig Secret)
 #   - OPERATOR_REPO (Konflux pipeline clones operator for Result CRDs)
 #   - E2E_NAMESPACE (default openshift-lightspeed)
@@ -98,6 +100,12 @@ case "${PROVIDER}" in
         echo "  Mount azureopenai-apitoken (key: token) or azureopenai-entra-id" >&2
         exit 1
     fi
+    if [ -z "${AZURE_OPENAI_ENDPOINT:-}" ]; then
+        echo "error: AZURE_OPENAI_ENDPOINT must be set for azure-openai-agents" >&2
+        echo "  (e.g. https://my-resource.openai.azure.com/)" >&2
+        exit 1
+    fi
+    export LIGHTSPEED_PROVIDER_URL="${AZURE_OPENAI_ENDPOINT}"
     ;;
   *)
     echo "error: unknown provider: ${PROVIDER}" >&2
