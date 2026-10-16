@@ -116,3 +116,87 @@ spec:
         value: main
       - name: pathInRepo
         value: .tekton/integration-tests/pipelines/sandbox-integration-test-pipeline.yaml
+---
+apiVersion: appstudio.redhat.com/v1beta2
+kind: IntegrationTestScenario
+metadata:
+  name: sandbox-integration-anthropic-deepagents
+  namespace: crt-nshift-lightspeed-tenant
+  labels:
+    test.appstudio.openshift.io/optional: "true"
+spec:
+  application: ols
+  contexts:
+    - description: Sandbox integration test — direct Anthropic API + DeepAgents
+      name: component_lightspeed-agentic-sandbox
+  params:
+    - name: provider
+      value: anthropic-deepagents
+    - name: credential-secret
+      value: anthropic-apitoken
+  resolverRef:
+    resolver: git
+    resourceKind: pipeline
+    params:
+      - name: url
+        value: https://github.com/openshift/lightspeed-agentic-sandbox
+      - name: revision
+        value: main
+      - name: pathInRepo
+        value: .tekton/integration-tests/pipelines/sandbox-integration-test-pipeline.yaml
+---
+apiVersion: appstudio.redhat.com/v1beta2
+kind: IntegrationTestScenario
+metadata:
+  name: sandbox-integration-azure-openai-agents
+  namespace: crt-nshift-lightspeed-tenant
+  labels:
+    test.appstudio.openshift.io/optional: "true"
+spec:
+  application: ols
+  contexts:
+    - description: Sandbox integration test — Azure OpenAI (API key) + OpenAI Agents SDK
+      name: component_lightspeed-agentic-sandbox
+  params:
+    - name: provider
+      value: azure-openai-agents
+    - name: credential-secret
+      value: azureopenai-apitoken
+  resolverRef:
+    resolver: git
+    resourceKind: pipeline
+    params:
+      - name: url
+        value: https://github.com/openshift/lightspeed-agentic-sandbox
+      - name: revision
+        value: main
+      - name: pathInRepo
+        value: .tekton/integration-tests/pipelines/sandbox-integration-test-pipeline.yaml
+---
+apiVersion: appstudio.redhat.com/v1beta2
+kind: IntegrationTestScenario
+metadata:
+  name: sandbox-integration-azure-openai-entra-agents
+  namespace: crt-nshift-lightspeed-tenant
+  labels:
+    test.appstudio.openshift.io/optional: "true"
+spec:
+  application: ols
+  contexts:
+    - description: Sandbox integration test — Azure OpenAI (Entra ID) + OpenAI Agents SDK
+      name: component_lightspeed-agentic-sandbox
+  params:
+    - name: provider
+      value: azure-openai-agents
+    - name: credential-secret
+      value: azureopenai-entra-id
+  resolverRef:
+    resolver: git
+    resourceKind: pipeline
+    params:
+      - name: url
+        value: https://github.com/openshift/lightspeed-agentic-sandbox
+      - name: revision
+        value: main
+      - name: pathInRepo
+        value: .tekton/integration-tests/pipelines/sandbox-integration-test-pipeline.yaml

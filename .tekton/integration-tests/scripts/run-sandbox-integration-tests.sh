@@ -9,11 +9,13 @@
 #
 # Provider ids:
 #   anthropic-vertex-deepagents | anthropic-bedrock-deepagents |
-#   gemini-vertex-adk | openai-agents
+#   gemini-vertex-adk | openai-agents | anthropic-deepagents | azure-openai-agents
 #
 # Expects:
 #   - Provider credentials mounted under /var/run/credentials/
-#     (vertex/openai: token; bedrock: aws_access_key_id, aws_secret_access_key)
+#     (vertex/openai/anthropic-direct: token; bedrock: aws_access_key_id + aws_secret_access_key;
+#      azure api-key: token; azure entra-id: client_id + client_secret + tenant_id)
+#   - AZURE_OPENAI_ENDPOINT set for azure-openai-agents
 #   - KUBECONFIG (Konflux pipeline mounts the hosted cluster's kubeconfig Secret)
 #   - OPERATOR_REPO (Konflux pipeline clones operator for Result CRDs)
 #   - E2E_NAMESPACE (default openshift-lightspeed)
@@ -24,7 +26,7 @@
 set -euo pipefail
 trap 'echo "error: $0 line $LINENO: command \"$BASH_COMMAND\" exited with status $?" >&2' ERR
 
-PROVIDER="${1:?Usage: $0 <provider> (anthropic-vertex-deepagents|anthropic-bedrock-deepagents|gemini-vertex-adk|openai-agents)}"
+PROVIDER="${1:?Usage: $0 <provider> (anthropic-vertex-deepagents|anthropic-bedrock-deepagents|gemini-vertex-adk|openai-agents|anthropic-deepagents|azure-openai-agents)}"
 CRED_DIR="/var/run/credentials"
 CRED_PATH="${CRED_DIR}/token"
 
@@ -73,6 +75,37 @@ case "${PROVIDER}" in
         exit 1
     fi
     export OPENAI_PROVIDER_KEY_PATH="${CRED_PATH}"
+    ;;
+  anthropic-deepagents)
+    if [ ! -f "${CRED_DIR}/apitoken" ]; then
+        echo "error: anthropic-apitoken not found at ${CRED_DIR}/apitoken" >&2
+        exit 1
+    fi
+    export ANTHROPIC_API_KEY
+    ANTHROPIC_API_KEY="$(tr -d '[:space:]' < "${CRED_DIR}/apitoken")"
+    ;;
+  azure-openai-agents)
+    if [ -f "${CRED_PATH}" ]; then
+        # azureopenai-apitoken secret (key: token)
+        export AZURE_OPENAI_API_KEY
+        AZURE_OPENAI_API_KEY="$(tr -d '[:space:]' < "${CRED_PATH}")"
+    elif [ -f "${CRED_DIR}/client_id" ] && [ -f "${CRED_DIR}/client_secret" ] && [ -f "${CRED_DIR}/tenant_id" ]; then
+        # azureopenai-entra-id secret (keys: client_id, client_secret, tenant_id)
+        export AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID
+        AZURE_CLIENT_ID="$(tr -d '[:space:]' < "${CRED_DIR}/client_id")"
+        AZURE_CLIENT_SECRET="$(tr -d '[:space:]' < "${CRED_DIR}/client_secret")"
+        AZURE_TENANT_ID="$(tr -d '[:space:]' < "${CRED_DIR}/tenant_id")"
+    else
+        echo "error: no Azure credentials found under ${CRED_DIR}" >&2
+        echo "  Mount azureopenai-apitoken (key: token) or azureopenai-entra-id" >&2
+        exit 1
+    fi
+    if [ -z "${AZURE_OPENAI_ENDPOINT:-}" ]; then
+        echo "error: AZURE_OPENAI_ENDPOINT must be set for azure-openai-agents" >&2
+        echo "  (e.g. https://my-resource.openai.azure.com/)" >&2
+        exit 1
+    fi
+    export LIGHTSPEED_PROVIDER_URL="${AZURE_OPENAI_ENDPOINT}"
     ;;
   *)
     echo "error: unknown provider: ${PROVIDER}" >&2

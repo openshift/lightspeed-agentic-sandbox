@@ -288,6 +288,7 @@ def provider_supports_tool_result_inspection(provider_name: str) -> None:
     if provider_name not in {
         "anthropic-vertex-deepagents",
         "anthropic-bedrock-deepagents",
+        "anthropic-deepagents",
     }:
         pytest.skip("tool-result inspection e2e coverage currently targets DeepAgents")
 

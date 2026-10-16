@@ -20,7 +20,9 @@ from kubernetes.client import (  # type: ignore[import-untyped]
 
 from tests.e2e.credentials import (
     PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS,
+    PROVIDER_ANTHROPIC_DEEPAGENTS,
     PROVIDER_ANTHROPIC_VERTEX_DEEPAGENTS,
+    PROVIDER_AZURE_OPENAI_AGENTS,
     PROVIDER_GEMINI_VERTEX_ADK,
     PROVIDER_OPENAI_AGENTS,
     require_credentials,
@@ -47,6 +49,8 @@ _E2E_PROVIDER_TO_LIGHTSPEED: dict[str, str] = {
     PROVIDER_GEMINI_VERTEX_ADK: "vertex",
     PROVIDER_ANTHROPIC_VERTEX_DEEPAGENTS: "vertex",
     PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS: "bedrock",
+    PROVIDER_ANTHROPIC_DEEPAGENTS: "anthropic",
+    PROVIDER_AZURE_OPENAI_AGENTS: "azure",
 }
 
 _DEFAULT_LLM_SECRETS: dict[str, str] = {
@@ -54,6 +58,8 @@ _DEFAULT_LLM_SECRETS: dict[str, str] = {
     PROVIDER_GEMINI_VERTEX_ADK: "llm-creds-vertex",
     PROVIDER_ANTHROPIC_VERTEX_DEEPAGENTS: "llm-creds-anthropic",
     PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS: "llm-creds-bedrock",
+    PROVIDER_ANTHROPIC_DEEPAGENTS: "llm-creds-anthropic-direct",
+    PROVIDER_AZURE_OPENAI_AGENTS: "llm-creds-azure-openai",
 }
 
 _MODEL_ENV_BY_PROVIDER: dict[str, str] = {
@@ -61,6 +67,8 @@ _MODEL_ENV_BY_PROVIDER: dict[str, str] = {
     PROVIDER_GEMINI_VERTEX_ADK: "GEMINI_MODEL",
     PROVIDER_ANTHROPIC_VERTEX_DEEPAGENTS: "ANTHROPIC_MODEL",
     PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS: "ANTHROPIC_BEDROCK_MODEL",
+    PROVIDER_ANTHROPIC_DEEPAGENTS: "ANTHROPIC_MODEL",
+    PROVIDER_AZURE_OPENAI_AGENTS: "AZURE_OPENAI_MODEL",
 }
 
 
@@ -183,6 +191,8 @@ def _session_job_env() -> dict[str, str]:
         "LIGHTSPEED_MCP_SERVERS",
         "LIGHTSPEED_REASONING_CONFIG",
         "OPENAI_BASE_URL",
+        "LIGHTSPEED_PROVIDER_URL",
+        "LIGHTSPEED_PROVIDER_API_VERSION",
     ):
         raw = os.environ.get(key, "").strip()
         if raw:
@@ -211,6 +221,17 @@ def _provider_extra_env(provider_name: str) -> dict[str, str]:
         region = os.environ.get("AWS_REGION", "").strip()
         if region:
             extra["LIGHTSPEED_PROVIDER_REGION"] = region
+    elif provider_name == PROVIDER_AZURE_OPENAI_AGENTS:
+        # LIGHTSPEED_PROVIDER_URL takes precedence (forwarded by _session_job_env);
+        # fall back to AZURE_OPENAI_ENDPOINT so local runs using the Azure-specific
+        # variable name still work without setting LIGHTSPEED_PROVIDER_URL explicitly.
+        if not os.environ.get("LIGHTSPEED_PROVIDER_URL"):
+            url = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
+            if url:
+                extra["LIGHTSPEED_PROVIDER_URL"] = url
+        api_version = os.environ.get("LIGHTSPEED_PROVIDER_API_VERSION", "").strip()
+        if api_version:
+            extra["LIGHTSPEED_PROVIDER_API_VERSION"] = api_version
     if provider_name in (PROVIDER_GEMINI_VERTEX_ADK, PROVIDER_ANTHROPIC_VERTEX_DEEPAGENTS):
         region = os.environ.get("CLOUD_ML_REGION", "").strip()
         if region:
