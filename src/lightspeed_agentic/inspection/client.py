@@ -32,7 +32,7 @@ Do not include Markdown, explanations, or any other text. Do not quote the tool 
 
 
 class ChatModel(Protocol):
-    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> Any: ...
+    async def ainvoke(self, input: list[Any], **kwargs: Any) -> Any: ...  # noqa: A002
 
 
 def _reject_duplicate_object_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

@@ -30,7 +30,7 @@ The sandbox runs as a one-shot batch process (OLS-3066). There is **no HTTP serv
 
 ### Agent execution
 
-7. **Provider startup.** The batch entrypoint calls `resolve_sdk()`, `parse_reasoning_config()`, and `parse_mcp_servers()` before any OTLP export or readiness I/O, then `run_readiness_checks()` (see `health-probes.md`), `init_tracer()`, `create_provider()`, and `resolve_router_model()` once per run. [PLANNED: OLS-3743] It also validates required `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` and `LIGHTSPEED_AGENT_MAX_TURNS` before invoking the provider. When readiness or required configuration checks fail, the sandbox MUST fail before invoking the LLM (sandbox failure path, rule 23). Provider selection cannot change mid-process.
+7. **Provider startup.** The batch entrypoint calls `resolve_model_family()` once and passes its result to `resolve_model_route(model_family=...)`. Routing returns `(None, model_route)` for Anthropic or `(sdk, None)` for legacy Gemini/OpenAI adapters, without constructing model clients. Reasoning and MCP configuration are parsed before OTLP export or readiness I/O, then `run_readiness_checks(model_family)` (see `health-probes.md`) validates the same family's credential requirements. After tracer initialization and MCP admission, batch calls `create_provider("deepagents", model_route)` and uses `model_route.model` for Anthropic; legacy paths retain `create_provider(sdk.name)`, Azure credential handoff, and `resolve_startup_model()` / `resolve_router_model()`. [PLANNED: OLS-3743] It also validates required `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` and `LIGHTSPEED_AGENT_MAX_TURNS` before invoking the provider. When readiness or required configuration checks fail, the sandbox MUST fail before invoking the LLM (sandbox failure path, rule 23). Provider selection cannot change mid-process.
 
 8. **Agent query.** The sandbox runs `run_agent_query()` with system prompt, query, output schema, context, skills directory, model, MCP servers, and reasoning config. Tool execution (kubectl, oc) is unchanged — delegated to provider SDKs.
 
@@ -105,7 +105,9 @@ The agent returns structured JSON via `run_agent_query()` (formerly HTTP `RunRes
 | `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` | [PLANNED: OLS-3743] Required whole-agent invocation timeout resolved by the operator |
 | `LIGHTSPEED_AGENT_MAX_TURNS` | [PLANNED: OLS-3743] Required provider iteration cap resolved by the operator |
 | `LIGHTSPEED_SKILLS_DIR` | Skills root and provider `cwd` (default `/app/skills`) |
-| `resolve_router_model()` | Model from `LIGHTSPEED_MODEL` → SDK env → package default |
+| `resolve_model_family()` | SDK env/credential mapping and readiness requirements, resolved once per run |
+| `resolve_model_route(model_family=...)` | Anthropic constructor route and authoritative model, or legacy SDK configuration |
+| `resolve_router_model()` | Legacy Gemini/OpenAI model resolution from `LIGHTSPEED_MODEL` → SDK env → package default |
 | Input files under `/input/` | Query, schema, context, template, optional system prompt |
 
 ## Constraints
@@ -129,7 +131,7 @@ status is generic (see `batch_log_contract.py`).
 | Artifact | Rules exercised | Notes |
 |----------|-----------------|-------|
 | [test_batch_input.py](../../../tests/test_batch_input.py) | 4–6 | Required/optional `/input` files |
-| [test_batch.py](../../../tests/test_batch.py) | 2, 7, 9, 15, 21–23 | Entrypoint orchestration, required execution-limit parsing, timeout Result publication, and readiness fail-fast (mocked) |
+| [test_batch.py](../../../tests/test_batch.py) | 2, 7, 9, 15, 21–23 | Single family resolution across all hosting/family paths, route/provider/model propagation, required execution-limit parsing, timeout Result publication, and readiness fail-fast (mocked) |
 | [test_run_agent.py](../../../tests/test_run_agent.py) | 8–20 | Agent query, context prefix, timeout classification, and max-turn forwarding |
 | [test_ready.py](../../../tests/test_ready.py) | 7 | R1 readiness checks (`health-probes.md`) |
 | [test_publish_results_publish.py](../../../tests/test_publish_results_publish.py) | 21, 24 | K8s create + status replace |

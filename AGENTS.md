@@ -117,8 +117,8 @@ make format                            # ruff format + autofix
 src/lightspeed_agentic/
 ├── batch.py              # Batch entrypoint: read /input, run agent, publish Result CR
 ├── run_agent.py          # run_agent_query(), format_context_prefix()
-├── config.py             # LIGHTSPEED_* → SDK env mapping; resolve_sdk(); reasoning parse
-├── factory.py            # create_provider(name) — SDK name from config.resolve_sdk()
+├── config.py             # resolve_model_family(); SDK env/credential mapping; reasoning parse
+├── factory.py            # create_provider(name, model_route=None); DeepAgents requires a route
 ├── readiness.py          # R1 credential checks; run_readiness_checks() at batch startup
 ├── mcp.py                # parse_mcp_servers(); header resolution
 ├── audit.py              # AuditLogger GenAI spans/events
@@ -132,16 +132,19 @@ src/lightspeed_agentic/
 │   ├── publish.py        # Result CR via kubernetes CustomObjectsApi
 │   └── status.py         # Status assembly (conditions, failureReason)
 ├── providers/
-│   ├── deepagents.py     # deepagents (langchain-anthropic) adapter
-│   ├── gemini.py         # google-adk adapter
-│   └── openai.py         # openai-agents adapter
+│   ├── deepagents.py     # Route-driven DeepAgents adapter
+│   ├── gemini.py         # Legacy google-adk adapter
+│   ├── openai.py         # Legacy openai-agents adapter
+│   ├── model_router.py   # Typed model routes/inputs; legacy SDK configuration for unmigrated families
+│   └── models/
+│       └── anthropic.py  # Explicit direct, Bedrock, and Vertex model constructors
 ```
 
 | Feature | DeepAgents (`deepagents`) | Gemini (`google-adk`) | OpenAI (`openai-agents`) |
 | --- | --- | --- | --- |
 | Tools | `LocalShellBackend` + `/skills/` `FilesystemBackend` route + MCP tools | Native `ExecuteBashTool` plus built-in web tools | Native `SandboxAgent` shell/filesystem/skills |
 | Skills | `/skills/` virtual route passed to `create_deep_agent()` when skills exist | Native `SkillToolset` | Native `Skills` capability |
-| Structured output | `ProviderStrategy` when thinking configured, else `ToolStrategy` via `response_format` | Native response schema path | `output_type` wrapper |
+| Structured output | Tool-free second pass without thinking; method from the model route | Native response schema path | `output_type` wrapper |
 | Streaming | `astream(stream_mode="messages")` | `StreamingMode.SSE` | `Runner.run_streamed()` |
 
 Keep provider adapters thin. The SDK should own tool execution and skill
@@ -159,6 +162,10 @@ for the route, artifact storage, and execution limits.
 - Keep provider SDK imports inside methods or narrow helpers in provider modules.
   These SDKs are optional extras, so top-level imports must not break the base
   package import path.
+- Batch resolves the model family once and reuses it for routing and readiness.
+  Inject `ResolvedModelRoute` into DeepAgents; hosting selection and model
+  construction belong in `model_router.py` and `models/anthropic.py`, not the adapter.
+  Gemini/OpenAI remain on their legacy adapters until their model integrations migrate.
 - `types.py` event objects are frozen dataclasses. New event types should follow
   the same pattern and stay simple to serialize/log.
 - Providers yield async event streams; `run_agent_query()` consumes async
@@ -281,8 +288,8 @@ pipeline will prefetch the new versions on the next PR.
 | `GEMINI_MODEL` | Default Gemini model for query routes |
 | `OPENAI_MODEL` | Default OpenAI model for query routes |
 | `OPENAI_BASE_URL` | Optional OpenAI-compatible endpoint override |
-| `CLAUDE_CODE_USE_BEDROCK` | Set by config mapping for Bedrock → DeepAgents |
-| `CLAUDE_CODE_USE_VERTEX` | When set to `1`, DeepAgents uses Vertex-backed Anthropic (`ChatAnthropicVertex`) |
+| `CLAUDE_CODE_USE_BEDROCK` | Legacy compatibility flag set by config; does not select the DeepAgents model route |
+| `CLAUDE_CODE_USE_VERTEX` | Legacy compatibility flag set by config; does not select the DeepAgents model route |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Shared OTLP endpoint for traces and logs |
 | `SSL_CERT_FILE` | Combined system and operator-provided CA bundle |
 | `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` | Combined CA bundle used by gRPC |
@@ -294,7 +301,7 @@ pipeline will prefetch the new versions on the next PR.
 | `/var/run/secrets/lightspeed/tls/` | Shared read-only root for operator-provided CA files |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` (default) or `http/protobuf` |
 | `ANTHROPIC_VERTEX_PROJECT_ID` | Vertex project for Anthropic via Vertex |
-| `CLOUD_ML_REGION` | Vertex region for Anthropic via Vertex (default `global`) |
+| `CLOUD_ML_REGION` | Anthropic Vertex region copied into model-route parameters (default `us-east5`) |
 
 Provider credentials such as `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`,
 `GEMINI_API_KEY`, and `OPENAI_API_KEY` are expected by the underlying SDKs or

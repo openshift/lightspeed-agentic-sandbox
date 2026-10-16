@@ -48,25 +48,25 @@ For a migrated route, [provider-contract.md rules 50–67](provider-contract.md#
 
 2. **Provider configuration mapping.** On startup (in `batch.main()`), the sandbox MUST read the generic env vars from rule 1 and set the SDK-specific env vars required by each provider SDK. The mapping logic:
 
-    | `LIGHTSPEED_PROVIDER` | `LIGHTSPEED_MODEL_PROVIDER` | SDK | SDK env vars set |
-    | --- | --- | --- | --- |
-    | `anthropic` | *(derived)* | `deepagents` | `ANTHROPIC_MODEL`, `ANTHROPIC_BASE_URL` |
-    | `vertex` | `anthropic` | `deepagents` | `ANTHROPIC_MODEL`, `CLAUDE_CODE_USE_VERTEX=1`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`, `GOOGLE_APPLICATION_CREDENTIALS`, `ANTHROPIC_BASE_URL` |
-    | `vertex` | `google` | `gemini` | `GEMINI_MODEL`, `GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` |
-    | `vertex` | `openai` | `openai` | `OPENAI_MODEL`, `OPENAI_BASE_URL`, `GOOGLE_APPLICATION_CREDENTIALS` |
-    | `openai` | *(derived)* | `openai` | `OPENAI_MODEL` |
-    | `azure` | *(derived)* | `openai` | `OPENAI_MODEL`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION` (credential handling per rule 9a) |
-    | `bedrock` | *(derived)* | `deepagents` | `ANTHROPIC_MODEL`, `CLAUDE_CODE_USE_BEDROCK=1`, `AWS_REGION`, `ANTHROPIC_BASE_URL` (credential handling per rule 9b) |
+    | `LIGHTSPEED_PROVIDER` | `LIGHTSPEED_MODEL_PROVIDER` | Resolved family | Adapter | SDK env vars set |
+    | --- | --- | --- | --- | --- |
+    | `anthropic` | *(derived)* | `anthropic` | `deepagents` | `ANTHROPIC_MODEL`, `ANTHROPIC_BASE_URL` |
+    | `vertex` | `anthropic` | `anthropic` | `deepagents` | `ANTHROPIC_MODEL`, `CLAUDE_CODE_USE_VERTEX=1`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`, `GOOGLE_APPLICATION_CREDENTIALS`, `ANTHROPIC_BASE_URL` |
+    | `vertex` | `google` | `google` | `gemini` | `GEMINI_MODEL`, `GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` |
+    | `vertex` | `openai` | `openai` | `openai` | `OPENAI_MODEL`, `OPENAI_BASE_URL`, `GOOGLE_APPLICATION_CREDENTIALS` |
+    | `openai` | *(derived)* | `openai` | `openai` | `OPENAI_MODEL` |
+    | `azure` | *(derived)* | `openai` | `openai` | `OPENAI_MODEL`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION` (credential handling per rule 9a) |
+    | `bedrock` | *(derived)* | `anthropic` | `deepagents` | `ANTHROPIC_MODEL`, `CLAUDE_CODE_USE_BEDROCK=1`, `AWS_REGION`, `ANTHROPIC_BASE_URL` (credential handling per rule 9b) |
 
     `LIGHTSPEED_PROVIDER_URL` MUST be mapped to the SDK-appropriate URL env var when set (e.g. `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`). `LIGHTSPEED_PROVIDER_PROJECT` and `LIGHTSPEED_PROVIDER_REGION` MUST be mapped to the provider-specific project/region vars. Credential files at `/var/run/secrets/llm-credentials/` MUST be referenced via `GOOGLE_APPLICATION_CREDENTIALS` for Vertex providers that require file-based credentials.
 
-3. **Provider selection.** `resolve_sdk()` returns a `ResolvedSDK` whose `name` field selects the backend SDK (`deepagents`, `gemini`, or `openai`). This is determined by the configuration mapping (rule 2), not by the operator. Unknown values are rejected at startup.
+3. **Provider selection.** `resolve_model_family()` returns a `ResolvedModelFamily` with family name `anthropic`, `google`, or `openai` and credential/readiness metadata. Batch resolves it once and reuses it for `resolve_model_route(model_family=...)` and `run_readiness_checks(model_family)`. Anthropic routing returns `(None, ResolvedModelRoute)`; Google/OpenAI return `(ResolvedSDK, None)` with legacy adapter names `gemini`/`openai` and preserved credential metadata. The Anthropic route contains the selected model, typed constructor inputs, telemetry identity, and structured-output method, not a constructed client. Unknown configuration is rejected at startup. Legacy `CLAUDE_CODE_USE_VERTEX` / `CLAUDE_CODE_USE_BEDROCK` flags are still mapped for compatibility but MUST NOT select a model route or constructor.
 
-4. **Default provider.** When `LIGHTSPEED_PROVIDER` is unset, the provider defaults to `anthropic`, which resolves to SDK name `deepagents`.
+4. **Default provider.** When `LIGHTSPEED_PROVIDER` is unset, the provider defaults to `anthropic`, producing the `anthropic` model route for DeepAgents.
 
-5. **Model resolution.** `LIGHTSPEED_MODEL` is the canonical model input. The provider configuration mapping (rule 2) sets the SDK-specific model var (`ANTHROPIC_MODEL`, `GEMINI_MODEL`, or `OPENAI_MODEL`) from `LIGHTSPEED_MODEL`. SDK-specific model vars MAY also be read directly for backward compatibility when `LIGHTSPEED_MODEL` is unset; if all are unset, use the package default model constant.
+5. **Model resolution.** `LIGHTSPEED_MODEL` is the canonical model input. The provider configuration mapping (rule 2) sets the SDK-specific model var (`ANTHROPIC_MODEL`, `GEMINI_MODEL`, or `OPENAI_MODEL`) from it. SDK-specific model vars MAY also be read directly for backward compatibility when `LIGHTSPEED_MODEL` is unset. For Anthropic, `resolve_model_route()` resolves the model before constructing the provider and retains the Anthropic package default. The route's model is authoritative in DeepAgents; the adapter MUST NOT re-resolve `ProviderQueryOptions.model`. Unmigrated Google/OpenAI routes retain their existing `resolve_startup_model()` / `resolve_router_model()` path and defaults until migration.
 
-6. **Model override.** `resolve_router_model(provider_name, model=None)` accepts an explicit `model` string; when provided, it overrides environment-based resolution for that run.
+6. **Model override.** `resolve_model_route(model=...)` accepts an explicit Anthropic model override, ahead of canonical and legacy model inputs. Unmigrated adapters retain the explicit override supported by `resolve_router_model(provider_name, model=None)`.
 
 7. **Skills directory.** `LIGHTSPEED_SKILLS_DIR` sets the filesystem root for skills and provider `cwd`. Default when unset is the container default path under `/app`.
 
@@ -83,9 +83,9 @@ For a migrated route, [provider-contract.md rules 50–67](provider-contract.md#
     Both modes MUST use the OpenAI SDK's built-in Azure support — the adapter constructs the SDK's native `AsyncAzureOpenAI` client (see `provider-contract.md` rule 29 and `how/provider-architecture.md`). In Entra ID mode, token minting and refresh are owned by the provider SDK's credential object (`ClientSecretCredential` via `azure_ad_token_provider`), per the short-lived-token principle in `provider-contract.md` rule 38; the sandbox performs no manual token caching. This mirrors the classic OLS service's Azure Entra ID behavior ([OLS-3050]); key names (`client_id`, `tenant_id`, `client_secret`, `apitoken`) match the classic credential-secret shape.
 10a. [PLANNED: OLS-3472] **Gemma 4 on RHOAI/vLLM.** A Gemma 4 model served by RHOAI/vLLM MUST use the existing `openai` provider path. `LIGHTSPEED_PROVIDER=openai`, `LIGHTSPEED_MODEL=<the identifier exposed by vLLM>`, and `LIGHTSPEED_PROVIDER_URL=<the cluster-internal OpenAI-compatible API URL>` MUST resolve to the existing OpenAI SDK adapter and `OPENAI_BASE_URL`. The sandbox MUST NOT require a Gemma-specific provider value or SDK adapter.
 
-11. **Anthropic via Vertex.** When `LIGHTSPEED_PROVIDER=vertex` and `LIGHTSPEED_MODEL_PROVIDER=anthropic`, the configuration mapping resolves to SDK name `deepagents` and sets Vertex env vars for `ChatAnthropicVertex`.
+11. **Anthropic via Vertex.** When `LIGHTSPEED_PROVIDER=vertex` and `LIGHTSPEED_MODEL_PROVIDER=anthropic`, the resolved family is `anthropic`. Routing selects `vertex/anthropic` and its explicit `ChatAnthropicVertex` constructor, with project and region copied into the route parameters. `LIGHTSPEED_PROVIDER_URL` is a provider endpoint: host-only URLs (with or without a trailing slash) gain `/v1` in the model integration; explicit URL paths remain unchanged. When unset, native SDK endpoint defaults apply.
 
-9b. **AWS Bedrock credential resolution (static keys / STS assume-role).** For `LIGHTSPEED_PROVIDER=bedrock`, the sandbox resolves AWS credentials from the mounted files at `/var/run/secrets/llm-credentials/` (`aws_access_key_id`, `aws_secret_access_key`, and optional `role_arn`), matching the classic OLS service's IAM credential shape ([OLS-1895]). This does **not** change the existing Bedrock model path (Anthropic models via the `deepagents` SDK / `ChatBedrockConverse`); it governs credentials only.
+9b. **AWS Bedrock credential resolution (static keys / STS assume-role).** For `LIGHTSPEED_PROVIDER=bedrock`, the sandbox resolves AWS credentials from the mounted files at `/var/run/secrets/llm-credentials/` (`aws_access_key_id`, `aws_secret_access_key`, and optional `role_arn`), matching the classic OLS service's IAM credential shape ([OLS-1895]). This does **not** change the existing Bedrock model path (Anthropic models via DeepAgents / `ChatAnthropicBedrock`); it governs credentials only.
 
     - **Static keys** when `aws_access_key_id` and `aws_secret_access_key` are present and non-empty and `role_arn` is absent: use them directly as long-lived credentials (no refresh needed).
     - **STS assume-role (short-lived)** when `role_arn` is also present: the AWS SDK (`botocore` credential-provider chain) performs the assume-role and mints/refreshes the short-lived credentials transparently for the life of the run — the sandbox performs no manual token acquisition, caching, or refresh, per the short-lived-token principle in `provider-contract.md` rule 38.
@@ -93,7 +93,7 @@ For a migrated route, [provider-contract.md rules 50–67](provider-contract.md#
 
     Token/credential lifecycle is owned by `botocore` (already present via `langchain-aws`); the sandbox adds no AWS credential-handling dependency.
 
-9c. **Anthropic bearer token auth (vLLM, Anthropic-compatible endpoints).** For vLLM or other Anthropic-compatible endpoints that require bearer token auth, set `ANTHROPIC_AUTH_TOKEN`. The adapter sends it as `Authorization: Bearer <token>` via `default_headers`. `ANTHROPIC_API_KEY` must still be set to any non-empty value to pass the sandbox readiness check (rule 9, `check_provider_env`). Otherwise use `ANTHROPIC_API_KEY` alone.
+9c. **Anthropic bearer token auth (vLLM, Anthropic-compatible endpoints).** For vLLM or other Anthropic-compatible endpoints that require bearer token auth, set `ANTHROPIC_AUTH_TOKEN`. Routing copies it into the direct constructor's parameters; that constructor sends it as `Authorization: Bearer <token>` via `default_headers`. `ANTHROPIC_API_KEY` must still be set to any non-empty value to pass the sandbox readiness check (rule 9, `check_provider_env`). Otherwise use `ANTHROPIC_API_KEY` alone.
 
 10. **Vertex / Google GenAI.** `GOOGLE_GENAI_USE_VERTEXAI` toggles Vertex behavior for the Gemini adapter (tool composition rules per `provider-contract.md`). Set by the configuration mapping when `LIGHTSPEED_PROVIDER=vertex` and `LIGHTSPEED_MODEL_PROVIDER=Google`.
 
@@ -126,7 +126,7 @@ OPENAI_API_KEY: <token-or-placeholder>
         ```
         The sandbox resolves these env vars from the secret, detects `OPENAI_BASE_URL` is non-native, and uses `OpenAIChatCompletionsModel` for request/response handling.
 
- 1. **Anthropic via Vertex.** When `LIGHTSPEED_PROVIDER=vertex` and `LIGHTSPEED_MODEL_PROVIDER=anthropic`, the configuration mapping resolves to SDK name `deepagents` and sets Vertex env vars for `ChatAnthropicVertex`.
+ 1. **Anthropic via Vertex.** The `vertex/anthropic` model route supplies an explicit `ChatAnthropicVertex` constructor and resolved project/region parameters to DeepAgents (see rule 11).
 
  2. **[PLANNED: OLS-3743] Maximum turns.** `LIGHTSPEED_AGENT_MAX_TURNS` is required, parsed as an integer from 1 through 500, and passed to `ProviderQueryOptions.max_turns`. Missing, out-of-range, or malformed values fail sandbox startup. The operator resolves omitted `Agent.spec.maxTurns` to 200; the sandbox does not maintain a second default.
 
@@ -225,18 +225,21 @@ OPENAI_API_KEY: <token-or-placeholder>
 | `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` | [PLANNED: OLS-3743] Required whole-agent invocation timeout from the operator. |
 | `LIGHTSPEED_AGENT_MAX_TURNS` | [PLANNED: OLS-3743] Required provider iteration cap from the operator. |
 | `LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED` | [PLANNED: OLS-3928] DeepAgents tool-result inspection; defaults to `true`. |
-| `resolve_router_model()`, `resolve_startup_model()` | Model resolution from env (see `config.py`). |
+| `resolve_model_family()` | SDK env mapping, family identity, and credential/readiness metadata (see `config.py`). |
+| `resolve_model_route(model=None, model_family=...)` | Anthropic model/hosting resolution and typed construction inputs, or legacy SDK configuration (see `providers/model_router.py`). |
+| `resolve_router_model()`, `resolve_startup_model()` | Legacy Gemini/OpenAI model resolution from env (see `config.py`). |
 
 ## Constraints
 
 - Input files and env vars carry query, schema, and context; provider name and model are environment-driven. [PLANNED: OLS-3743] Agent timeout and maximum turns are required environment values resolved by the operator, not sandbox defaults.
 - Optional Python extras gate which provider SDKs are installed in a given environment; the image recipe installs all extras.
-- Bedrock resolves to SDK name `deepagents` via `ChatAnthropicBedrock`. When Bedrock support for other model families is needed, a `modelProvider` field should be added to the `AWSBedrockConfig` CRD (similar to `googleCloudVertex.modelProvider`).
+- Bedrock resolves to family `anthropic` and the `bedrock/anthropic` model route, using `ChatAnthropicBedrock` through DeepAgents. When Bedrock support for other model families is needed, a `modelProvider` field should be added to the `AWSBedrockConfig` CRD (similar to `googleCloudVertex.modelProvider`).
 - [PLANNED: OLS-3472] Gemma 4 compatibility is scoped to a vLLM OpenAI-compatible API. The sandbox does not install RHOAI, provision GPUs, or load model weights.
 
 ## Verification
 
 - Unit: [test_config.py](../../../tests/test_config.py), [test_model_resolution.py](../../../tests/test_model_resolution.py) — env mapping, model resolution, reasoning/MCP parse errors
+- [test_model_router.py](../../../tests/test_model_router.py) — typed route/legacy tuple contract, family and readiness metadata, model precedence, hosting/endpoint selection, and lazy imports; [test_anthropic_models.py](../../../tests/test_anthropic_models.py) — offline native SDK construction, auth, TLS, reasoning, exact model/profile IDs, and required project/region validation. These checks do not establish live endpoint parity.
 - [test_mcp.py](../../../tests/test_mcp.py) covers raw `source` classification, read-only admission, valid and invalid RBAC metadata, `noRbac`/`unbounded` filtering, server removal when no tools remain, canonical projections, policy rendering, and Gemini/OpenAI native filters.
 - [test_deepagents.py](../../../tests/test_deepagents.py), [test_openai_schema.py](../../../tests/test_openai_schema.py), and [test_openai_vllm_structured_output.py](../../../tests/unit/providers/test_openai_vllm_structured_output.py) verify admitted-name filtering and fail-closed provider materialization.
 - [test_mcp.py](../../../tests/test_mcp.py) verifies filtered-tool and removed-server logs include server/tool names, authentication classification, and safe reason codes without exception details, descriptions, credentials, or RBAC payloads.

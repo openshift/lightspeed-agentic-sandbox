@@ -5,26 +5,17 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
 
-from lightspeed_agentic.types import ProviderQueryOptions
+from .conftest import make_model_route
 
 _MODEL = "claude-sonnet-4-6"
-
-
-def _generation_options() -> ProviderQueryOptions:
-    return ProviderQueryOptions(
-        prompt="hello",
-        system_prompt="you are helpful",
-        model=_MODEL,
-        max_turns=10,
-        allowed_tools=["Bash", "Read"],
-        cwd="/workspace",
-    )
 
 
 @pytest.fixture
@@ -48,7 +39,7 @@ def generation_callback(
         attributes={"agenticrun.uid": "parent-uid", "agenticrun.phase": "analysis"},
     )
     callback = _create_generation_callback(
-        _generation_options(),
+        make_model_route(Mock(), model=_MODEL),
         trace.set_span_in_context(parent),
         main_name=None,
     )
@@ -216,24 +207,38 @@ def _partial_response_model(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route_id", "telemetry_provider"),
+    [
+        ("anthropic", "anthropic"),
+        ("vertex/anthropic", "gcp.vertex_ai"),
+        ("bedrock/anthropic", "aws.bedrock"),
+    ],
+)
 async def test_run_agent_query_traces_main_generations_and_raw_shape_response(
     span_exporter,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    route_id: str,
+    telemetry_provider: str,
 ) -> None:
     from opentelemetry.trace import SpanKind
 
     from lightspeed_agentic.providers import deepagents as mod
     from lightspeed_agentic.run_agent import run_agent_query
 
-    monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
-    monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
-    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://ignored-endpoint.example.test")
     model = _graph_generation_model()
-    monkeypatch.setattr(mod, "_resolve_model", lambda *_args, **_kwargs: model)
+    model_route = replace(
+        make_model_route(Mock(return_value=model), model="claude-trace-test"),
+        route=route_id,
+        telemetry_provider=telemetry_provider,
+    )
 
     result = await run_agent_query(
-        mod.DeepAgentsProvider(),
+        mod.DeepAgentsProvider(model_route),
         prompt="Summarize the deployment status using a subagent.",
         system_prompt="Follow instructions.",
         output_schema={
@@ -243,7 +248,7 @@ async def test_run_agent_query_traces_main_generations_and_raw_shape_response(
         },
         context=None,
         skills_dir=str(tmp_path),
-        model="claude-trace-test",
+        model="must-not-override-route",
         max_turns=20,
         timeout_seconds=30,
         tool_output_inspection_enabled=False,
@@ -292,7 +297,7 @@ async def test_run_agent_query_traces_main_generations_and_raw_shape_response(
         assert attributes["agenticrun.uid"] == "run-trace-test"
         assert attributes["agenticrun.phase"] == "analysis"
         assert attributes["gen_ai.operation.name"] == "chat"
-        assert attributes["gen_ai.provider.name"] == "anthropic"
+        assert attributes["gen_ai.provider.name"] == telemetry_provider
         assert attributes["gen_ai.request.model"] == "claude-trace-test"
 
     task_attributes = dict(generations[0].attributes)

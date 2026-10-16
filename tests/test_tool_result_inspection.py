@@ -154,7 +154,8 @@ async def test_malformed_classifier_reply_fails_closed_as_invalid_response() -> 
     class MalformedModel:
         calls = 0
 
-        async def ainvoke(self, _messages: object, **_kwargs: object) -> str:
+        async def ainvoke(self, input: object, **_kwargs: object) -> str:  # noqa: A002
+            del input
             self.calls += 1
             return '[]{{"flagged":false}"flagged": false}[]'
 

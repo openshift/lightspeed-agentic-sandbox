@@ -16,8 +16,8 @@ class FakeModel:
         self.messages: list[Any] | None = None
         self.parameters: dict[str, Any] = {}
 
-    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> Any:
-        self.messages = messages
+    async def ainvoke(self, input: list[Any], **kwargs: Any) -> Any:  # noqa: A002
+        self.messages = input
         self.parameters = kwargs
         return self.response
 
@@ -41,8 +41,8 @@ class _StructuredBoundModel:
         self.response = response
         self.parent = parent
 
-    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> Any:
-        self.parent.messages = messages
+    async def ainvoke(self, input: list[Any], **kwargs: Any) -> Any:  # noqa: A002
+        self.parent.messages = input
         self.parent.parameters = kwargs
         return {"raw": None, "parsed": self.response, "parsing_error": None}
 
@@ -65,8 +65,8 @@ class _StructuredErrorBoundModel:
     def __init__(self, parent: FakeModel) -> None:
         self.parent = parent
 
-    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> Any:
-        self.parent.messages = messages
+    async def ainvoke(self, input: list[Any], **kwargs: Any) -> Any:  # noqa: A002
+        self.parent.messages = input
         self.parent.parameters = kwargs
         return {
             "raw": None,

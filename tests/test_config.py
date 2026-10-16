@@ -12,7 +12,7 @@ from lightspeed_agentic.config import (
     parse_agent_timeout,
     parse_max_turns,
     parse_reasoning_config,
-    resolve_sdk,
+    resolve_model_family,
 )
 
 
@@ -63,9 +63,9 @@ def test_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LIGHTSPEED_PROVIDER", "anthropic")
     monkeypatch.setenv("LIGHTSPEED_MODEL", "claude-sonnet-4-20250514")
 
-    sdk = resolve_sdk()
+    model_family = resolve_model_family()
 
-    assert sdk.name == "deepagents"
+    assert model_family.name == "anthropic"
     assert os.environ["ANTHROPIC_MODEL"] == "claude-sonnet-4-20250514"
 
 
@@ -75,7 +75,7 @@ def test_anthropic_with_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LIGHTSPEED_MODEL", "claude-opus-4-6")
     monkeypatch.setenv("LIGHTSPEED_PROVIDER_URL", "https://proxy.example.com")
 
-    resolve_sdk()
+    resolve_model_family()
 
     assert os.environ["ANTHROPIC_BASE_URL"] == "https://proxy.example.com"
 
@@ -88,9 +88,9 @@ def test_vertex_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LIGHTSPEED_PROVIDER_PROJECT", "my-project")
     monkeypatch.setenv("LIGHTSPEED_PROVIDER_REGION", "us-east5")
 
-    sdk = resolve_sdk()
+    model_family = resolve_model_family()
 
-    assert sdk.name == "deepagents"
+    assert model_family.name == "anthropic"
     assert os.environ["ANTHROPIC_MODEL"] == "claude-sonnet-4-20250514"
     assert os.environ["CLAUDE_CODE_USE_VERTEX"] == "1"
     assert os.environ["ANTHROPIC_VERTEX_PROJECT_ID"] == "my-project"
@@ -108,9 +108,9 @@ def test_vertex_google(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LIGHTSPEED_PROVIDER_PROJECT", "my-project")
     monkeypatch.setenv("LIGHTSPEED_PROVIDER_REGION", "us-central1")
 
-    sdk = resolve_sdk()
+    model_family = resolve_model_family()
 
-    assert sdk.name == "gemini"
+    assert model_family.name == "google"
     assert os.environ["GEMINI_MODEL"] == "gemini-2.5-flash"
     assert os.environ["GOOGLE_GENAI_USE_VERTEXAI"] == "true"
     assert os.environ["GOOGLE_CLOUD_PROJECT"] == "my-project"
@@ -127,7 +127,7 @@ def test_vertex_llm_credentials_path_override(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("LIGHTSPEED_MODEL_PROVIDER", "google")
     monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", creds_dir)
 
-    resolve_sdk()
+    resolve_model_family()
 
     assert os.environ["GOOGLE_APPLICATION_CREDENTIALS"] == (
         f"{creds_dir}/GOOGLE_APPLICATION_CREDENTIALS"
@@ -141,9 +141,9 @@ def test_vertex_openai(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LIGHTSPEED_MODEL", "gpt-4.1")
     monkeypatch.setenv("LIGHTSPEED_PROVIDER_URL", "https://vertex-openai.example.com")
 
-    sdk = resolve_sdk()
+    model_family = resolve_model_family()
 
-    assert sdk.name == "openai"
+    assert model_family.name == "openai"
     assert os.environ["OPENAI_MODEL"] == "gpt-4.1"
     assert os.environ["OPENAI_BASE_URL"] == "https://vertex-openai.example.com"
     assert os.environ["GOOGLE_APPLICATION_CREDENTIALS"] == (
@@ -156,9 +156,9 @@ def test_openai(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LIGHTSPEED_PROVIDER", "openai")
     monkeypatch.setenv("LIGHTSPEED_MODEL", "gpt-4.1")
 
-    sdk = resolve_sdk()
+    model_family = resolve_model_family()
 
-    assert sdk.name == "openai"
+    assert model_family.name == "openai"
     assert os.environ["OPENAI_MODEL"] == "gpt-4.1"
 
 
@@ -168,7 +168,7 @@ def test_openai_with_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LIGHTSPEED_MODEL", "gpt-4.1")
     monkeypatch.setenv("LIGHTSPEED_PROVIDER_URL", "https://custom.openai.com/v1")
 
-    resolve_sdk()
+    resolve_model_family()
 
     assert os.environ["OPENAI_BASE_URL"] == "https://custom.openai.com/v1"
 
@@ -181,9 +181,9 @@ def test_azure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LIGHTSPEED_PROVIDER_API_VERSION", "2024-08-01-preview")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
 
-    sdk = resolve_sdk()
+    model_family = resolve_model_family()
 
-    assert sdk.name == "openai"
+    assert model_family.name == "openai"
     assert os.environ["OPENAI_MODEL"] == "gpt-4.1"
     assert os.environ["AZURE_OPENAI_ENDPOINT"] == "https://my-resource.openai.azure.com"
     assert os.environ["AZURE_OPENAI_API_VERSION"] == "2024-08-01-preview"
@@ -195,9 +195,9 @@ def test_bedrock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LIGHTSPEED_MODEL", "claude-sonnet-4-20250514")
     monkeypatch.setenv("LIGHTSPEED_PROVIDER_REGION", "us-east-1")
 
-    sdk = resolve_sdk()
+    model_family = resolve_model_family()
 
-    assert sdk.name == "deepagents"
+    assert model_family.name == "anthropic"
     assert os.environ["ANTHROPIC_MODEL"] == "claude-sonnet-4-20250514"
     assert os.environ["CLAUDE_CODE_USE_BEDROCK"] == "1"
     assert os.environ["AWS_REGION"] == "us-east-1"
@@ -206,16 +206,17 @@ def test_bedrock(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_default_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     _clean_env(monkeypatch)
 
-    sdk = resolve_sdk()
+    model_family = resolve_model_family()
 
-    assert sdk.name == "deepagents"
+    assert isinstance(model_family, config.ResolvedModelFamily)
+    assert model_family.name == "anthropic"
 
 
 def test_default_model_not_set(monkeypatch: pytest.MonkeyPatch) -> None:
     _clean_env(monkeypatch)
     monkeypatch.setenv("LIGHTSPEED_PROVIDER", "anthropic")
 
-    resolve_sdk()
+    resolve_model_family()
 
     assert "ANTHROPIC_MODEL" not in os.environ
 
@@ -226,7 +227,7 @@ def test_vertex_missing_model_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LIGHTSPEED_MODEL", "some-model")
 
     with pytest.raises(ValueError, match="LIGHTSPEED_MODEL_PROVIDER"):
-        resolve_sdk()
+        resolve_model_family()
 
 
 def test_unknown_provider(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -234,7 +235,7 @@ def test_unknown_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LIGHTSPEED_PROVIDER", "watsonx")
 
     with pytest.raises(ValueError, match="Unknown provider"):
-        resolve_sdk()
+        resolve_model_family()
 
 
 # --- parse_reasoning_config tests ---
@@ -483,11 +484,11 @@ def test_azure_entra_id_mode(
     _write_sp_files(tmp_path)
     monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
 
-    sdk = resolve_sdk()
+    model_family = resolve_model_family()
 
-    assert sdk.name == "openai"
-    assert sdk.expected_envs == ()
-    assert sdk.azure_credentials == {
+    assert model_family.name == "openai"
+    assert model_family.expected_envs == ()
+    assert model_family.azure_credentials == {
         "client_id": "cid",
         "tenant_id": "tid",
         "client_secret": "csec",
@@ -505,10 +506,10 @@ def test_azure_api_key_mode_from_file(
     (tmp_path / "apitoken").write_text("my-azure-key", encoding="utf-8")
     monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
 
-    sdk = resolve_sdk()
+    model_family = resolve_model_family()
 
-    assert sdk.name == "openai"
-    assert sdk.azure_credentials is None
+    assert model_family.name == "openai"
+    assert model_family.azure_credentials is None
     assert os.environ["AZURE_OPENAI_API_KEY"] == "my-azure-key"
     assert os.environ["AZURE_OPENAI_API_VERSION"] == "2025-03-01-preview"
 
@@ -523,9 +524,9 @@ def test_azure_defaults_to_structured_output_api_version(
     (tmp_path / "apitoken").write_text("my-azure-key", encoding="utf-8")
     monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
 
-    sdk = resolve_sdk()
+    model_family = resolve_model_family()
 
-    assert sdk.name == "openai"
+    assert model_family.name == "openai"
     assert os.environ["AZURE_OPENAI_API_VERSION"] == "2024-08-01-preview"
 
 
@@ -538,10 +539,10 @@ def test_azure_api_key_mode_from_env(
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "env-key")
     monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
 
-    sdk = resolve_sdk()
+    model_family = resolve_model_family()
 
-    assert sdk.name == "openai"
-    assert sdk.azure_credentials is None
+    assert model_family.name == "openai"
+    assert model_family.azure_credentials is None
     assert os.environ["AZURE_OPENAI_API_KEY"] == "env-key"
 
 
@@ -555,9 +556,9 @@ def test_azure_entra_id_takes_precedence_over_api_key(
     (tmp_path / "apitoken").write_text("also-a-key", encoding="utf-8")
     monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
 
-    sdk = resolve_sdk()
+    model_family = resolve_model_family()
 
-    assert sdk.azure_credentials is not None
+    assert model_family.azure_credentials is not None
     assert "AZURE_OPENAI_API_KEY" not in os.environ
 
 
@@ -573,9 +574,9 @@ def test_azure_incomplete_sp_files_falls_back_to_api_key(
     (tmp_path / "apitoken").write_text("fallback-key", encoding="utf-8")
     monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
 
-    sdk = resolve_sdk()
+    model_family = resolve_model_family()
 
-    assert sdk.azure_credentials is None
+    assert model_family.azure_credentials is None
     assert os.environ["AZURE_OPENAI_API_KEY"] == "fallback-key"
 
 
@@ -591,9 +592,9 @@ def test_azure_empty_sp_file_not_entra(
     (tmp_path / "apitoken").write_text("key", encoding="utf-8")
     monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
 
-    sdk = resolve_sdk()
+    model_family = resolve_model_family()
 
-    assert sdk.azure_credentials is None
+    assert model_family.azure_credentials is None
     assert os.environ["AZURE_OPENAI_API_KEY"] == "key"
 
 
@@ -606,4 +607,4 @@ def test_azure_no_credentials_raises(
     monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
 
     with pytest.raises(ValueError, match=r"Azure .* credentials"):
-        resolve_sdk()
+        resolve_model_family()

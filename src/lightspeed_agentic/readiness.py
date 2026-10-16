@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from lightspeed_agentic.config import ResolvedSDK
+from lightspeed_agentic.config import ResolvedModelFamily, ResolvedSDK
 
 
 def read_mounted_secret(path: Path) -> str | None:
@@ -58,7 +58,7 @@ def check_provider_env(
     return "ok"
 
 
-def run_readiness_checks(sdk: ResolvedSDK) -> tuple[bool, dict[str, str]]:
+def run_readiness_checks(sdk: ResolvedSDK | ResolvedModelFamily) -> tuple[bool, dict[str, str]]:
     """Return overall readiness and per-check status strings."""
     status = check_provider_env(sdk.expected_envs, sdk.credential_file_envs)
     checks = {"provider_env": status}

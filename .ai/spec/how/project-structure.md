@@ -9,9 +9,10 @@ Do not maintain a duplicate path inventory here.
 |---|---|
 | `lightspeed_agentic.batch` | Container CMD: `python -m lightspeed_agentic.batch` |
 | `batch.main()` | Read `/input/`, run agent, publish Result CR, exit |
-| `config.resolve_sdk()` | Called at start of each batch run before readiness checks and provider construction |
-| `run_readiness_checks()` | R1 credential env (+ file paths) before LLM (`readiness.py`) |
-| `create_provider(sdk.name)` | Factory lazy-imports the selected adapter |
+| `config.resolve_model_family()` | Resolve family, SDK env mapping, and credentials once per batch run |
+| `providers.model_router.resolve_model_route(model_family=...)` | Reuse that family; return an Anthropic model route or legacy SDK configuration without constructing clients |
+| `run_readiness_checks(model_family)` | R1 credential env (+ file paths) before LLM (`readiness.py`) |
+| `create_provider(name, model_route=None)` | Factory lazy-imports the selected adapter; DeepAgents requires the resolved model route |
 | `run_agent_query()` | Shared agent execution (`run_agent.py`) |
 | `publish_agent_result()` | Result CR create + status via Kubernetes API |
 | `init_tracer` / `shutdown_tracer` | OTel TracerProvider setup/teardown in `batch.main()` |
@@ -19,7 +20,8 @@ Do not maintain a duplicate path inventory here.
 ## Naming Conventions
 
 - **Package:** `lightspeed_agentic` under `src/` (hatchling src-layout).
-- **Provider modules:** one file per provider in `providers/`, named after the SDK (`deepagents.py`, `gemini.py`, `openai.py`). Each exports a single `XProvider` class.
+- **Provider adapters:** `providers/deepagents.py`, `gemini.py`, and `openai.py` each export an `XProvider` class. DeepAgents receives a model route; Gemini/OpenAI retain their legacy SDK paths.
+- **Model routing/construction:** `providers/model_router.py` defines `ResolvedModelRoute`, `ModelParameters`, and `ModelCreator` and selects constructors. `providers/models/anthropic.py` provides explicit direct, Bedrock, and Vertex constructors with lazy SDK imports.
 - **Batch / agent:** `batch.py` (entrypoint + input reading), `run_agent.py` (provider query loop).
 - **Publish results:** `publish_results/publish.py`, `publish_results/status.py`.
 - **Observability modules:** `audit.py` (span events), `metrics.py` (histograms), `tracing.py` (TracerProvider + traceparent parsing).

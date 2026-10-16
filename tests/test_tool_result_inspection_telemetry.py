@@ -171,7 +171,8 @@ async def test_invalid_response_records_only_bounded_shape(
     from lightspeed_agentic.inspection.client import LangChainClassifierClient
 
     class Model:
-        async def ainvoke(self, _messages: object, **_kwargs: object) -> object:
+        async def ainvoke(self, input: object, **_kwargs: object) -> object:  # noqa: A002
+            del input
             return response
 
     tracer = FakeTracer()

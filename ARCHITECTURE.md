@@ -39,7 +39,8 @@ graph TD
     end
 
     subgraph "Configuration & Cross-Cutting"
-        Config["config.py<br/>resolve_sdk()<br/>env mapping"]
+        Config["config.py<br/>resolve_model_family()<br/>env mapping + credentials"]
+        ModelRouter["providers/model_router.py<br/>resolve_model_route()"]
         MCP["mcp.py<br/>parse_mcp_servers()"]
         Audit["audit.py<br/>AuditLogger"]
         Metrics["metrics.py<br/>in-process histograms"]
@@ -64,6 +65,7 @@ graph TD
     end
 
     Batch --> Config
+    Batch --> ModelRouter
     Batch --> Readiness
     Batch --> Factory
     Batch --> RunAgent
@@ -92,8 +94,9 @@ sequenceDiagram
     participant K8s as Kubernetes API
 
     Op->>Batch: mount /input/*, start pod
-    Batch->>Batch: resolve_sdk(), run_readiness_checks()
-    Batch->>Batch: create_provider()
+    Batch->>Batch: resolve_model_family(), resolve_model_route(model_family=...)
+    Batch->>Batch: run_readiness_checks(model_family)
+    Batch->>Batch: create_provider(name, model_route for DeepAgents)
     Batch->>Agent: system prompt, query, schema, context
     Agent->>Provider: query(ProviderQueryOptions)
     Provider->>SDK: SDK-specific invocation
@@ -121,9 +124,18 @@ Each adapter is a thin wrapper. The SDK owns tool execution, skill discovery, an
 
 | Provider | SDK | Structured Output | Skills | Tools |
 |---|---|---|---|---|
-| DeepAgents | `deepagents` + `langchain-anthropic` | `ProviderStrategy` when thinking configured, else `ToolStrategy` via `response_format` | `/skills/` virtual `CompositeBackend` route when skills exist | `LocalShellBackend` (default) + `/skills/` `FilesystemBackend` route + MCP tools |
+| DeepAgents | `deepagents` + Anthropic LangChain integrations | Tool-free second pass without thinking; method supplied by the model route | `/skills/` virtual `CompositeBackend` route when skills exist | `LocalShellBackend` (default) + `/skills/` `FilesystemBackend` route + MCP tools |
 | Gemini | `google-adk` | Response schema on content config | `SkillToolset` from directory | `ExecuteBashTool` + web tools |
 | OpenAI | `openai-agents` | `output_type` wrapper | `Skills` capability | `SandboxAgent` shell/filesystem |
+
+Batch resolves the model family once and reuses it for routing and credential
+readiness. Anthropic routing returns a `ResolvedModelRoute` with the selected model,
+a typed constructor and parameters, telemetry identity, and structured-output method.
+The factory injects this route into `DeepAgentsProvider`; the provider creates fresh
+main, inspection-classifier, and output-shaping models through it. Only the main
+model receives query reasoning. Explicit direct, Vertex, and Bedrock constructors
+live in `providers/models/anthropic.py` and retain lazy SDK imports and shared TLS.
+Gemini and OpenAI still return legacy SDK configuration and use their existing adapters.
 
 DeepAgents exposes skills at virtual `/skills/` paths and relies on its SDK
 middleware to provide the corresponding host paths to shell commands. Scripts
@@ -164,7 +176,7 @@ The container runs as non-root user `agent`. `catatonit` is PID 1. The batch mod
 
 ## Key Decisions
 
-- **One provider per pod:** Selected at startup via `LIGHTSPEED_PROVIDER` (mapped to an SDK name by `config.resolve_sdk()`).
+- **One provider per pod:** Selected at startup through `config.resolve_model_family()` and `providers.model_router.resolve_model_route()`. Anthropic receives an explicit DeepAgents model route; Gemini/OpenAI retain legacy adapter dispatch.
 
 - **Thin adapters:** Provider modules map SDK events to a normalized union type; they do not re-implement SDK behavior.
 

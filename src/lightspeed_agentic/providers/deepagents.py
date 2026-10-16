@@ -1,4 +1,4 @@
-"""DeepAgents provider — wraps langchain-ai/deepagents for Anthropic model support.
+"""DeepAgents provider — wraps langchain-ai/deepagents for a resolved chat model.
 
 Uses create_deep_agent() with LocalShellBackend for shell + filesystem access,
 native skills loading, and v3 event streaming for event mapping.
@@ -12,8 +12,7 @@ import logging
 import os
 import uuid
 from collections.abc import AsyncIterator, Mapping
-from typing import Any, Literal, cast
-from urllib.parse import urlparse
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID
 
 from opentelemetry import context as otel_context
@@ -36,11 +35,11 @@ from lightspeed_agentic.types import (
     stringify,
 )
 
-# Provider SDK imports (deepagents, langchain-*, MCP) stay inside functions:
-# - _resolve_model loads only the active backend branch (Vertex / Bedrock / direct).
-# - query() / shape / MCP load their SDKs on first use, not at module import.
-# That keeps optional-extra isolation and avoids importing unused backends; it does
-# not skip work on the hot path once a run is underway.
+if TYPE_CHECKING:
+    from lightspeed_agentic.providers.model_router import ResolvedModelRoute
+
+# Harness SDK imports (deepagents, langchain-*, MCP) stay inside functions.
+# Model construction and hosting configuration belong to the supplied model route.
 
 logger = logging.getLogger(__name__)
 
@@ -51,106 +50,6 @@ _JSON_SCHEMA_TYPE_MAP: dict[str, type[Any]] = {
     "number": float,
     "boolean": bool,
 }
-
-_NATIVE_ANTHROPIC_HOSTS = {"api.anthropic.com"}
-
-
-def _anthropic_backend() -> Literal["vertex", "bedrock", "direct"]:
-    """Resolve Anthropic backend from env; reject conflicting Vertex/Bedrock flags."""
-    use_vertex = os.environ.get("CLAUDE_CODE_USE_VERTEX") == "1"
-    use_bedrock = os.environ.get("CLAUDE_CODE_USE_BEDROCK") == "1"
-    if use_vertex and use_bedrock:
-        raise ValueError("CLAUDE_CODE_USE_VERTEX and CLAUDE_CODE_USE_BEDROCK cannot both be set")
-    if use_vertex:
-        return "vertex"
-    if use_bedrock:
-        return "bedrock"
-    return "direct"
-
-
-def _resolve_model(model: str, reasoning_config: dict[str, Any] | None = None) -> Any:
-    """Build a LangChain chat model instance based on env vars set by config.py."""
-    from functools import cached_property
-
-    thinking = reasoning_config.get("thinking") if reasoning_config else None
-    backend = _anthropic_backend()
-
-    if backend == "vertex":
-        from langchain_google_vertexai.model_garden import ChatAnthropicVertex
-
-        kwargs: dict[str, Any] = {
-            "model_name": model,
-            "project": os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID", ""),
-            "location": os.environ.get("CLOUD_ML_REGION", "us-east5"),
-        }
-        if thinking:
-            kwargs["thinking"] = thinking
-        from lightspeed_agentic.tls import create_async_http_client, create_http_client
-
-        kwargs["http_client"] = create_http_client()
-        kwargs["async_http_client"] = create_async_http_client()
-        return ChatAnthropicVertex(**kwargs)
-
-    if backend == "bedrock":
-        # langchain_aws uses these Anthropic Bedrock clients internally, but does not
-        # expose a stable injection point for a custom HTTPX client. Keep this import
-        # aligned with the installed anthropic SDK version.
-        from anthropic.lib.bedrock._client import AnthropicBedrock, AsyncAnthropicBedrock
-        from langchain_aws import ChatAnthropicBedrock
-
-        from lightspeed_agentic.tls import create_async_http_client, create_http_client
-
-        class TLSChatAnthropicBedrock(ChatAnthropicBedrock):
-            @cached_property
-            def _client(self) -> Any:
-                return AnthropicBedrock(**self._client_params, http_client=create_http_client())
-
-            @cached_property
-            def _async_client(self) -> Any:
-                return AsyncAnthropicBedrock(
-                    **self._client_params,
-                    http_client=create_async_http_client(),
-                )
-
-        kwargs = {
-            "model": model,
-            "region_name": os.environ.get("AWS_REGION", "us-east-1"),
-        }
-        if thinking:
-            kwargs["thinking"] = thinking
-        if not isinstance(ChatAnthropicBedrock, type):
-            return ChatAnthropicBedrock(**kwargs)
-        return TLSChatAnthropicBedrock(**kwargs)
-
-    from anthropic import Anthropic, AsyncAnthropic
-    from langchain_anthropic import ChatAnthropic
-
-    from lightspeed_agentic.tls import create_async_http_client, create_http_client
-
-    class TLSChatAnthropic(ChatAnthropic):
-        @cached_property
-        def _client(self) -> Any:
-            return Anthropic(**self._client_params, http_client=create_http_client())
-
-        @cached_property
-        def _async_client(self) -> Any:
-            return AsyncAnthropic(**self._client_params, http_client=create_async_http_client())
-
-    kwargs = {"model": model}
-    if thinking:
-        kwargs["thinking"] = thinking
-
-    # Support bearer token auth for vLLM and other Anthropic-compatible endpoints
-    default_headers = {}
-    auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
-    if auth_token:
-        default_headers["Authorization"] = f"Bearer {auth_token}"
-    if default_headers:
-        kwargs["default_headers"] = default_headers
-
-    if not isinstance(ChatAnthropic, type):
-        return ChatAnthropic(**kwargs)
-    return TLSChatAnthropic(**kwargs)
 
 
 async def _close_model_clients(model: Any) -> None:
@@ -214,26 +113,6 @@ def _usage_from_message(msg: Any) -> tuple[int, int]:
     if not usage:
         return 0, 0
     return usage.get("input_tokens", 0), usage.get("output_tokens", 0)
-
-
-def _is_custom_anthropic_endpoint() -> bool:
-    """Return whether Anthropic base URL points to a custom endpoint."""
-    raw_url = os.environ.get("ANTHROPIC_BASE_URL", "").strip()
-    if not raw_url:
-        return False
-
-    hostname = urlparse(raw_url).hostname
-    return not hostname or hostname.lower().rstrip(".") not in _NATIVE_ANTHROPIC_HOSTS
-
-
-def _structured_output_method() -> str:
-    """Select structured-output binding compatible with active Anthropic endpoint."""
-    backend = _anthropic_backend()
-    if backend == "bedrock":
-        return "function_calling"
-    if backend == "direct" and not _is_custom_anthropic_endpoint():
-        return "function_calling"
-    return "json_schema"
 
 
 def _content_block_value(block: Any, name: str) -> Any:
@@ -382,7 +261,7 @@ def _record_generation_result(
 
 
 def _create_generation_callback(
-    options: ProviderQueryOptions,
+    model_route: ResolvedModelRoute,
     parent_context: Context,
     *,
     main_name: str | None,
@@ -395,8 +274,8 @@ def _create_generation_callback(
             super().__init__()
             self._spans: dict[UUID, Span] = {}
             self._parent_context = parent_context
-            self._model = options.model
-            self._backend = _anthropic_backend()
+            self._model = model_route.model
+            self._provider = model_route.telemetry_provider
             self._main_name = main_name
 
         async def on_chat_model_start(
@@ -420,15 +299,10 @@ def _create_generation_callback(
             ):
                 return
 
-            provider = {
-                "direct": "anthropic",
-                "bedrock": "aws.bedrock",
-                "vertex": "gcp.vertex_ai",
-            }[self._backend]
             self._spans[run_id] = start_generation_span(
                 "chat",
                 self._model,
-                provider,
+                self._provider,
                 parent_context=self._parent_context,
             )
 
@@ -482,7 +356,7 @@ def _create_generation_callback(
 
 
 async def _shape_structured_output(
-    model: str,
+    model_route: ResolvedModelRoute,
     schema: Any,
     system_prompt: str,
     prompt: str,
@@ -492,10 +366,10 @@ async def _shape_structured_output(
     """Shape pass: tool-free structured binding on a model without thinking."""
     from langchain_core.messages import HumanMessage, SystemMessage
 
-    format_model = _resolve_model(model, reasoning_config=None)
+    format_model = model_route.create_model(model_route.model_parameters, reasoning_config=None)
     structured = format_model.with_structured_output(
         schema,
-        method=_structured_output_method(),
+        method=model_route.structured_output_method,
         include_raw=True,
     )
     shape_messages = [
@@ -583,6 +457,9 @@ def _process_ai_message(
 
 
 class DeepAgentsProvider(AgentProvider):
+    def __init__(self, model_route: ResolvedModelRoute) -> None:
+        self._model_route = model_route
+
     @property
     def name(self) -> str:
         return "deepagents"
@@ -612,13 +489,16 @@ class DeepAgentsProvider(AgentProvider):
         inspector_callback: Any | None = None
 
         logger.debug(
-            "Starting deepagents query model=%s cwd=%s max_turns=%s",
-            options.model,
+            "Starting deepagents query route=%s model=%s cwd=%s max_turns=%s",
+            self._model_route.route,
+            self._model_route.model,
             options.cwd,
             options.max_turns,
         )
 
-        chat_model = _resolve_model(options.model, options.reasoning_config)
+        chat_model = self._model_route.create_model(
+            self._model_route.model_parameters, reasoning_config=options.reasoning_config
+        )
         local_backend = LocalShellBackend(
             root_dir=options.cwd,
             virtual_mode=False,
@@ -658,7 +538,9 @@ class DeepAgentsProvider(AgentProvider):
                     inspect_tool_result as run_inspection,
                 )
 
-                classifier_model = _resolve_model(options.model, reasoning_config=None)
+                classifier_model = self._model_route.create_model(
+                    self._model_route.model_parameters, reasoning_config=None
+                )
                 classifier_client = LangChainClassifierClient(classifier_model)
                 model_profile = getattr(classifier_model, "profile", None) or {}
                 context_window_tokens = (
@@ -684,8 +566,8 @@ class DeepAgentsProvider(AgentProvider):
                         instruction_tokens=512,
                         output_tokens=128,
                         deadline=options.deadline,
-                        provider="anthropic",
-                        model=options.model,
+                        provider=self._model_route.telemetry_provider,
+                        model=self._model_route.model,
                     )
 
                 inspector_callback = inspect_tool_result_callback
@@ -700,7 +582,7 @@ class DeepAgentsProvider(AgentProvider):
         subagent_spec["middleware"] = [inspection_middleware, summarization_middleware]
         agent_kwargs["subagents"] = [subagent_spec]
         generation_callback = _create_generation_callback(
-            options,
+            self._model_route,
             parent_context,
             main_name=agent_kwargs.get("name"),
         )
@@ -869,7 +751,7 @@ class DeepAgentsProvider(AgentProvider):
 
         if schema_model is not None:
             structured, in_tok, out_tok = await _shape_structured_output(
-                options.model,
+                self._model_route,
                 schema_model,
                 options.system_prompt,
                 options.prompt,

@@ -22,8 +22,8 @@ from lightspeed_agentic.config import (
     parse_max_turns,
     parse_reasoning_config,
     parse_tool_output_inspection_enabled,
+    resolve_model_family,
     resolve_router_model,
-    resolve_sdk,
     resolve_startup_model,
 )
 from lightspeed_agentic.factory import create_provider
@@ -36,6 +36,7 @@ from lightspeed_agentic.mcp import (
     render_mcp_policy_context,
     split_admitted_mcp_servers,
 )
+from lightspeed_agentic.providers.model_router import ResolvedModelRoute, resolve_model_route
 from lightspeed_agentic.publish_results.publish import (
     PublishError,
     publish_agent_result,
@@ -174,13 +175,14 @@ def main() -> None:
     otel_active = False
     try:
         configure_tls()
-        sdk = resolve_sdk()
+        model_family = resolve_model_family()
+        sdk, model_route = resolve_model_route(model_family=model_family)
         reasoning_config = parse_reasoning_config()
         mcp_servers = parse_mcp_servers()
         agent_timeout_seconds = parse_agent_timeout()
         agent_max_turns = parse_max_turns()
         tool_output_inspection_enabled = parse_tool_output_inspection_enabled()
-        readiness_ok, readiness_checks = run_readiness_checks(sdk)
+        readiness_ok, readiness_checks = run_readiness_checks(model_family)
         if not readiness_ok:
             write_termination_log(_format_readiness_failure(readiness_checks))
             sys.exit(1)
@@ -195,14 +197,19 @@ def main() -> None:
 
         admitted_mcp_servers = asyncio.run(discover_and_admit_mcp_servers(mcp_servers))
         provider_mcp_servers, mcp_policies = split_admitted_mcp_servers(admitted_mcp_servers)
-        provider = create_provider(sdk.name)
-        if sdk.azure_credentials:
-            cast(Any, provider)._azure_credentials = sdk.azure_credentials
-        startup_model = resolve_startup_model(sdk.name)
+        if sdk is not None:
+            provider = create_provider(sdk.name)
+            if sdk.azure_credentials:
+                cast(Any, provider)._azure_credentials = sdk.azure_credentials
+            startup_model = resolve_startup_model(sdk.name)
+            model = resolve_router_model(provider.name, startup_model)
+        else:
+            model_route = cast(ResolvedModelRoute, model_route)
+            provider = create_provider("deepagents", model_route)
+            model = model_route.model
         audit_enabled = os.environ.get("LIGHTSPEED_AUDIT_ENABLED", "").strip().lower() == "true"
         capture_content = _resolve_capture_content(audit_enabled)
         skills_dir = os.environ.get("LIGHTSPEED_SKILLS_DIR", DEFAULT_SKILLS_DIR)
-        model = resolve_router_model(provider.name, startup_model)
 
         logger.info(
             "provider=%s model=%s audit=%s capture_content=%s",

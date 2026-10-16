@@ -18,17 +18,17 @@ The target runtime uses one shared DeepAgents adapter for every existing model r
 
 ### Component Inventory
 
-4. Major components: batch entrypoint (`batch.py`), agent execution (`run_agent.py`), provider abstraction (factory, events, options), provider adapters (DeepAgents, Gemini, OpenAI), configuration (`config.py`), MCP (`mcp.py`), Result CR publishing (`publish_results/`), readiness checks (`readiness.py`), and observability (`audit.py`, `metrics.py`, `tracing.py`).
+4. Major components: batch entrypoint (`batch.py`), agent execution (`run_agent.py`), provider abstraction (factory, events, options), provider adapters (DeepAgents, Gemini, OpenAI), configuration (`config.py`), model routing and construction (`providers/model_router.py`, `providers/models/anthropic.py`), MCP (`mcp.py`), Result CR publishing (`publish_results/`), readiness checks (`readiness.py`), and observability (`audit.py`, `metrics.py`, `tracing.py`).
 
 5. Component behavioral rules: `run-api.md`, `provider-contract.md`, `configuration.md`, `health-probes.md`, `audit-logging.md`, `e2e-testing.md`.
 
 ### Lifecycle
 
-6. `batch.main()` lifecycle: read `/input/` and resolve step from `result-template.kind`; `resolve_sdk()`; parse reasoning config and MCP servers; `run_readiness_checks()` (fail-fast before the LLM); `init_tracer()` when OTEL is configured; `create_provider()` and `resolve_router_model()`; `run_agent_query()`; publish the Result CR via the Kubernetes API; `shutdown_tracer()`; exit.
+6. `batch.main()` lifecycle: read `/input/` and resolve step from `result-template.kind`; resolve the model family once and pass it to `resolve_model_route(model_family=...)`; parse reasoning config, MCP servers, and execution limits; `run_readiness_checks(model_family)` (fail-fast before the LLM); `init_tracer()` when OTEL is configured; discover/admit MCP tools; `create_provider()` with the Anthropic route or legacy SDK name; `run_agent_query()`; publish the Result CR via the Kubernetes API; `shutdown_tracer()`; exit.
 
-7. Provider is selected once per run via `LIGHTSPEED_PROVIDER` (mapped by `resolve_sdk()`).
+7. Provider is selected once per run through `resolve_model_family()` and `resolve_model_route()`. Anthropic returns a typed model route for DeepAgents; Google/OpenAI retain legacy Gemini/OpenAI adapter configuration. The same family object supplies credential readiness requirements.
 
-8. Model resolution uses `LIGHTSPEED_MODEL` (mapped to SDK env vars), with package default fallback via `resolve_router_model()`.
+8. Anthropic model resolution uses the explicit override, canonical `LIGHTSPEED_MODEL` mapping, legacy `ANTHROPIC_MODEL`, then the Anthropic package default. The injected route's model is authoritative in DeepAgents. Google/OpenAI retain `resolve_startup_model()` / `resolve_router_model()` until migration.
 
 ### Integration Boundaries
 
@@ -44,7 +44,7 @@ The target runtime uses one shared DeepAgents adapter for every existing model r
 
 | Field/Flag | Type | Default | Description |
 |---|---|---|---|
-| `LIGHTSPEED_PROVIDER` | string | `anthropic` | Hosting backend → SDK name |
+| `LIGHTSPEED_PROVIDER` | string | `anthropic` | Hosting backend → model family and model route or legacy adapter |
 | `LIGHTSPEED_SKILLS_DIR` | string | `/app/skills` | Skill root and provider `cwd` |
 | `LIGHTSPEED_MODEL` | string | package default | Canonical model id |
 

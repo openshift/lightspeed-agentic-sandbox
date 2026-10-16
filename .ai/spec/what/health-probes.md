@@ -9,9 +9,9 @@ Cross-references: batch lifecycle → `run-api.md`. Credential env mapping → `
 
 ## Behavioral Rules
 
-1. **Fail-fast before LLM.** After `resolve_sdk()`, `batch.main()` MUST call `run_readiness_checks(sdk)` before `create_provider()` or `run_agent_query()`. When any check fails, the sandbox MUST use the sandbox failure path (`run-api.md` rule 23): write a termination log with per-check status strings and exit non-zero.
+1. **Fail-fast before LLM.** `batch.main()` MUST resolve the model family once, reuse it for model routing, and call `run_readiness_checks(model_family)` before `create_provider()` or `run_agent_query()`. Routing MUST NOT construct model clients or perform readiness network I/O. When any check fails, the sandbox MUST use the sandbox failure path (`run-api.md` rule 23): write a termination log with per-check status strings and exit non-zero.
 
-2. **R1 — Credential env.** `check_provider_env(expected_envs, credential_file_envs)` — required env vars from `ResolvedSDK` MUST be set and non-empty. For env vars listed in `credential_file_envs` (Vertex: `GOOGLE_APPLICATION_CREDENTIALS`), the path MUST exist, be readable, and non-empty.
+2. **R1 — Credential env.** `check_provider_env(expected_envs, credential_file_envs)` — required env vars from `ResolvedModelFamily` MUST be set and non-empty. `run_readiness_checks()` also accepts legacy `ResolvedSDK` configuration, but batch passes the resolved family rather than a route or harness name. For env vars listed in `credential_file_envs` (Vertex: `GOOGLE_APPLICATION_CREDENTIALS`), the path MUST exist, be readable, and non-empty.
 
 2a. **R1 — Azure credential alternatives** [OLS-3050]. For `azure`, readiness MUST pass when **either** an API key is present (`AZURE_OPENAI_API_KEY` env or `apitoken` file) **or** all three Entra ID service-principal files (`client_id`, `tenant_id`, `client_secret`) exist under `/var/run/secrets/llm-credentials/` and are non-empty — the two modes defined in `configuration.md` rule 9a. When neither complete set is present, readiness MUST fail with a descriptive error naming the missing credential set. Readiness validates **presence** only; token acquisition happens at adapter init / first request (see `provider-contract.md` rules 29, 38), and a definitive token-acquisition failure terminates the run there rather than at readiness.
 

@@ -7,10 +7,11 @@ import shlex
 import sys
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, ClassVar
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from typing import Any, ClassVar, Literal
+from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
 
 import pytest
 
@@ -19,6 +20,7 @@ from lightspeed_agentic.mcp import (  # type: ignore[import-untyped]
     AdmittedMCPProviderServer,
     ResolvedMCPHeader,
 )
+from lightspeed_agentic.providers.model_router import ModelParameters, ResolvedModelRoute
 from lightspeed_agentic.types import (  # type: ignore[import-untyped]
     ContentBlockStopEvent,
     ProviderQueryOptions,
@@ -28,6 +30,8 @@ from lightspeed_agentic.types import (  # type: ignore[import-untyped]
     ToolCallEvent,
     ToolResultEvent,
 )
+
+from .conftest import make_model_route
 
 _TEST_WORKSPACE = "/workspace"
 
@@ -100,13 +104,6 @@ def _patch_sys_modules(modules: dict[str, Any]) -> Iterator[None]:
         yield
 
 
-def _resolve_model_patch() -> Any:
-    return patch(
-        "lightspeed_agentic.providers.deepagents._resolve_model",
-        return_value=MagicMock(),
-    )
-
-
 async def _collect_events(
     provider: Any,
     options: ProviderQueryOptions,
@@ -123,6 +120,7 @@ def _deepagents_provider(
     mock_backend: MagicMock,
     *,
     mcp_client_cls: MagicMock | None = None,
+    model_route: ResolvedModelRoute | None = None,
 ) -> Iterator[Any]:
     import importlib
 
@@ -136,23 +134,19 @@ def _deepagents_provider(
         ),
     ):
         importlib.reload(mod)
-        with patch.object(mod, "_resolve_model", return_value=MagicMock()):
-            yield mod.DeepAgentsProvider()
+        yield mod.DeepAgentsProvider(
+            model_route or make_model_route(MagicMock(return_value=MagicMock()))
+        )
 
 
 def _real_deepagents_provider(
-    monkeypatch: pytest.MonkeyPatch,
+    _monkeypatch: pytest.MonkeyPatch,
     model: Any,
 ) -> Any:
     pytest.importorskip("deepagents")
     import lightspeed_agentic.providers.deepagents as provider_module
 
-    monkeypatch.setattr(
-        provider_module,
-        "_resolve_model",
-        lambda *_args, **_kwargs: model,
-    )
-    return provider_module.DeepAgentsProvider()
+    return provider_module.DeepAgentsProvider(make_model_route(Mock(return_value=model)))
 
 
 def _capturing_fake_chat_model(responses: list[Any]) -> tuple[Any, list[list[Any]]]:
@@ -537,128 +531,98 @@ async def test_close_model_clients_closes_only_initialized_clients() -> None:
     async_client.aclose.assert_awaited_once_with()
 
 
-class TestResolveModel:
-    """Test _resolve_model() returns correct ChatModel class per env."""
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reasoning", [None, {"thinking": {"type": "adaptive"}}])
+@pytest.mark.parametrize(
+    ("route_id", "telemetry_provider", "method"),
+    [
+        ("anthropic", "anthropic", "function_calling"),
+        ("anthropic", "anthropic", "json_schema"),
+        ("vertex/anthropic", "gcp.vertex_ai", "json_schema"),
+        ("bedrock/anthropic", "aws.bedrock", "function_calling"),
+    ],
+)
+async def test_resolved_route_controls_all_model_roles(
+    monkeypatch: pytest.MonkeyPatch,
+    route_id: str,
+    telemetry_provider: str,
+    method: Literal["function_calling", "json_schema"],
+    reasoning: dict[str, Any] | None,
+) -> None:
+    from lightspeed_agentic.providers import deepagents as mod
 
-    def test_direct_anthropic(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
-        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+    # Routing has already happened; conflicting stale env flags must be irrelevant.
+    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://different-endpoint.example.test")
+    message = SimpleNamespace(
+        type="ai",
+        content="agent answer",
+        tool_calls=[],
+        content_blocks=[],
+        usage_metadata={"input_tokens": 3, "output_tokens": 4},
+    )
 
-        mock_chat_anthropic = MagicMock()
-        mock_module = MagicMock()
-        mock_module.ChatAnthropic = mock_chat_anthropic
+    async def stream(*_args: Any, **_kwargs: Any) -> AsyncIterator[Any]:
+        yield message, {"langgraph_node": "agent"}
 
-        with _patch_sys_modules({"langchain_anthropic": mock_module}):
-            from lightspeed_agentic.providers.deepagents import _resolve_model
+    agent = MagicMock(astream=stream)
+    create_agent = MagicMock(return_value=agent)
+    main_model = MagicMock()
+    classifier_model = MagicMock(profile={"max_input_tokens": 100_000})
+    format_model = MagicMock()
+    clients = [Mock(spec=["close"]) for _ in range(3)]
+    for model, client in zip((main_model, classifier_model, format_model), clients, strict=True):
+        model.__dict__["_client"] = client
+    format_model.with_structured_output.return_value.ainvoke = AsyncMock(
+        return_value={
+            "parsed": {"status": "ok"},
+            "raw": SimpleNamespace(usage_metadata={"input_tokens": 5, "output_tokens": 6}),
+        }
+    )
+    create_model = Mock(side_effect=[main_model, classifier_model, format_model])
+    route = replace(
+        make_model_route(create_model, model="route-selected-model"),
+        route=route_id,
+        telemetry_provider=telemetry_provider,
+        structured_output_method=method,
+    )
+    schema = {
+        "type": "object",
+        "properties": {"status": {"type": "string"}},
+        "required": ["status"],
+    }
 
-            _resolve_model("claude-sonnet-4-6", reasoning_config=None)
+    with _patch_sys_modules(_mock_deepagents_modules(create_agent, MagicMock())):
+        provider = mod.DeepAgentsProvider(route)
+        create_model.assert_not_called()
+        events = await _collect_events(
+            provider,
+            _base_options(
+                model="must-not-override-the-route",
+                reasoning_config=reasoning,
+                output_schema=schema,
+            ),
+        )
 
-        mock_chat_anthropic.assert_called_once()
-        call_kwargs = mock_chat_anthropic.call_args[1]
-        assert call_kwargs["model"] == "claude-sonnet-4-6"
-        assert "thinking" not in call_kwargs
-
-    def test_direct_anthropic_with_thinking(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
-        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
-
-        mock_chat_anthropic = MagicMock()
-        mock_module = MagicMock()
-        mock_module.ChatAnthropic = mock_chat_anthropic
-
-        with _patch_sys_modules({"langchain_anthropic": mock_module}):
-            from lightspeed_agentic.providers.deepagents import _resolve_model
-
-            _resolve_model(
-                "claude-opus-4-8",
-                reasoning_config={"thinking": {"type": "adaptive"}},
-            )
-
-        call_kwargs = mock_chat_anthropic.call_args[1]
-        assert call_kwargs["thinking"] == {"type": "adaptive"}
-
-    def test_direct_anthropic_with_bearer_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
-        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
-        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "secret-vllm-token")
-
-        mock_chat_anthropic = MagicMock()
-        mock_module = MagicMock()
-        mock_module.ChatAnthropic = mock_chat_anthropic
-
-        with _patch_sys_modules({"langchain_anthropic": mock_module}):
-            from lightspeed_agentic.providers.deepagents import _resolve_model
-
-            _resolve_model("gpt-oss-20b", reasoning_config=None)
-
-        mock_chat_anthropic.assert_called_once()
-        call_kwargs = mock_chat_anthropic.call_args[1]
-        assert call_kwargs["model"] == "gpt-oss-20b"
-        assert call_kwargs["default_headers"] == {"Authorization": "Bearer secret-vllm-token"}
-
-    def test_direct_anthropic_no_bearer_token_when_unset(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
-        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
-        monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
-
-        mock_chat_anthropic = MagicMock()
-        mock_module = MagicMock()
-        mock_module.ChatAnthropic = mock_chat_anthropic
-
-        with _patch_sys_modules({"langchain_anthropic": mock_module}):
-            from lightspeed_agentic.providers.deepagents import _resolve_model
-
-            _resolve_model("claude-sonnet-4-6", reasoning_config=None)
-
-        call_kwargs = mock_chat_anthropic.call_args[1]
-        assert "default_headers" not in call_kwargs
-
-    def test_vertex_anthropic(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
-        monkeypatch.setenv("ANTHROPIC_VERTEX_PROJECT_ID", "my-project")
-        monkeypatch.setenv("CLOUD_ML_REGION", "us-east5")
-        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
-
-        mock_vertex = MagicMock()
-        mock_garden_module = MagicMock()
-        mock_garden_module.ChatAnthropicVertex = mock_vertex
-
-        with _patch_sys_modules(
-            {
-                "langchain_google_vertexai": MagicMock(),
-                "langchain_google_vertexai.model_garden": mock_garden_module,
-            },
-        ):
-            from lightspeed_agentic.providers.deepagents import _resolve_model
-
-            _resolve_model("claude-sonnet-4-6", reasoning_config=None)
-
-        mock_vertex.assert_called_once()
-        call_kwargs = mock_vertex.call_args[1]
-        assert call_kwargs["model_name"] == "claude-sonnet-4-6"
-        assert call_kwargs["project"] == "my-project"
-        assert call_kwargs["location"] == "us-east5"
-
-    def test_bedrock_anthropic(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
-        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
-        monkeypatch.setenv("AWS_REGION", "us-east-1")
-
-        mock_bedrock = MagicMock()
-        mock_aws_module = MagicMock()
-        mock_aws_module.ChatAnthropicBedrock = mock_bedrock
-
-        with _patch_sys_modules({"langchain_aws": mock_aws_module}):
-            from lightspeed_agentic.providers.deepagents import _resolve_model
-
-            _resolve_model("claude-sonnet-4-6", reasoning_config=None)
-
-        mock_bedrock.assert_called_once()
-        call_kwargs = mock_bedrock.call_args[1]
-        assert call_kwargs["model"] == "claude-sonnet-4-6"
-        assert call_kwargs["region_name"] == "us-east-1"
+    assert create_model.call_args_list == [
+        call(route.model_parameters, reasoning_config=reasoning),
+        call(route.model_parameters, reasoning_config=None),
+        call(route.model_parameters, reasoning_config=None),
+    ]
+    assert create_agent.call_args.kwargs["model"] is main_model
+    assert "response_format" not in create_agent.call_args.kwargs
+    format_model.with_structured_output.assert_called_once()
+    assert format_model.with_structured_output.call_args.kwargs == {
+        "method": method,
+        "include_raw": True,
+    }
+    result = next(event for event in events if isinstance(event, ResultEvent))
+    assert result.text == '{"status": "ok"}'
+    assert result.input_tokens == 8
+    assert result.output_tokens == 10
+    for client in clients:
+        client.close.assert_called_once_with()
 
 
 class TestJsonSchemaToPydantic:
@@ -774,13 +738,14 @@ async def test_shaping_prompt_requests_native_json_types_once(parsed: Any) -> No
     )
     model = MagicMock()
     model.with_structured_output.return_value = bound
-    with (
-        patch.object(mod, "_resolve_model", return_value=model),
-        patch.object(mod, "_close_model_clients", new_callable=AsyncMock),
-    ):
-        result, _, _ = await mod._shape_structured_output(
-            "claude-sonnet-5", schema_model, "sys", "ask", "agent report", Mock()
-        )
+    result, _, _ = await mod._shape_structured_output(
+        make_model_route(Mock(return_value=model), model="claude-sonnet-5"),
+        schema_model,
+        "sys",
+        "ask",
+        "agent report",
+        Mock(),
+    )
 
     assert result == parsed
     bound.ainvoke.assert_awaited_once()
@@ -1295,11 +1260,12 @@ class TestEventMapping:
         mock_format_model.with_structured_output = MagicMock(return_value=mock_structured_runnable)
         mock_agent_model = MagicMock()
 
-        def resolve_model_side_effect(
-            _model: str, reasoning_config: dict[str, Any] | None = None
+        def create_model(
+            parameters: ModelParameters, reasoning_config: dict[str, Any] | None = None
         ) -> MagicMock:
             if reasoning_config and reasoning_config.get("thinking"):
                 return mock_agent_model
+            assert parameters.model == "claude-sonnet-4-6"
             return mock_format_model
 
         output_schema = {
@@ -1314,12 +1280,11 @@ class TestEventMapping:
             import lightspeed_agentic.providers.deepagents as mod
 
             importlib.reload(mod)
-            with patch.object(mod, "_resolve_model", side_effect=resolve_model_side_effect):
-                provider = mod.DeepAgentsProvider()
-                events = await _collect_events(
-                    provider,
-                    _base_options(output_schema=output_schema),
-                )
+            provider = mod.DeepAgentsProvider(make_model_route(create_model))
+            events = await _collect_events(
+                provider,
+                _base_options(output_schema=output_schema),
+            )
 
         assert "response_format" not in mock_create.call_args[1]
         assert mock_format_model.with_structured_output.call_count == 2
@@ -1363,11 +1328,12 @@ class TestEventMapping:
         mock_format_model.with_structured_output = MagicMock(return_value=mock_structured_runnable)
         mock_agent_model = MagicMock()
 
-        def resolve_model_side_effect(
-            _model: str, reasoning_config: dict[str, Any] | None = None
+        def create_model(
+            parameters: ModelParameters, reasoning_config: dict[str, Any] | None = None
         ) -> MagicMock:
             if reasoning_config and reasoning_config.get("thinking"):
                 return mock_agent_model
+            assert parameters.model == "claude-sonnet-4-6"
             return mock_format_model
 
         output_schema = {
@@ -1382,15 +1348,14 @@ class TestEventMapping:
             import lightspeed_agentic.providers.deepagents as mod
 
             importlib.reload(mod)
-            with patch.object(mod, "_resolve_model", side_effect=resolve_model_side_effect):
-                provider = mod.DeepAgentsProvider()
-                events = await _collect_events(
-                    provider,
-                    _base_options(
-                        output_schema=output_schema,
-                        reasoning_config={"thinking": {"type": "enabled", "budget_tokens": 1024}},
-                    ),
-                )
+            provider = mod.DeepAgentsProvider(make_model_route(create_model))
+            events = await _collect_events(
+                provider,
+                _base_options(
+                    output_schema=output_schema,
+                    reasoning_config={"thinking": {"type": "enabled", "budget_tokens": 1024}},
+                ),
+            )
 
         assert "response_format" not in mock_create.call_args[1]
         assert mock_format_model.with_structured_output.call_count == 2
@@ -1403,61 +1368,6 @@ class TestEventMapping:
         assert result_events[0].text == '{"status": "ok"}'
         assert result_events[0].input_tokens == 8
         assert result_events[0].output_tokens == 10
-
-    def test_structured_output_method_function_calling_for_anthropic(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
-        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
-        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
-        from lightspeed_agentic.providers.deepagents import _structured_output_method
-
-        assert _structured_output_method() == "function_calling"
-
-    @pytest.mark.parametrize(
-        ("url", "expected"),
-        [
-            ("https://vllm.example.com/v1", "json_schema"),
-            ("https://api.anthropic.com", "function_calling"),
-            ("https://api.anthropic.com/v1", "function_calling"),
-        ],
-    )
-    def test_structured_output_method_by_endpoint(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        url: str,
-        expected: str,
-    ) -> None:
-        monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
-        monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
-        monkeypatch.setenv("ANTHROPIC_BASE_URL", url)
-        from lightspeed_agentic.providers.deepagents import _structured_output_method
-
-        assert _structured_output_method() == expected
-
-    def test_structured_output_method_function_calling_on_bedrock(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
-        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
-        from lightspeed_agentic.providers.deepagents import _structured_output_method
-
-        assert _structured_output_method() == "function_calling"
-
-    def test_conflicting_vertex_and_bedrock_flags_raise(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
-        monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
-        from lightspeed_agentic.providers.deepagents import (
-            _anthropic_backend,
-            _structured_output_method,
-        )
-
-        with pytest.raises(ValueError, match="cannot both be set"):
-            _anthropic_backend()
-        with pytest.raises(ValueError, match="cannot both be set"):
-            _structured_output_method()
 
     @pytest.mark.asyncio
     async def test_shape_pass_uses_function_calling_on_bedrock(
@@ -1492,11 +1402,12 @@ class TestEventMapping:
         mock_format_model.with_structured_output = MagicMock(return_value=mock_structured_runnable)
         mock_agent_model = MagicMock()
 
-        def resolve_model_side_effect(
-            _model: str, reasoning_config: dict[str, Any] | None = None
+        def create_model(
+            parameters: ModelParameters, reasoning_config: dict[str, Any] | None = None
         ) -> MagicMock:
             if reasoning_config and reasoning_config.get("thinking"):
                 return mock_agent_model
+            assert parameters.model == "claude-sonnet-4-6"
             return mock_format_model
 
         output_schema = {
@@ -1511,9 +1422,13 @@ class TestEventMapping:
             import lightspeed_agentic.providers.deepagents as mod
 
             importlib.reload(mod)
-            with patch.object(mod, "_resolve_model", side_effect=resolve_model_side_effect):
-                provider = mod.DeepAgentsProvider()
-                await _collect_events(provider, _base_options(output_schema=output_schema))
+            route = replace(
+                make_model_route(create_model),
+                route="bedrock/anthropic",
+                telemetry_provider="aws.bedrock",
+            )
+            provider = mod.DeepAgentsProvider(route)
+            await _collect_events(provider, _base_options(output_schema=output_schema))
 
         call_kwargs = mock_format_model.with_structured_output.call_args[1]
         assert call_kwargs["method"] == "function_calling"
@@ -1667,13 +1582,10 @@ async def test_provider_installs_boundary_when_inspection_is_disabled() -> None:
     mock_create = MagicMock(return_value=mock_agent)
     system_prompt = "Operator instructions.\n\n## Tool safety\nKeep this safety rule."
 
-    with (
-        _deepagents_provider(mock_create, MagicMock()) as provider,
-        patch(
-            "lightspeed_agentic.providers.deepagents._resolve_model",
-            return_value=MagicMock(),
-        ) as resolve_model,
-    ):
+    create_model = MagicMock(return_value=MagicMock())
+    with _deepagents_provider(
+        mock_create, MagicMock(), model_route=make_model_route(create_model)
+    ) as provider:
         await _collect_events(
             provider,
             _base_options(
@@ -1703,7 +1615,7 @@ async def test_provider_installs_boundary_when_inspection_is_disabled() -> None:
     assert expected_instruction in subagent["system_prompt"]
     assert subagent["system_prompt"].startswith("Default subagent prompt")
     assert subagent["middleware"][1].name == "SummarizationMiddleware"
-    resolve_model.assert_called_once()
+    create_model.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -1775,13 +1687,13 @@ async def test_provider_setup_succeeds_when_classifier_model_profile_is_none() -
     mock_agent.astream = mock_astream
     mock_create = MagicMock(return_value=mock_agent)
 
-    with (
-        _deepagents_provider(mock_create, MagicMock()) as provider,
-        patch(
-            "lightspeed_agentic.providers.deepagents._resolve_model",
-            side_effect=[MagicMock(), SimpleNamespace(profile=None)],
+    with _deepagents_provider(
+        mock_create,
+        MagicMock(),
+        model_route=make_model_route(
+            Mock(side_effect=[MagicMock(), SimpleNamespace(profile=None)])
         ),
-    ):
+    ) as provider:
         events = await _collect_events(
             provider,
             _base_options(tool_output_inspection_enabled=True),
@@ -1896,16 +1808,14 @@ async def test_provider_emits_complete_result_only_after_model_boundary_passes(
     class ClassifierModel:
         profile: ClassVar[dict[str, int]] = {"max_input_tokens": 100_000}
 
-        async def ainvoke(self, messages: Any, **kwargs: Any) -> Any:
-            return await classifier(messages, **kwargs)
+        async def ainvoke(self, input: Any, **kwargs: Any) -> Any:  # noqa: A002
+            return await classifier(input, **kwargs)
 
-    with (
-        _deepagents_provider(mock_create, MagicMock()) as provider,
-        patch(
-            "lightspeed_agentic.providers.deepagents._resolve_model",
-            side_effect=[MagicMock(), ClassifierModel()],
-        ),
-    ):
+    with _deepagents_provider(
+        mock_create,
+        MagicMock(),
+        model_route=make_model_route(Mock(side_effect=[MagicMock(), ClassifierModel()])),
+    ) as provider:
         events = await _collect_events(
             provider,
             _base_options(tool_output_inspection_enabled=True),
@@ -1975,16 +1885,14 @@ async def test_provider_releases_subagent_result_after_child_boundary_passes() -
     class ClassifierModel:
         profile: ClassVar[dict[str, int]] = {"max_input_tokens": 100_000}
 
-        async def ainvoke(self, messages: Any, **kwargs: Any) -> Any:
-            return await classifier(messages, **kwargs)
+        async def ainvoke(self, input: Any, **kwargs: Any) -> Any:  # noqa: A002
+            return await classifier(input, **kwargs)
 
-    with (
-        _deepagents_provider(mock_create, MagicMock()) as provider,
-        patch(
-            "lightspeed_agentic.providers.deepagents._resolve_model",
-            side_effect=[MagicMock(), ClassifierModel()],
-        ),
-    ):
+    with _deepagents_provider(
+        mock_create,
+        MagicMock(),
+        model_route=make_model_route(Mock(side_effect=[MagicMock(), ClassifierModel()])),
+    ) as provider:
         events = await _collect_events(
             provider,
             _base_options(tool_output_inspection_enabled=True),
@@ -2298,7 +2206,9 @@ async def test_inspection_gate_exports_only_admitted_results(
         return SimpleNamespace(passed=True)
 
     monkeypatch.setattr(deepagents, "create_deep_agent", create_agent_with_tools)
-    monkeypatch.setattr(mod, "_resolve_model", Mock(side_effect=[model, ClassifierModel()]))
+    model_route = make_model_route(
+        Mock(side_effect=[model, ClassifierModel()]), model="claude-inspection-test"
+    )
     with (
         patch(
             "lightspeed_agentic.inspection.client.LangChainClassifierClient",
@@ -2310,7 +2220,7 @@ async def test_inspection_gate_exports_only_admitted_results(
         ),
     ):
         query = run_agent_query(
-            mod.DeepAgentsProvider(),
+            mod.DeepAgentsProvider(model_route),
             prompt="Inspect the two local lookup results.",
             system_prompt="Follow instructions.",
             output_schema=None,
