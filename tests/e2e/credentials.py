@@ -340,6 +340,110 @@ def _check_gemini_vertex_adk() -> ProviderCredentialStatus:
     )
 
 
+def _read_text_file_stripped(path: str) -> str:
+    with open(path, encoding="utf-8") as handle:
+        return handle.read().strip()
+
+
+def _check_azure_openai_agents() -> ProviderCredentialStatus:
+    name = PROVIDER_AZURE_OPENAI_AGENTS
+    required_env = (
+        "AZURE_OPENAI_ENDPOINT",
+        "AZURE_OPENAI_API_VERSION",
+        "AZURE_OPENAI_MODEL",
+    )
+    missing_env = [key for key in required_env if not os.environ.get(key, "").strip()]
+    if missing_env:
+        return ProviderCredentialStatus(
+            name,
+            False,
+            "none",
+            "Azure OpenAI configuration missing: " + ", ".join(missing_env),
+        )
+
+    env_vars: dict[str, str] = {}
+    api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
+    if api_key:
+        env_vars.update(
+            {
+                "AZURE_OPENAI_API_KEY": api_key,
+                "AZURE_OPENAI_ENDPOINT": os.environ["AZURE_OPENAI_ENDPOINT"].strip(),
+                "AZURE_OPENAI_API_VERSION": os.environ["AZURE_OPENAI_API_VERSION"].strip(),
+                "AZURE_OPENAI_MODEL": os.environ["AZURE_OPENAI_MODEL"].strip(),
+            }
+        )
+        return ProviderCredentialStatus(
+            name,
+            True,
+            "env",
+            "AZURE_OPENAI_API_KEY set",
+            env_vars=env_vars,
+        )
+
+    cred_dir = os.environ.get("CRED_DIR", "").strip() or KONFLUX_CREDENTIAL_DIR
+    token_path = os.path.join(cred_dir, "token")
+    ok, _detail = _validate_plaintext_credential_file(token_path, "azureopenai-apitoken")
+    if ok:
+        env_vars.update(
+            {
+                "AZURE_OPENAI_API_KEY": _read_text_file_stripped(token_path),
+                "AZURE_OPENAI_ENDPOINT": os.environ["AZURE_OPENAI_ENDPOINT"].strip(),
+                "AZURE_OPENAI_API_VERSION": os.environ["AZURE_OPENAI_API_VERSION"].strip(),
+                "AZURE_OPENAI_MODEL": os.environ["AZURE_OPENAI_MODEL"].strip(),
+            }
+        )
+        return ProviderCredentialStatus(
+            name,
+            True,
+            "env",
+            f"azureopenai-apitoken file ({token_path})",
+            env_vars=env_vars,
+        )
+
+    missing_files: list[str] = []
+    file_env = {
+        "client_id": "AZURE_CLIENT_ID",
+        "tenant_id": "AZURE_TENANT_ID",
+        "client_secret": "AZURE_CLIENT_SECRET",
+    }
+    source = "env vars"
+    for file_name, env_key in file_env.items():
+        env_value = os.environ.get(env_key, "").strip()
+        if env_value:
+            env_vars[env_key] = env_value
+            continue
+        path = os.path.join(cred_dir, file_name)
+        ok, _detail = _validate_plaintext_credential_file(path, file_name)
+        if not ok:
+            missing_files.append(file_name)
+            continue
+        env_vars[env_key] = _read_text_file_stripped(path)
+        source = f"service principal files ({cred_dir})"
+
+    if missing_files:
+        return ProviderCredentialStatus(
+            name,
+            False,
+            "none",
+            f"Azure Entra ID credentials missing under {cred_dir}: " + ", ".join(missing_files),
+        )
+
+    env_vars.update(
+        {
+            "AZURE_OPENAI_ENDPOINT": os.environ["AZURE_OPENAI_ENDPOINT"].strip(),
+            "AZURE_OPENAI_API_VERSION": os.environ["AZURE_OPENAI_API_VERSION"].strip(),
+            "AZURE_OPENAI_MODEL": os.environ["AZURE_OPENAI_MODEL"].strip(),
+        }
+    )
+    return ProviderCredentialStatus(
+        name,
+        True,
+        "env",
+        f"Azure Entra ID {source}",
+        env_vars=env_vars,
+    )
+
+
 def _check_openai_agents() -> ProviderCredentialStatus:
     name = PROVIDER_OPENAI_AGENTS
     if os.environ.get("OPENAI_API_KEY"):
@@ -401,52 +505,6 @@ def _check_anthropic_deepagents() -> ProviderCredentialStatus:
         False,
         "none",
         "ANTHROPIC_API_KEY not set (or mount anthropic-apitoken secret with key apitoken)",
-    )
-
-
-def _check_azure_openai_agents() -> ProviderCredentialStatus:
-    name = PROVIDER_AZURE_OPENAI_AGENTS
-    if os.environ.get("AZURE_OPENAI_API_KEY"):
-        return ProviderCredentialStatus(name, True, "env", "AZURE_OPENAI_API_KEY set")
-    client_id_env = os.environ.get("AZURE_CLIENT_ID", "").strip()
-    client_secret_env = os.environ.get("AZURE_CLIENT_SECRET", "").strip()
-    tenant_id_env = os.environ.get("AZURE_TENANT_ID", "").strip()
-    if client_id_env and client_secret_env and tenant_id_env:
-        return ProviderCredentialStatus(
-            name, True, "env", "Entra ID credentials set (AZURE_CLIENT_ID env)"
-        )
-    token_path = os.path.join(KONFLUX_CREDENTIAL_DIR, "token")
-    if os.path.isfile(token_path):
-        ok, detail = _validate_plaintext_credential_file(token_path, "azureopenai-apitoken")
-        if not ok:
-            return ProviderCredentialStatus(name, False, "none", detail)
-        return ProviderCredentialStatus(
-            name, True, "env", f"azureopenai-apitoken file ({token_path})"
-        )
-    client_id_path = os.path.join(KONFLUX_CREDENTIAL_DIR, "client_id")
-    client_secret_path = os.path.join(KONFLUX_CREDENTIAL_DIR, "client_secret")
-    tenant_id_path = os.path.join(KONFLUX_CREDENTIAL_DIR, "tenant_id")
-    if (
-        os.path.isfile(client_id_path)
-        and os.path.isfile(client_secret_path)
-        and os.path.isfile(tenant_id_path)
-    ):
-        for path, label in (
-            (client_id_path, "client_id"),
-            (client_secret_path, "client_secret"),
-            (tenant_id_path, "tenant_id"),
-        ):
-            ok, detail = _validate_plaintext_credential_file(path, f"azureopenai-entra-id {label}")
-            if not ok:
-                return ProviderCredentialStatus(name, False, "none", detail)
-        return ProviderCredentialStatus(
-            name, True, "env", f"Entra ID credential files ({KONFLUX_CREDENTIAL_DIR})"
-        )
-    return ProviderCredentialStatus(
-        name,
-        False,
-        "none",
-        "AZURE_OPENAI_API_KEY not set (or mount azureopenai-apitoken/azureopenai-entra-id secret)",
     )
 
 

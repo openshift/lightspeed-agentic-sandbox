@@ -379,11 +379,31 @@ class TestLoadBatchE2EConfig:
         assert config.extra_env == {"LIGHTSPEED_PROVIDER_REGION": "us-east-1"}
         assert config.llm_secret == resolve_llm_secret("anthropic-bedrock-deepagents")
 
+    def test_azure_openai_maps_to_azure_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("E2E_PROVIDER", "azure-openai-agents")
+        monkeypatch.setenv("AZURE_OPENAI_MODEL", "gpt-4o-prod")
+        monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+        monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
+
+        config = load_batch_e2e_config()
+
+        assert config.lightspeed_provider == "azure"
+        assert config.model == "gpt-4o-prod"
+        assert config.extra_env == {
+            "LIGHTSPEED_PROVIDER_URL": "https://example.openai.azure.com",
+            "LIGHTSPEED_PROVIDER_API_VERSION": "2024-08-01-preview",
+        }
+        assert config.llm_secret == resolve_llm_secret("azure-openai-agents")
+
 
 class TestResolveHelpers:
     def test_resolve_model_env_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_MODEL", "custom-model")
         assert resolve_model("openai-agents") == "custom-model"
+
+    def test_resolve_azure_model_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AZURE_OPENAI_MODEL", "azure-deployment")
+        assert resolve_model("azure-openai-agents") == "azure-deployment"
 
     def test_resolve_llm_secret_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("LLM_SECRET", "my-secret")

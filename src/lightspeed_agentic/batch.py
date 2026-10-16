@@ -8,6 +8,8 @@ exits 0 on sandbox success (including agent failure).
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import inspect
 import json
 import logging
 import os
@@ -290,10 +292,26 @@ async def _run_with_provider_cleanup(provider: AgentProvider, **kwargs: Any) -> 
     try:
         return await run_agent_query(provider, **kwargs)
     finally:
-        try:
-            await provider.aclose()
-        except Exception:
-            logger.warning("provider cleanup failed", exc_info=True)
+        cleanup = provider.aclose()
+        if inspect.isawaitable(cleanup):
+            cleanup_task = asyncio.create_task(cleanup)
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError as exc:
+                current_task = asyncio.current_task()
+                parent_is_cancelling = current_task is not None and current_task.cancelling() > 0
+                cleanup_cancel_scope_error = "Cancelled via cancel scope" in str(exc)
+                if not cleanup_task.done():
+                    cleanup_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await cleanup_task
+                if parent_is_cancelling and not cleanup_cancel_scope_error:
+                    raise
+                if parent_is_cancelling and cleanup_cancel_scope_error and current_task is not None:
+                    current_task.uncancel()
+                logger.warning("provider cleanup cancelled", exc_info=True)
+            except Exception:
+                logger.warning("provider cleanup failed", exc_info=True)
 
 
 def _build_system_prompt(

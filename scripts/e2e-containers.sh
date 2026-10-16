@@ -12,10 +12,11 @@
 #
 # Model resolution (priority order):
 #   1. OPENAI_MODEL env var (for openai-agents)
-#   2. GEMINI_MODEL env var (for gemini-vertex-adk)
-#   3. ANTHROPIC_MODEL env var (for anthropic-vertex-deepagents)
-#   4. ANTHROPIC_BEDROCK_MODEL env var (for anthropic-bedrock-deepagents)
-#   5. Defaults from config.env (see _load_config_env_defaults)
+#   2. AZURE_OPENAI_MODEL env var (for azure-openai-agents)
+#   3. GEMINI_MODEL env var (for gemini-vertex-adk)
+#   4. ANTHROPIC_MODEL env var (for anthropic-vertex-deepagents)
+#   5. ANTHROPIC_BEDROCK_MODEL env var (for anthropic-bedrock-deepagents)
+#   6. Defaults from config.env (see _load_config_env_defaults)
 #
 # Custom LLM endpoint support (e.g., vLLM):
 #   export OPENAI_API_KEY="token"
@@ -23,6 +24,13 @@
 #   export OPENAI_BASE_URL="https://vllm.example.com/v1"
 #   bash scripts/e2e-containers.sh openai-agents -k mcp
 #   See docs/e2e-custom-llm-endpoints.md for details.
+#
+# Azure OpenAI Entra ID:
+#   export AZURE_OPENAI_ENDPOINT="https://<resource>.openai.azure.com"
+#   export AZURE_OPENAI_API_VERSION="2024-08-01-preview"
+#   export AZURE_OPENAI_MODEL="<deployment-name>"
+#   export AZURE_CLIENT_ID=... AZURE_TENANT_ID=... AZURE_CLIENT_SECRET=...
+#   bash scripts/e2e-containers.sh azure-openai-agents
 #
 # Prerequisites:
 #   - oc + KUBECONFIG with permissions in E2E_NAMESPACE (default openshift-lightspeed)
@@ -46,6 +54,12 @@ cd "${ROOT}"
 UV="${UV:-uv}"
 CONFIG_ENV="${ROOT}/tests/e2e/config.env"
 E2E_NAMESPACE="${E2E_NAMESPACE:-openshift-lightspeed}"
+E2E_EXPLICIT_REASONING_CONFIG_SET=0
+E2E_EXPLICIT_REASONING_CONFIG_VALUE=""
+if [[ -n "${LIGHTSPEED_REASONING_CONFIG+x}" ]]; then
+    E2E_EXPLICIT_REASONING_CONFIG_SET=1
+    E2E_EXPLICIT_REASONING_CONFIG_VALUE="${LIGHTSPEED_REASONING_CONFIG}"
+fi
 
 _e2e_trim() {
     local s="${1:-}"
@@ -82,17 +96,10 @@ export E2E_NAMESPACE
 PROVIDERS=(anthropic-vertex-deepagents anthropic-bedrock-deepagents gemini-vertex-adk openai-agents anthropic-deepagents azure-openai-agents)
 
 source_e2e_config() {
-    local anthropic bedrock gemini openai azure azure_endpoint azure_api_version
-    read -r anthropic bedrock gemini openai azure azure_endpoint azure_api_version < <(
-        env -i bash -c "set -a; source \"${CONFIG_ENV}\"; set +a; printf '%s %s %s %s %s %s %s\n' \"\$ANTHROPIC_MODEL\" \"\$ANTHROPIC_BEDROCK_MODEL\" \"\$GEMINI_MODEL\" \"\$OPENAI_MODEL\" \"\$AZURE_OPENAI_MODEL\" \"\$AZURE_OPENAI_ENDPOINT\" \"\$AZURE_OPENAI_API_VERSION\""
-    )
-    export ANTHROPIC_MODEL="${anthropic}"
-    export ANTHROPIC_BEDROCK_MODEL="${bedrock}"
-    export GEMINI_MODEL="${gemini}"
-    export OPENAI_MODEL="${openai}"
-    export AZURE_OPENAI_MODEL="${azure}"
-    export AZURE_OPENAI_ENDPOINT="${azure_endpoint}"
-    export AZURE_OPENAI_API_VERSION="${azure_api_version}"
+    set -a
+    # shellcheck source=/dev/null
+    source "${CONFIG_ENV}"
+    set +a
 }
 
 apply_model_override() {
@@ -178,6 +185,48 @@ _install_vertex_cluster_creds() {
         --dry-run=client -o yaml | oc apply -f -
 }
 
+_install_azure_cluster_creds() {
+    local secret_name="${LLM_SECRET:-llm-creds-azure}"
+    local cred_dir="${CRED_DIR:-/var/run/credentials}"
+    local client_id="${AZURE_CLIENT_ID:-}"
+    local tenant_id="${AZURE_TENANT_ID:-}"
+    local client_secret="${AZURE_CLIENT_SECRET:-}"
+
+    if [ -z "${client_id}" ] && [ -f "${cred_dir}/client_id" ]; then
+        client_id=$(tr -d '[:space:]' < "${cred_dir}/client_id")
+    fi
+    if [ -z "${tenant_id}" ] && [ -f "${cred_dir}/tenant_id" ]; then
+        tenant_id=$(tr -d '[:space:]' < "${cred_dir}/tenant_id")
+    fi
+    if [ -z "${client_secret}" ] && [ -f "${cred_dir}/client_secret" ]; then
+        client_secret=$(tr -d '[:space:]' < "${cred_dir}/client_secret")
+    fi
+    if [ -z "${client_id}" ] || [ -z "${tenant_id}" ] || [ -z "${client_secret}" ]; then
+        echo "e2e: Azure Entra ID requires AZURE_CLIENT_ID/AZURE_TENANT_ID/AZURE_CLIENT_SECRET or files under ${cred_dir}" >&2
+        exit 1
+    fi
+
+    local tmp_dir tmp_client_id tmp_tenant_id tmp_client_secret
+    tmp_dir=$(mktemp -d)
+    trap 'rm -rf "${tmp_dir:-}"' RETURN EXIT
+    tmp_client_id="${tmp_dir}/client_id"
+    tmp_tenant_id="${tmp_dir}/tenant_id"
+    tmp_client_secret="${tmp_dir}/client_secret"
+    chmod 700 "${tmp_dir}"
+    printf '%s' "${client_id}" > "${tmp_client_id}"
+    printf '%s' "${tenant_id}" > "${tmp_tenant_id}"
+    printf '%s' "${client_secret}" > "${tmp_client_secret}"
+    chmod 600 "${tmp_client_id}" "${tmp_tenant_id}" "${tmp_client_secret}"
+    oc create secret generic "${secret_name}" \
+        --namespace="${E2E_NAMESPACE}" \
+        --from-file=client_id="${tmp_client_id}" \
+        --from-file=tenant_id="${tmp_tenant_id}" \
+        --from-file=client_secret="${tmp_client_secret}" \
+        --dry-run=client -o yaml | oc apply -f -
+    rm -rf "${tmp_dir}"
+    trap - RETURN EXIT
+}
+
 _install_provider_cluster_creds() {
     local provider="$1"
     case "${provider}" in
@@ -206,7 +255,8 @@ _install_provider_cluster_creds() {
         bash "${ROOT}/scripts/e2e-install-anthropic-direct-creds.sh"
         ;;
     azure-openai-agents)
-        bash "${ROOT}/scripts/e2e-install-azure-creds.sh"
+        SECRET_NAME="${LLM_SECRET:-llm-creds-azure-openai}" \
+            bash "${ROOT}/scripts/e2e-install-azure-creds.sh"
         ;;
     *)
         echo "e2e: unknown provider: ${provider}" >&2
@@ -220,10 +270,17 @@ _configure_batch_job_env() {
     local mcp_url="http://lightspeed-mock-mcp.${E2E_NAMESPACE}.svc:19090/mcp"
     export LIGHTSPEED_MCP_SERVERS="[{\"name\":\"mock-ocp-mcp\",\"url\":\"${mcp_url}\"}]"
 
-    if [ -z "${LIGHTSPEED_REASONING_CONFIG:-}" ]; then
+    if [[ "${E2E_EXPLICIT_REASONING_CONFIG_SET}" == "1" ]]; then
+        export LIGHTSPEED_REASONING_CONFIG="${E2E_EXPLICIT_REASONING_CONFIG_VALUE}"
+    else
+        unset LIGHTSPEED_REASONING_CONFIG
         case "${provider}" in
         openai-agents)
             export LIGHTSPEED_REASONING_CONFIG='{"effort":"low"}'
+            ;;
+        azure-openai-agents)
+            # Keep Azure e2e focused on Entra ID credential resolution; deployments
+            # vary in reasoning support, so do not force a reasoning config.
             ;;
         gemini-vertex-adk)
             export LIGHTSPEED_REASONING_CONFIG='{"thinking_budget":1024}'
@@ -236,9 +293,6 @@ _configure_batch_job_env() {
             ;;
         anthropic-deepagents)
             export LIGHTSPEED_REASONING_CONFIG='{"thinking":{"type":"enabled","budget_tokens":1024}}'
-            ;;
-        azure-openai-agents)
-            export LIGHTSPEED_REASONING_CONFIG='{"effort":"low"}'
             ;;
         esac
     fi
@@ -303,7 +357,7 @@ run_one() {
 
     sync_provider_model "${provider}"
     _configure_batch_job_env "${provider}"
-    echo "e2e: model LIGHTSPEED_MODEL=${LIGHTSPEED_MODEL:-} OPENAI_MODEL=${OPENAI_MODEL:-} ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-} GEMINI_MODEL=${GEMINI_MODEL:-}"
+    echo "e2e: model LIGHTSPEED_MODEL=${LIGHTSPEED_MODEL:-} OPENAI_MODEL=${OPENAI_MODEL:-} AZURE_OPENAI_MODEL=${AZURE_OPENAI_MODEL:-} ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-} GEMINI_MODEL=${GEMINI_MODEL:-}"
     echo "e2e: batch job env LIGHTSPEED_MCP_SERVERS=${LIGHTSPEED_MCP_SERVERS:-}"
     echo "e2e: batch job env LIGHTSPEED_REASONING_CONFIG=${LIGHTSPEED_REASONING_CONFIG:-}"
     echo "e2e: batch job env OPENAI_BASE_URL=${OPENAI_BASE_URL:-}"
@@ -337,6 +391,9 @@ model_override=""
 case "${provider}" in
 openai-agents)
     model_override="${OPENAI_MODEL:-}"
+    ;;
+azure-openai-agents)
+    model_override="${AZURE_OPENAI_MODEL:-}"
     ;;
 gemini-vertex-adk)
     model_override="${GEMINI_MODEL:-}"

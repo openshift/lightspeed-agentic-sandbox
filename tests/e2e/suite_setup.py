@@ -46,29 +46,29 @@ E2E_COMPONENT_VALUE = "sandbox-e2e"
 
 _E2E_PROVIDER_TO_LIGHTSPEED: dict[str, str] = {
     PROVIDER_OPENAI_AGENTS: "openai",
+    PROVIDER_AZURE_OPENAI_AGENTS: "azure",
     PROVIDER_GEMINI_VERTEX_ADK: "vertex",
     PROVIDER_ANTHROPIC_VERTEX_DEEPAGENTS: "vertex",
     PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS: "bedrock",
     PROVIDER_ANTHROPIC_DEEPAGENTS: "anthropic",
-    PROVIDER_AZURE_OPENAI_AGENTS: "azure",
 }
 
 _DEFAULT_LLM_SECRETS: dict[str, str] = {
     PROVIDER_OPENAI_AGENTS: "llm-creds-openai",
+    PROVIDER_AZURE_OPENAI_AGENTS: "llm-creds-azure-openai",
     PROVIDER_GEMINI_VERTEX_ADK: "llm-creds-vertex",
     PROVIDER_ANTHROPIC_VERTEX_DEEPAGENTS: "llm-creds-anthropic",
     PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS: "llm-creds-bedrock",
     PROVIDER_ANTHROPIC_DEEPAGENTS: "llm-creds-anthropic-direct",
-    PROVIDER_AZURE_OPENAI_AGENTS: "llm-creds-azure-openai",
 }
 
 _MODEL_ENV_BY_PROVIDER: dict[str, str] = {
     PROVIDER_OPENAI_AGENTS: "OPENAI_MODEL",
+    PROVIDER_AZURE_OPENAI_AGENTS: "AZURE_OPENAI_MODEL",
     PROVIDER_GEMINI_VERTEX_ADK: "GEMINI_MODEL",
     PROVIDER_ANTHROPIC_VERTEX_DEEPAGENTS: "ANTHROPIC_MODEL",
     PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS: "ANTHROPIC_BEDROCK_MODEL",
     PROVIDER_ANTHROPIC_DEEPAGENTS: "ANTHROPIC_MODEL",
-    PROVIDER_AZURE_OPENAI_AGENTS: "AZURE_OPENAI_MODEL",
 }
 
 
@@ -235,9 +235,9 @@ def _provider_extra_env(provider_name: str) -> dict[str, str]:
         # fall back to AZURE_OPENAI_ENDPOINT so local runs using the Azure-specific
         # variable name still work without setting LIGHTSPEED_PROVIDER_URL explicitly.
         if not os.environ.get("LIGHTSPEED_PROVIDER_URL"):
-            url = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
-            if url:
-                extra["LIGHTSPEED_PROVIDER_URL"] = url
+            endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
+            if endpoint:
+                extra["LIGHTSPEED_PROVIDER_URL"] = endpoint
         api_version = (
             os.environ.get("LIGHTSPEED_PROVIDER_API_VERSION", "").strip()
             or os.environ.get("AZURE_OPENAI_API_VERSION", "").strip()

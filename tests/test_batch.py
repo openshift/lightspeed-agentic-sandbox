@@ -107,6 +107,112 @@ class TestProviderLifecycle:
 
         credential.close.assert_awaited_once_with()
 
+    @pytest.mark.asyncio
+    async def test_cleanup_cancellation_does_not_fail_successful_batch(self) -> None:
+        from lightspeed_agentic.batch import _run_with_provider_cleanup
+
+        provider = OpenAIProvider()
+        provider.aclose = AsyncMock(side_effect=asyncio.CancelledError("cleanup cancelled"))  # type: ignore[method-assign]
+
+        async def run_query(_provider: OpenAIProvider) -> AgentResult:
+            return AgentResult(output={"success": True})
+
+        with patch("lightspeed_agentic.batch.run_agent_query", side_effect=run_query):
+            result = await _run_with_provider_cleanup(provider)
+
+        assert result.output == {"success": True}
+        provider.aclose.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_shield_cancellation_does_not_fail_successful_batch(self) -> None:
+        from lightspeed_agentic.batch import _run_with_provider_cleanup
+
+        provider = OpenAIProvider()
+        cleanup_started = asyncio.Event()
+        allow_cleanup_exit = asyncio.Event()
+
+        async def aclose() -> None:
+            cleanup_started.set()
+            await allow_cleanup_exit.wait()
+
+        provider.aclose = AsyncMock(side_effect=aclose)  # type: ignore[method-assign]
+
+        async def run_query(_provider: OpenAIProvider) -> AgentResult:
+            return AgentResult(output={"success": True})
+
+        async def cancelled_shield(_task: asyncio.Task[None]) -> None:
+            await cleanup_started.wait()
+            raise asyncio.CancelledError("cleanup-internal cancellation")
+
+        with (
+            patch("lightspeed_agentic.batch.run_agent_query", side_effect=run_query),
+            patch("lightspeed_agentic.batch.asyncio.shield", side_effect=cancelled_shield),
+        ):
+            result = await _run_with_provider_cleanup(provider)
+
+        assert result.output == {"success": True}
+        provider.aclose.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_cancel_scope_error_does_not_fail_successful_batch(self) -> None:
+        from lightspeed_agentic.batch import _run_with_provider_cleanup
+
+        provider = OpenAIProvider()
+        cleanup_started = asyncio.Event()
+        allow_cleanup_exit = asyncio.Event()
+
+        async def aclose() -> None:
+            cleanup_started.set()
+            await allow_cleanup_exit.wait()
+
+        provider.aclose = AsyncMock(side_effect=aclose)  # type: ignore[method-assign]
+
+        async def run_query(_provider: OpenAIProvider) -> AgentResult:
+            return AgentResult(output={"success": True})
+
+        async def cancelled_shield(_task: asyncio.Task[None]) -> None:
+            await cleanup_started.wait()
+            current_task = asyncio.current_task()
+            assert current_task is not None
+            message = "Cancelled via cancel scope test by cleanup async generator"
+            current_task.cancel(message)
+            raise asyncio.CancelledError(message)
+
+        with (
+            patch("lightspeed_agentic.batch.run_agent_query", side_effect=run_query),
+            patch("lightspeed_agentic.batch.asyncio.shield", side_effect=cancelled_shield),
+        ):
+            result = await _run_with_provider_cleanup(provider)
+
+        assert result.output == {"success": True}
+        provider.aclose.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_task_cancellation_during_cleanup_is_propagated(self) -> None:
+        from lightspeed_agentic.batch import _run_with_provider_cleanup
+
+        provider = OpenAIProvider()
+        cleanup_started = asyncio.Event()
+        allow_cleanup_exit = asyncio.Event()
+
+        async def aclose() -> None:
+            cleanup_started.set()
+            await allow_cleanup_exit.wait()
+
+        provider.aclose = AsyncMock(side_effect=aclose)  # type: ignore[method-assign]
+
+        async def run_query(_provider: OpenAIProvider) -> AgentResult:
+            return AgentResult(output={"success": True})
+
+        with patch("lightspeed_agentic.batch.run_agent_query", side_effect=run_query):
+            task = asyncio.create_task(_run_with_provider_cleanup(provider))
+            await cleanup_started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        provider.aclose.assert_awaited_once_with()
+
 
 class TestBatchMain:
     @pytest.mark.parametrize(
