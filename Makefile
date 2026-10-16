@@ -16,7 +16,7 @@ endif
 endif
 
 .PHONY: install install-all lock test lint format mypy verify verify-hermetic-requirements e2e image clean help \
-       requirements bump-deps rpm-lockfile konflux-requirements
+       requirements bump-deps rpm-lockfile konflux-requirements check-unused-deps
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -33,6 +33,9 @@ lock: ## Refresh uv.lock from pyproject.toml
 
 test: ## Run unit tests
 	$(UV) run pytest tests/ -v --ignore=tests/e2e
+
+check-unused-deps: ## Detect potentially unused Python dependencies (no changes)
+	$(UV) tool run deptry==0.24.0 .
 
 lint: ## Run ruff linter
 	$(UV) run ruff check .
