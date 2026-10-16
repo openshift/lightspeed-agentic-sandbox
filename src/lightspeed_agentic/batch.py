@@ -285,6 +285,8 @@ async def _run_with_provider_cleanup(provider: AgentProvider, **kwargs: Any) -> 
     finally:
         try:
             await provider.aclose()
+        except asyncio.CancelledError:
+            logger.warning("provider cleanup cancelled", exc_info=True)
         except Exception:
             logger.warning("provider cleanup failed", exc_info=True)
 

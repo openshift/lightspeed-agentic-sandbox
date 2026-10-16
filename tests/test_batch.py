@@ -103,6 +103,22 @@ class TestProviderLifecycle:
 
         credential.close.assert_awaited_once_with()
 
+    @pytest.mark.asyncio
+    async def test_cleanup_cancellation_does_not_fail_successful_batch(self) -> None:
+        from lightspeed_agentic.batch import _run_with_provider_cleanup
+
+        provider = OpenAIProvider()
+        provider.aclose = AsyncMock(side_effect=asyncio.CancelledError("cleanup cancelled"))  # type: ignore[method-assign]
+
+        async def run_query(_provider: OpenAIProvider) -> AgentResult:
+            return AgentResult(output={"success": True})
+
+        with patch("lightspeed_agentic.batch.run_agent_query", side_effect=run_query):
+            result = await _run_with_provider_cleanup(provider)
+
+        assert result.output == {"success": True}
+        provider.aclose.assert_awaited_once_with()
+
 
 class TestBatchMain:
     def test_analysis_prompt_includes_policy_context(self) -> None:

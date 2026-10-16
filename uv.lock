@@ -1887,6 +1887,7 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
+    { name = "aiohttp" },
     { name = "anthropic" },
     { name = "azure-identity" },
     { name = "deepagents" },
@@ -1906,6 +1907,7 @@ deepagents = [
     { name = "langchain-mcp-adapters" },
 ]
 dev = [
+    { name = "aiohttp" },
     { name = "anthropic" },
     { name = "azure-identity" },
     { name = "deepagents" },
@@ -1934,12 +1936,14 @@ gemini = [
     { name = "google-adk" },
 ]
 openai = [
+    { name = "aiohttp" },
     { name = "azure-identity" },
     { name = "openai-agents" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", marker = "extra == 'openai'", specifier = ">=3.9.0" },
     { name = "anthropic", marker = "extra == 'deepagents'", specifier = "<1" },
     { name = "azure-identity", marker = "extra == 'openai'", specifier = ">=1.21.0" },
     { name = "deepagents", marker = "extra == 'deepagents'", specifier = ">=0.7.18" },

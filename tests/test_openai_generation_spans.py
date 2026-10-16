@@ -513,6 +513,7 @@ async def test_chat_completions_converter_preserves_output_order_and_actual_resp
         role="assistant",
         content="say-second",
         reasoning_content="think-first",
+        annotations=None,
         tool_calls=[tool_call],
     )
     output_items = Converter.message_to_output_items(

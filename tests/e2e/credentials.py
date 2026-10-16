@@ -19,6 +19,7 @@ PROVIDER_ANTHROPIC_VERTEX_DEEPAGENTS = "anthropic-vertex-deepagents"
 PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS = "anthropic-bedrock-deepagents"
 PROVIDER_GEMINI_VERTEX_ADK = "gemini-vertex-adk"
 PROVIDER_OPENAI_AGENTS = "openai-agents"
+PROVIDER_AZURE_OPENAI_AGENTS = "azure-openai-agents"
 
 # Konflux workspace secrets mount at /var/run/credentials/token (data key: token).
 KONFLUX_CREDENTIAL_MOUNT = "/var/run/credentials/token"
@@ -338,6 +339,73 @@ def _check_gemini_vertex_adk() -> ProviderCredentialStatus:
     )
 
 
+def _read_text_file_stripped(path: str) -> str:
+    with open(path, encoding="utf-8") as handle:
+        return handle.read().strip()
+
+
+def _check_azure_openai_agents() -> ProviderCredentialStatus:
+    name = PROVIDER_AZURE_OPENAI_AGENTS
+    required_env = (
+        "AZURE_OPENAI_ENDPOINT",
+        "AZURE_OPENAI_API_VERSION",
+        "AZURE_OPENAI_MODEL",
+    )
+    missing_env = [key for key in required_env if not os.environ.get(key, "").strip()]
+    if missing_env:
+        return ProviderCredentialStatus(
+            name,
+            False,
+            "none",
+            "Azure OpenAI configuration missing: " + ", ".join(missing_env),
+        )
+
+    env_vars: dict[str, str] = {}
+    missing_files: list[str] = []
+    file_env = {
+        "client_id": "AZURE_CLIENT_ID",
+        "tenant_id": "AZURE_TENANT_ID",
+        "client_secret": "AZURE_CLIENT_SECRET",
+    }
+    cred_dir = os.environ.get("CRED_DIR", "").strip() or KONFLUX_CREDENTIAL_DIR
+    source = "env vars"
+    for file_name, env_key in file_env.items():
+        env_value = os.environ.get(env_key, "").strip()
+        if env_value:
+            env_vars[env_key] = env_value
+            continue
+        path = os.path.join(cred_dir, file_name)
+        ok, _detail = _validate_plaintext_credential_file(path, file_name)
+        if not ok:
+            missing_files.append(file_name)
+            continue
+        env_vars[env_key] = _read_text_file_stripped(path)
+        source = f"service principal files ({cred_dir})"
+
+    if missing_files:
+        return ProviderCredentialStatus(
+            name,
+            False,
+            "none",
+            f"Azure Entra ID credentials missing under {cred_dir}: " + ", ".join(missing_files),
+        )
+
+    env_vars.update(
+        {
+            "AZURE_OPENAI_ENDPOINT": os.environ["AZURE_OPENAI_ENDPOINT"].strip(),
+            "AZURE_OPENAI_API_VERSION": os.environ["AZURE_OPENAI_API_VERSION"].strip(),
+            "AZURE_OPENAI_MODEL": os.environ["AZURE_OPENAI_MODEL"].strip(),
+        }
+    )
+    return ProviderCredentialStatus(
+        name,
+        True,
+        "env",
+        f"Azure Entra ID {source}",
+        env_vars=env_vars,
+    )
+
+
 def _check_openai_agents() -> ProviderCredentialStatus:
     name = PROVIDER_OPENAI_AGENTS
     if os.environ.get("OPENAI_API_KEY"):
@@ -387,6 +455,7 @@ _CHECKERS = {
     PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS: _check_anthropic_bedrock_deepagents,
     PROVIDER_GEMINI_VERTEX_ADK: _check_gemini_vertex_adk,
     PROVIDER_OPENAI_AGENTS: _check_openai_agents,
+    PROVIDER_AZURE_OPENAI_AGENTS: _check_azure_openai_agents,
 }
 
 PROVIDER_NAMES = list(_CHECKERS.keys())

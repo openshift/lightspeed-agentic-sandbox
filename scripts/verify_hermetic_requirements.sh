@@ -14,15 +14,6 @@ EXPECTED_MISSING=(
     pywin32
     # Emscripten-only marker dependency is omitted from Linux prefetch hashes.
     httpx2-jsfetch
-    # Dependencies in uv.lock's PyPI graph absent after RHOAI pins select
-    # compatible versions of their parent packages.
-    aiohappyeyeballs
-    aiohttp
-    aiosignal
-    frozenlist
-    multidict
-    propcache
-    yarl
 )
 
 log() { echo "==> $*"; }
