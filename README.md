@@ -23,6 +23,30 @@ lists are regenerated for the active dependency set. Run `make test`,
 package coverage. Version skew between the independently resolved graphs is
 reported as warnings; missing packages and orphans fail verification.
 
+## Detecting Unused Dependencies
+
+Run `make check-unused-deps` for an on-demand dependency audit. It runs pinned
+[deptry](https://deptry.com/) through `uvx` in an isolated tool environment,
+without changing application dependencies, lockfiles, or Konflux requirements.
+The first run needs access to the package index.
+
+Only the unused-dependency rule (`DEP002`) is enabled. Application, test, and
+script imports count as usage; notebooks are excluded. Provider extras are
+checked, while the `dev` and `e2e` extras are treated as development dependencies
+and are not checked for unused packages. The target exits nonzero on findings
+and is intentionally separate from `make verify`.
+
+Treat findings as candidates, not automatic removals. Check dependency parents,
+CLI entrypoints, dynamic imports, and security/compatibility constraints before
+removing anything. A redundant direct declaration does not remove a package
+that is still needed transitively. Non-installing uv constraints are not unused
+dependency declarations.
+
+Package/import-name mappings are configured in `pyproject.toml`. Shared
+namespaces such as `opentelemetry` and `google` make usage detection approximate;
+unmapped packages use installed metadata when available, otherwise normalized
+package names with a warning.
+
 ## Bumping Dependencies
 
 The release image uses RHOAI 3.5 and is built hermetically in Konflux.
