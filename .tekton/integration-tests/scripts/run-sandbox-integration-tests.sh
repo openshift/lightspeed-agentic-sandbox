@@ -9,11 +9,12 @@
 #
 # Provider ids:
 #   anthropic-vertex-deepagents | anthropic-bedrock-deepagents |
-#   gemini-vertex-adk | openai-agents
+#   gemini-vertex-adk | openai-agents | azure-openai-agents
 #
 # Expects:
 #   - Provider credentials mounted under /var/run/credentials/
-#     (vertex/openai: token; bedrock: aws_access_key_id, aws_secret_access_key)
+#     (vertex/openai: token; bedrock: aws_access_key_id, aws_secret_access_key;
+#      azure: client_id, tenant_id, client_secret)
 #   - KUBECONFIG (Konflux pipeline mounts the hosted cluster's kubeconfig Secret)
 #   - OPERATOR_REPO (Konflux pipeline clones operator for Result CRDs)
 #   - E2E_NAMESPACE (default openshift-lightspeed)
@@ -24,7 +25,7 @@
 set -euo pipefail
 trap 'echo "error: $0 line $LINENO: command \"$BASH_COMMAND\" exited with status $?" >&2' ERR
 
-PROVIDER="${1:?Usage: $0 <provider> (anthropic-vertex-deepagents|anthropic-bedrock-deepagents|gemini-vertex-adk|openai-agents)}"
+PROVIDER="${1:?Usage: $0 <provider> (anthropic-vertex-deepagents|anthropic-bedrock-deepagents|gemini-vertex-adk|openai-agents|azure-openai-agents)}"
 CRED_DIR="/var/run/credentials"
 CRED_PATH="${CRED_DIR}/token"
 
@@ -73,6 +74,35 @@ case "${PROVIDER}" in
         exit 1
     fi
     export OPENAI_PROVIDER_KEY_PATH="${CRED_PATH}"
+    ;;
+  azure-openai-agents)
+    for key in client_id tenant_id client_secret; do
+        if [ ! -f "${CRED_DIR}/${key}" ]; then
+            echo "error: Azure credential key not found at ${CRED_DIR}/${key}" >&2
+            exit 1
+        fi
+    done
+    if [ -z "${AZURE_OPENAI_ENDPOINT:-}" ] && [ -f "${CRED_DIR}/endpoint" ]; then
+        export AZURE_OPENAI_ENDPOINT
+        AZURE_OPENAI_ENDPOINT="$(tr -d '[:space:]' < "${CRED_DIR}/endpoint")"
+    fi
+    if [ -z "${AZURE_OPENAI_API_VERSION:-}" ] && [ -f "${CRED_DIR}/api_version" ]; then
+        export AZURE_OPENAI_API_VERSION
+        AZURE_OPENAI_API_VERSION="$(tr -d '[:space:]' < "${CRED_DIR}/api_version")"
+    fi
+    if [ -z "${AZURE_OPENAI_MODEL:-}" ] && [ -f "${CRED_DIR}/model" ]; then
+        export AZURE_OPENAI_MODEL
+        AZURE_OPENAI_MODEL="$(tr -d '[:space:]' < "${CRED_DIR}/model")"
+    fi
+    : "${AZURE_OPENAI_ENDPOINT:?AZURE_OPENAI_ENDPOINT or ${CRED_DIR}/endpoint is required for azure-openai-agents}"
+    : "${AZURE_OPENAI_API_VERSION:?AZURE_OPENAI_API_VERSION or ${CRED_DIR}/api_version is required for azure-openai-agents}"
+    : "${AZURE_OPENAI_MODEL:?AZURE_OPENAI_MODEL or ${CRED_DIR}/model is required for azure-openai-agents}"
+    export AZURE_CLIENT_ID
+    AZURE_CLIENT_ID="$(tr -d '[:space:]' < "${CRED_DIR}/client_id")"
+    export AZURE_TENANT_ID
+    AZURE_TENANT_ID="$(tr -d '[:space:]' < "${CRED_DIR}/tenant_id")"
+    export AZURE_CLIENT_SECRET
+    AZURE_CLIENT_SECRET="$(tr -d '[:space:]' < "${CRED_DIR}/client_secret")"
     ;;
   *)
     echo "error: unknown provider: ${PROVIDER}" >&2

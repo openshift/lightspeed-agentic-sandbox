@@ -54,6 +54,83 @@ class TestOpenAIAgents:
         assert "openai.key" in status.reason
 
 
+class TestAzureOpenAIAgents:
+    def test_konflux_entra_id_mount(self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        for key in (
+            "AZURE_OPENAI_ENDPOINT",
+            "AZURE_OPENAI_API_VERSION",
+            "AZURE_OPENAI_MODEL",
+        ):
+            monkeypatch.setenv(key, f"{key.lower()}-value")
+        (cred_dir / "client_id").write_text("client-id\n", encoding="utf-8")
+        (cred_dir / "tenant_id").write_text("tenant-id\n", encoding="utf-8")
+        credential_values = ["client-value"]
+        (cred_dir / "client_secret").write_text(f"{credential_values[0]}\n", encoding="utf-8")
+
+        status = creds.detect_credentials(creds.PROVIDER_AZURE_OPENAI_AGENTS)
+
+        assert status.available
+        assert status.env_vars["AZURE_CLIENT_ID"] == "client-id"
+        assert status.env_vars["AZURE_TENANT_ID"] == "tenant-id"
+        assert status.env_vars["AZURE_CLIENT_SECRET"] == credential_values[0]
+        assert status.env_vars["AZURE_OPENAI_ENDPOINT"] == "azure_openai_endpoint-value"
+        assert status.env_vars["AZURE_OPENAI_API_VERSION"] == "azure_openai_api_version-value"
+        assert status.env_vars["AZURE_OPENAI_MODEL"] == "azure_openai_model-value"
+
+    def test_entra_id_env_vars(self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert cred_dir.is_dir()
+        monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+        monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
+        monkeypatch.setenv("AZURE_OPENAI_MODEL", "deployment")
+        monkeypatch.setenv("AZURE_CLIENT_ID", "client-id")
+        monkeypatch.setenv("AZURE_TENANT_ID", "tenant-id")
+        credential_values = ["client-value"]
+        monkeypatch.setenv("AZURE_CLIENT_SECRET", credential_values[0])
+
+        status = creds.detect_credentials(creds.PROVIDER_AZURE_OPENAI_AGENTS)
+
+        assert status.available
+        assert status.env_vars["AZURE_CLIENT_ID"] == "client-id"
+        assert status.env_vars["AZURE_TENANT_ID"] == "tenant-id"
+        assert status.env_vars["AZURE_CLIENT_SECRET"] == credential_values[0]
+
+    def test_cred_dir_override_for_entra_id_mount(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        override_dir = tmp_path / "custom-credentials"
+        override_dir.mkdir()
+        monkeypatch.setenv("CRED_DIR", str(override_dir))
+        monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+        monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
+        monkeypatch.setenv("AZURE_OPENAI_MODEL", "deployment")
+        (override_dir / "client_id").write_text("client-id\n", encoding="utf-8")
+        (override_dir / "tenant_id").write_text("tenant-id\n", encoding="utf-8")
+        credential_values = ["client-value"]
+        (override_dir / "client_secret").write_text(f"{credential_values[0]}\n", encoding="utf-8")
+
+        status = creds.detect_credentials(creds.PROVIDER_AZURE_OPENAI_AGENTS)
+
+        assert status.available
+        assert status.env_vars["AZURE_CLIENT_ID"] == "client-id"
+        assert status.env_vars["AZURE_TENANT_ID"] == "tenant-id"
+        assert status.env_vars["AZURE_CLIENT_SECRET"] == credential_values[0]
+        assert str(override_dir) in status.reason
+
+    def test_missing_service_principal_file(
+        self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+        monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
+        monkeypatch.setenv("AZURE_OPENAI_MODEL", "deployment")
+        (cred_dir / "client_id").write_text("client-id\n", encoding="utf-8")
+        (cred_dir / "tenant_id").write_text("tenant-id\n", encoding="utf-8")
+
+        status = creds.detect_credentials(creds.PROVIDER_AZURE_OPENAI_AGENTS)
+
+        assert not status.available
+        assert "client_secret" in status.reason
+
+
 class TestAnthropicVertexDeepagents:
     def test_vertex_credential_file_sets_vertex_env(
         self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch
@@ -158,4 +235,5 @@ class TestProviderMatrix:
             creds.PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS,
             creds.PROVIDER_GEMINI_VERTEX_ADK,
             creds.PROVIDER_OPENAI_AGENTS,
+            creds.PROVIDER_AZURE_OPENAI_AGENTS,
         }

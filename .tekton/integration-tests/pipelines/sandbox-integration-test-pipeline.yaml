@@ -15,14 +15,15 @@ spec:
       sandbox-integration-anthropic-vertex-deepagents,
       sandbox-integration-anthropic-bedrock-deepagents,
       sandbox-integration-gemini-vertex-adk,
-      sandbox-integration-openai-agents.
+      sandbox-integration-openai-agents,
+      sandbox-integration-azure-openai-agents.
   params:
     - name: SNAPSHOT
       description: 'The JSON string representing the snapshot of the application under test.'
       default: '{"components": [{"name":"lightspeed-agentic-sandbox", "containerImage": "quay.io/example/repo:latest"}]}'
       type: string
     - name: provider
-      description: 'E2E matrix id (anthropic-vertex-deepagents, anthropic-bedrock-deepagents, gemini-vertex-adk, openai-agents).'
+      description: 'E2E matrix id (anthropic-vertex-deepagents, anthropic-bedrock-deepagents, gemini-vertex-adk, openai-agents, azure-openai-agents).'
       type: string
     - name: credential-secret
       description: 'Name of the Konflux workspace secret containing provider credentials.'
