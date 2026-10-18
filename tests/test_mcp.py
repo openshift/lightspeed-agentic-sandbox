@@ -801,6 +801,7 @@ class TestOpenAIAdapter:
             AdmittedMCPProviderServer(
                 name="ocp-mcp",
                 url="https://ocp:8443/mcp",
+                timeout=300,
                 allowed_tool_names=("get_pod",),
             )
         ]
@@ -811,6 +812,8 @@ class TestOpenAIAdapter:
         assert isinstance(result[0], MCPServerStreamableHttp)
         assert result[0].name == "ocp-mcp"
         assert "httpx_client_factory" in result[0].params
+        assert result[0].params["timeout"] == 300
+        assert result[0].client_session_timeout_seconds == 300
         assert cast(Any, result[0]).tool_filter == {"allowed_tool_names": ["get_pod"]}
 
     def test_passes_headers(self) -> None:
