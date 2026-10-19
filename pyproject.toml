@@ -60,6 +60,7 @@ constraint-dependencies = [
     "PyJWT>=2.14.0",
     "Authlib>=1.8.0",
     "anyio>=4.14.2",
+    "joserfc>=1.7.4",  # CVE-2026-102946
     "langgraph-sdk>=0.4.4",
 ]
 
