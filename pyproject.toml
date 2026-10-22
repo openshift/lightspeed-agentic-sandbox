@@ -78,6 +78,21 @@ select = ["A", "ARG", "ASYNC", "B", "E", "F", "I", "N", "PT", "RUF", "S", "SIM",
 "tests/e2e/**/*.py" = ["S101", "I001", "F401"]
 "scripts/**/*.py" = ["S603", "S607"]
 
+[tool.deptry]
+ignore = ["DEP001", "DEP003", "DEP004"]
+pep621_dev_dependency_groups = ["dev", "e2e"]
+exclude = ['(^|/)(\.venv|venv|\.direnv|\.git)/', '(^|/)setup\.py$']
+ignore_notebooks = true
+
+[tool.deptry.package_module_name_map]
+opentelemetry-api = ["opentelemetry"]
+opentelemetry-sdk = ["opentelemetry"]
+opentelemetry-exporter-otlp-proto-grpc = ["opentelemetry"]
+opentelemetry-exporter-otlp-proto-http = ["opentelemetry"]
+azure-identity = ["azure"]
+openai-agents = ["agents"]
+google-adk = ["google"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
