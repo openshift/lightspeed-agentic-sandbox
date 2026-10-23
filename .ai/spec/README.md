@@ -37,6 +37,7 @@ These specs define the behavioral rules and codebase navigation for the lightspe
 | [0001-tool-output-boundary.md](decisions/0001-tool-output-boundary.md) | DeepAgents-only SAFE-02 boundaries, trust instruction, and model/event separation |
 | [0002-sdk-native-skills-route.md](decisions/0002-sdk-native-skills-route.md) | DeepAgents virtual `/skills/` route and SDK-provided host-path mapping for native shell execution (OLS-4413) |
 | [0003-single-deepagents-harness.md](decisions/0003-single-deepagents-harness.md) | Historical OLS-4434 decision for consolidating model routes on DeepAgents; Anthropic, Vertex/Google, and native/custom OpenAI use it; Azure and Vertex/OpenAI migration remains |
+| [0004-go-migration-feasibility.md](decisions/0004-go-migration-feasibility.md) | Feasibility study for a Go rewrite: package mapping, owned-harness cost, unification wins, sequencing; no migration decision recorded |
 
 ## Scope
 
@@ -54,6 +55,7 @@ AI agents. Content is optimized for precision and machine consumption.
 | Understand the batch entrypoint | `what/run-api.md` |
 | Add or modify a provider | `what/provider-contract.md` + `how/provider-architecture.md` |
 | Understand the DeepAgents migration and remaining target | `what/provider-contract.md` rules 50–67 + `decisions/0003-single-deepagents-harness.md` |
+| Understand the Go migration feasibility study | `decisions/0004-go-migration-feasibility.md` |
 | Understand DeepAgents tool-output boundaries | `what/provider-contract.md` (SAFE-02) + `decisions/0001-tool-output-boundary.md` |
 | Understand DeepAgents skill execution | `what/provider-contract.md` (rules 23, 33, 36) + `decisions/0002-sdk-native-skills-route.md` |
 | Understand env vars and deployment | `what/configuration.md` |
