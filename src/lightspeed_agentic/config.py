@@ -32,6 +32,25 @@ class AnthropicCredentialSource:
 
 
 @dataclasses.dataclass(frozen=True)
+class AzureApiKeyCredentialSource:
+    """Resolved Azure API key, hidden from configuration reprs."""
+
+    api_key: str = dataclasses.field(repr=False)
+
+
+@dataclasses.dataclass(frozen=True)
+class AzureEntraCredentialSource:
+    """Resolved Azure service-principal values; SDK credentials are created later."""
+
+    tenant_id: str = dataclasses.field(repr=False)
+    client_id: str = dataclasses.field(repr=False)
+    client_secret: str = dataclasses.field(repr=False)
+
+
+type AzureCredentialSource = AzureApiKeyCredentialSource | AzureEntraCredentialSource
+
+
+@dataclasses.dataclass(frozen=True)
 class VertexCredentialSource:
     """Mounted ADC file reference; credential contents load during model construction."""
 
@@ -48,7 +67,12 @@ class BedrockCredentialSource:
     role_arn: str | None = dataclasses.field(default=None, repr=False)
 
 
-type CredentialSource = AnthropicCredentialSource | VertexCredentialSource | BedrockCredentialSource
+type CredentialSource = (
+    AnthropicCredentialSource
+    | AzureCredentialSource
+    | VertexCredentialSource
+    | BedrockCredentialSource
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -66,7 +90,16 @@ class BedrockProviderParameters:
     region: str
 
 
-type ProviderParameters = VertexProviderParameters | BedrockProviderParameters
+@dataclasses.dataclass(frozen=True)
+class AzureProviderParameters:
+    """Resolved Azure API version; endpoint and deployment use the shared model fields."""
+
+    api_version: str
+
+
+type ProviderParameters = (
+    VertexProviderParameters | BedrockProviderParameters | AzureProviderParameters
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -95,7 +128,7 @@ class ResolvedModelFamily:
     expected_envs: tuple[str, ...]
     credential_file_envs: tuple[str, ...] = ()
     azure_auth_mode: str | None = None
-    azure_credentials: dict[str, str] | None = None
+    azure_credentials: dict[str, str] | None = dataclasses.field(default=None, repr=False)
     azure_api_version: str | None = dataclasses.field(kw_only=True, default=None)
     azure_api_key: str | None = dataclasses.field(kw_only=True, default=None, repr=False)
     hosting: Literal["anthropic", "vertex", "bedrock", "openai", "azure"] = dataclasses.field(
@@ -116,7 +149,7 @@ class ResolvedSDK:
     expected_envs: tuple[str, ...]  # credential env vars expected from envFrom
     credential_file_envs: tuple[str, ...] = ()  # env vars whose value is a credentials file path
     azure_auth_mode: str | None = None  # "entra_id" or "api_key"; None for non-Azure
-    azure_credentials: dict[str, str] | None = None  # Entra SP values for adapter
+    azure_credentials: dict[str, str] | None = dataclasses.field(default=None, repr=False)
 
 
 def _resolved_value(value: str | None, env_name: str) -> str | None:
@@ -284,6 +317,7 @@ def _resolve_azure(
     resolved_model = _resolved_value(model, "OPENAI_MODEL")
     resolved_base_url = url or os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip() or None
     resolved_api_version = api_version or DEFAULT_AZURE_API_VERSION
+    provider = AzureProviderParameters(api_version=resolved_api_version)
 
     creds_path = _llm_credentials_path()
     client_id = _read_credential_file(f"{creds_path}/client_id")
@@ -306,6 +340,12 @@ def _resolve_azure(
                 "tenant_id": tenant_id,
                 "client_secret": client_secret,
             },
+            provider=provider,
+            credentials=AzureEntraCredentialSource(
+                tenant_id=tenant_id,
+                client_id=client_id,
+                client_secret=client_secret,
+            ),
         )
 
     # API-key mode — check file first, then env
@@ -314,10 +354,12 @@ def _resolve_azure(
         logger.info("Azure credential resolution: API key (from file)")
         return ResolvedModelFamily(
             "openai",
-            ("AZURE_OPENAI_API_KEY",),
+            (),
             azure_auth_mode="api_key",
             azure_api_version=resolved_api_version,
             azure_api_key=api_key_file,
+            provider=provider,
+            credentials=AzureApiKeyCredentialSource(api_key=api_key_file),
             hosting="azure",
             model=resolved_model,
             base_url=resolved_base_url,
@@ -328,10 +370,12 @@ def _resolve_azure(
         logger.info("Azure credential resolution: API key (from env)")
         return ResolvedModelFamily(
             "openai",
-            ("AZURE_OPENAI_API_KEY",),
+            (),
             azure_auth_mode="api_key",
             azure_api_version=resolved_api_version,
             azure_api_key=api_key_env,
+            provider=provider,
+            credentials=AzureApiKeyCredentialSource(api_key=api_key_env),
             hosting="azure",
             model=resolved_model,
             base_url=resolved_base_url,
@@ -448,47 +492,6 @@ def parse_reasoning_config() -> dict[str, Any] | None:
         )
 
     return parsed
-
-
-_MODEL_ENV_VARS = {
-    "deepagents": "ANTHROPIC_MODEL",
-    "openai": "OPENAI_MODEL",
-}
-
-
-def _model_env_var(provider_name: str) -> str:
-    """Return the SDK model env var for a resolved provider name."""
-    env_var = _MODEL_ENV_VARS.get(provider_name)
-    if env_var is None:
-        supported = ", ".join(sorted(_MODEL_ENV_VARS))
-        raise ValueError(f"Unknown SDK provider: {provider_name!r}. Supported: {supported}")
-    return env_var
-
-
-def resolve_startup_model(provider_name: str) -> str | None:
-    """Return startup model hint for logging; None when only defaults apply."""
-    lightspeed_model = os.environ.get("LIGHTSPEED_MODEL", "").strip()
-    if lightspeed_model:
-        return lightspeed_model
-    env_var = _model_env_var(provider_name)
-    sdk_model = os.environ.get(env_var, "").strip()
-    return sdk_model or None
-
-
-def resolve_router_model(provider_name: str, model: str | None = None) -> str:
-    """Resolve an explicit, canonical, or SDK-specific model value."""
-    if model:
-        return model
-    lightspeed_model = os.environ.get("LIGHTSPEED_MODEL", "").strip()
-    if lightspeed_model:
-        return lightspeed_model
-    env_var = _model_env_var(provider_name)
-    sdk_model = os.environ.get(env_var, "").strip()
-    if sdk_model:
-        return sdk_model
-    raise ValueError(
-        f"No model configured for {provider_name!r}; set LIGHTSPEED_MODEL or {env_var}"
-    )
 
 
 def parse_agent_timeout() -> int:

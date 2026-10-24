@@ -8,6 +8,7 @@ from collections.abc import Callable
 
 from kubernetes.client import ApiException, CoreV1Api  # type: ignore[import-untyped]
 
+from tests.e2e.k8s_helpers import read_pod_logs
 from tests.e2e.suite_setup import DEFAULT_OTEL_DEPLOYMENT
 
 OTEL_COLLECTOR_LABEL = "app=lightspeed-otel-collector"
@@ -38,7 +39,8 @@ def fetch_otel_collector_logs(
         pod_name = pod.metadata.name
         pod_uid = pod.metadata.uid or "unknown"
         try:
-            chunk = core_api.read_namespaced_pod_log(
+            chunk = read_pod_logs(
+                core_api,
                 name=pod_name,
                 namespace=namespace,
                 tail_lines=tail_lines,

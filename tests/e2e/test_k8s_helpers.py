@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 from typing import Any
 from unittest.mock import MagicMock
+
+from urllib3.response import HTTPResponse
 
 from tests.e2e.k8s_helpers import (
     CRD_GROUP,
@@ -180,7 +183,10 @@ class TestFetchPodLogs:
         pod_list.items = [pod1, pod2]
         core_api.list_namespaced_pod.return_value = pod_list
 
-        core_api.read_namespaced_pod_log.side_effect = ["log-a", "log-b"]
+        core_api.read_namespaced_pod_log.side_effect = [
+            HTTPResponse(body=BytesIO(b"log-a"), preload_content=False),
+            HTTPResponse(body=BytesIO(b"log-b"), preload_content=False),
+        ]
 
         result = fetch_pod_logs(
             core_api,

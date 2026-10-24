@@ -66,7 +66,7 @@ belongs in unit tests.
   and DeepAgents does not list those internal directories;
   writable ``.agents`` under the same emptyDir; ``E2E_OUTPUT_DIR`` for echo-token only.
 - **Provider matrix** — `anthropic-vertex-deepagents`, `anthropic-bedrock-deepagents`,
-  `gemini-vertex-adk`, `openai-agents`; `gemini-vertex-adk` is a legacy matrix ID, but its
+  `gemini-vertex-adk`, `openai-agents`, `azure-openai-agents`; `gemini-vertex-adk` is a legacy matrix ID, but its
   Job config selects the `vertex/google` model route, which now runs through DeepAgents.
   It does not invoke the removed ADK provider adapter. `openai-agents` is also a
   retained matrix ID, not a harness selector: native OpenAI uses DeepAgents when
@@ -77,6 +77,7 @@ belongs in unit tests.
   Bedrock Jobs MUST use a Bedrock model or inference profile ID (e.g.
   `global.anthropic.claude-haiku-4-5-20251001-v1:0` from `tests/e2e/config.env` as
   `ANTHROPIC_BEDROCK_MODEL`); Anthropic API shorthand such as `claude-haiku-4-5` is invalid on Bedrock.
+- **Azure live acceptance (OLS-4470)** — the existing CI Azure API-key scenario uses the retained `azure-openai-agents` matrix ID, which now selects the shared DeepAgents Azure route, not an OpenAI Agents runner. CI owns the live MCP sentinel, echo-token file/token, flat/nested schema, and applicable reasoning checks through the existing feature suites. Record the image digest, sanitized Azure configuration, tested model/API version, and execution artifacts; skipped or unsupported API cases remain unverified. The separate Entra CI scenario uses the same route. See [CI scenarios](../../../.tekton/integration-tests/integration-test-scenarios/sandbox-integration-test-scenarios.yaml). Offline Azure workflow/request tests are not live acceptance evidence.
 - **Reasoning on every Job** — `e2e-containers.sh` sets provider-specific
   `LIGHTSPEED_REASONING_CONFIG` on all batch Jobs (not only
   `reasoning_config.feature`). Anthropic Jobs therefore combine thinking with
@@ -197,6 +198,12 @@ BDD steps assert a response envelope (`run_result.py`) built from:
    merge agent output from the `[provider:run] output:` log line emitted by
    `EventLogger` in `lightspeed_agentic.logging` (see `batch_log_contract.py`).
 
+Batch, generic pod, and collector log readers decode raw Kubernetes HTTP response
+bytes as UTF-8 and close the responses, including on read failures. Embedded JSON
+escapes must reach the JSON decoder unchanged; do not use `str(bytes)` or globally
+replace escaped newlines in log content. Malformed UTF-8 bytes use replacement
+characters rather than preventing log collection.
+
 Then steps use batch-oriented wording:
 
 - **`the batch job completes`** — Job finished without a harness error.
@@ -228,7 +235,7 @@ Feature files and unit tests are also listed under each behavioral spec. Summary
 Unit tests: [test_run_agent.py](../../../tests/test_run_agent.py),
 [test_batch.py](../../../tests/test_batch.py),
 [test_ready.py](../../../tests/test_ready.py),
-[test_batch_e2e_helpers.py](../../../tests/test_batch_e2e_helpers.py) (harness helpers, no cluster),
+[test_batch_e2e_helpers.py](../../../tests/test_batch_e2e_helpers.py) (harness helpers, native Kubernetes SDK log decoding and MCP sentinel reconstruction, no cluster),
 [test_e2e_credentials.py](../../../tests/test_e2e_credentials.py) (credential preflight, including Bedrock Konflux mount),
 [test_analysis_schemas.py](../../../tests/test_analysis_schemas.py) (operator analysis JSON schemas),
 [test_analysis_tokens.py](../../../tests/test_analysis_tokens.py) (find-token component token assertions).

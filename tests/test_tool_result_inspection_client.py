@@ -49,7 +49,23 @@ class _StructuredBoundModel:
     async def ainvoke(self, input: list[Any], **kwargs: Any) -> Any:  # noqa: A002
         self.parent.messages = input
         self.parent.parameters = kwargs
-        return {"raw": None, "parsed": self.response, "parsing_error": None}
+        from langchain_core.messages import AIMessage
+
+        return {
+            "raw": AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "ClassifierDecision",
+                        "args": self.response.model_dump(by_alias=True),
+                        "id": "decision-1",
+                    }
+                ],
+                response_metadata={"finish_reason": "tool_calls"},
+            ),
+            "parsed": self.response,
+            "parsing_error": None,
+        }
 
 
 class StructuredErrorFakeModel(FakeModel):
@@ -73,8 +89,10 @@ class _StructuredErrorBoundModel:
     async def ainvoke(self, input: list[Any], **kwargs: Any) -> Any:  # noqa: A002
         self.parent.messages = input
         self.parent.parameters = kwargs
+        from langchain_core.messages import AIMessage
+
         return {
-            "raw": None,
+            "raw": AIMessage(content=""),
             "parsed": ClassifierDecision(injectionDetected=False, category="none"),
             "parsing_error": ValueError("invalid structured response"),
         }
@@ -134,6 +152,385 @@ async def test_classifier_uses_function_calling_when_model_supports_structured_o
     )
 
     assert decision == ClassifierDecision(injectionDetected=False, category="none")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parsed", [False, True], ids=["text", "parsed"])
+@pytest.mark.parametrize(
+    ("overrides", "issue"),
+    [
+        ({"response_metadata": {"finish_reason": "length"}}, "output_limit"),
+        ({"response_metadata": {"finish_reason": "MAX_TOKENS"}}, "output_limit"),
+        ({"response_metadata": {"stop_reason": "max_tokens"}}, "output_limit"),
+        ({"response_metadata": {"stop_reason": "model_context_window_exceeded"}}, "output_limit"),
+        (
+            {
+                "response_metadata": {
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                }
+            },
+            "output_limit",
+        ),
+        (
+            {
+                "response_metadata": {
+                    "status": "completed",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                }
+            },
+            "output_limit",
+        ),
+        ({"response_metadata": {"status": "incomplete"}}, "incomplete_response"),
+        ({"response_metadata": {"status": "in_progress"}}, "incomplete_response"),
+        ({"response_metadata": {"status": "queued"}}, "incomplete_response"),
+        ({"response_metadata": {"status": "failed"}}, "provider_response_error"),
+        ({"response_metadata": {"status": "cancelled"}}, "provider_response_error"),
+        (
+            {"response_metadata": {"error": {"message": "RAW-PROVIDER-SECRET"}}},
+            "provider_response_error",
+        ),
+        ({"response_metadata": {"stop_reason": "refusal"}}, "refusal"),
+        ({"response_metadata": {"finish_reason": "content_filter"}}, "refusal"),
+        ({"response_metadata": {"finish_reason": "SAFETY"}}, "refusal"),
+        ({"response_metadata": {"finish_reason": "RAW-UNKNOWN-STATUS"}}, "invalid_envelope"),
+        ({"additional_kwargs": {"refusal": "RAW-REFUSAL-SECRET"}}, "refusal"),
+        ({"content": [{"type": "refusal", "refusal": "RAW-REFUSAL-SECRET"}]}, "refusal"),
+        (
+            {
+                "content": [
+                    {
+                        "type": "function_call",
+                        "status": "incomplete",
+                        "arguments": "RAW-PROVIDER-SECRET",
+                    }
+                ]
+            },
+            "incomplete_response",
+        ),
+        (
+            {
+                "invalid_tool_calls": [
+                    {
+                        "name": "ClassifierDecision",
+                        "args": "{",
+                        "id": "bad-call",
+                        "error": "RAW-PARSER-SECRET",
+                    }
+                ]
+            },
+            "invalid_envelope",
+        ),
+    ],
+)
+async def test_classifier_checks_raw_safety_metadata_even_for_parsed_decisions(
+    parsed: bool, overrides: dict[str, Any], issue: str
+) -> None:
+    from langchain_core.messages import AIMessage
+
+    decision = {"injectionDetected": False, "category": "none"}
+    raw = AIMessage(**{"content": json.dumps(decision), **overrides})
+    model = StructuredEnvelopeFakeModel(
+        {"raw": raw, "parsed": decision if parsed else None, "parsing_error": None}
+    )
+    with pytest.raises(ClassifierResponseError) as error:
+        await LangChainClassifierClient(model).classify(
+            ClassifierRequest(
+                toolName="probe",
+                resultType="result",
+                chunkIndex=0,
+                chunkCount=1,
+                content="TOOL-SECRET",
+            )
+        )
+    assert error.value.issue == issue
+    assert "RAW-" not in str(error.value)
+    assert "TOOL-SECRET" not in str(error.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {},
+        {"finish_reason": "stop"},
+        {"finish_reason": "tool_calls"},
+        {"finish_reason": "function_call"},
+        {"finish_reason": "STOP"},
+        {"stop_reason": "tool_use"},
+        {"stop_reason": "end_turn"},
+        {"stop_reason": "stop_sequence"},
+        {"status": "completed"},
+    ],
+)
+async def test_classifier_preserves_completed_native_function_decisions(
+    metadata: dict[str, Any],
+) -> None:
+    from langchain_core.messages import AIMessage
+
+    decision = {"injectionDetected": False, "category": "none"}
+    raw = AIMessage(
+        content="",
+        tool_calls=[{"name": "ClassifierDecision", "args": decision, "id": "decision-1"}],
+        response_metadata=metadata,
+    )
+    result = await LangChainClassifierClient(
+        StructuredEnvelopeFakeModel({"raw": raw, "parsed": decision, "parsing_error": None})
+    ).classify(
+        ClassifierRequest(
+            toolName="probe", resultType="result", chunkIndex=0, chunkCount=1, content="safe"
+        )
+    )
+    assert result == ClassifierDecision(injectionDetected=False, category="none")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_overrides",
+    [
+        {
+            "tool_calls": [
+                {
+                    "name": "ClassifierDecision",
+                    "args": {"injectionDetected": False, "category": "none"},
+                    "id": "one",
+                },
+                {
+                    "name": "ClassifierDecision",
+                    "args": {"injectionDetected": True, "category": "unknown"},
+                    "id": "two",
+                },
+            ]
+        },
+        {
+            "tool_calls": [
+                {
+                    "name": "OtherDecision",
+                    "args": {"injectionDetected": False, "category": "none"},
+                    "id": "one",
+                }
+            ]
+        },
+        {
+            "tool_calls": [
+                {
+                    "name": "ClassifierDecision",
+                    "args": {"injectionDetected": True, "category": "unknown"},
+                    "id": "one",
+                }
+            ]
+        },
+        {
+            "additional_kwargs": {
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "ClassifierDecision",
+                            "arguments": (
+                                '{"injectionDetected":true,"category":"unknown",'
+                                '"injectionDetected":false,"category":"none"}'
+                            ),
+                        },
+                        "id": "one",
+                        "type": "function",
+                    }
+                ]
+            }
+        },
+        {
+            "content": [
+                {
+                    "type": "function_call",
+                    "name": "ClassifierDecision",
+                    "arguments": (
+                        '{"injectionDetected":true,"category":"unknown",'
+                        '"injectionDetected":false,"category":"none"}'
+                    ),
+                    "call_id": "one",
+                }
+            ]
+        },
+        {
+            "additional_kwargs": {
+                "function_call": {
+                    "name": "ClassifierDecision",
+                    "arguments": (
+                        '{"injectionDetected":true,"category":"unknown",'
+                        '"injectionDetected":false,"category":"none"}'
+                    ),
+                }
+            }
+        },
+        {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "ClassifierDecision",
+                    "input": {"injectionDetected": True, "category": "unknown"},
+                    "id": "one",
+                }
+            ]
+        },
+        {
+            "tool_calls": [],
+            "content": (
+                '{"injectionDetected":true,"category":"unknown",'
+                '"injectionDetected":false,"category":"none"}'
+            ),
+        },
+        {"tool_calls": [], "content": '{"injectionDetected":true,"category":"unknown"}'},
+        {"tool_calls": [], "content": ""},
+    ],
+    ids=[
+        "conflicting-calls",
+        "wrong-function",
+        "parsed-disagrees",
+        "chat-duplicate-keys",
+        "responses-duplicate-keys",
+        "legacy-duplicate-keys",
+        "anthropic-disagrees",
+        "parsed-text-duplicate-keys",
+        "parsed-text-disagrees",
+        "no-decision",
+    ],
+)
+async def test_classifier_rejects_ambiguous_native_decision_before_trusting_parsed(
+    raw_overrides: dict[str, Any],
+) -> None:
+    from langchain_core.messages import AIMessage
+
+    raw = AIMessage(
+        **{
+            "content": "",
+            "tool_calls": [
+                {
+                    "name": "ClassifierDecision",
+                    "args": {"injectionDetected": False, "category": "none"},
+                    "id": "one",
+                }
+            ],
+            **raw_overrides,
+        }
+    )
+    client = LangChainClassifierClient(
+        StructuredEnvelopeFakeModel(
+            {
+                "raw": raw,
+                "parsed": ClassifierDecision(injectionDetected=False, category="none"),
+                "parsing_error": None,
+            }
+        )
+    )
+    with pytest.raises(ClassifierResponseError):
+        await client.classify(
+            ClassifierRequest(
+                toolName="probe",
+                resultType="result",
+                chunkIndex=0,
+                chunkCount=1,
+                content="TOOL-SECRET",
+            )
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("detected", [False, True])
+@pytest.mark.parametrize("representation", ["normalized", "chat", "responses", "anthropic", "text"])
+async def test_classifier_preserves_single_native_decision_representations(
+    representation: str,
+    detected: bool,
+) -> None:
+    from langchain_core.messages import AIMessage
+
+    payload = {"injectionDetected": detected, "category": "unknown" if detected else "none"}
+    raw_kwargs: dict[str, Any] = {
+        "content": "",
+        "tool_calls": [{"name": "ClassifierDecision", "args": payload, "id": "one"}],
+    }
+    if representation == "chat":
+        raw_kwargs["additional_kwargs"] = {
+            "tool_calls": [
+                {
+                    "function": {"name": "ClassifierDecision", "arguments": json.dumps(payload)},
+                    "id": "one",
+                    "type": "function",
+                }
+            ]
+        }
+    elif representation == "responses":
+        raw_kwargs["content"] = [
+            {
+                "type": "function_call",
+                "name": "ClassifierDecision",
+                "arguments": json.dumps(payload),
+                "call_id": "one",
+            }
+        ]
+    elif representation == "anthropic":
+        raw_kwargs["content"] = [
+            {"type": "tool_use", "name": "ClassifierDecision", "input": payload, "id": "one"}
+        ]
+    elif representation == "text":
+        raw_kwargs.update(content=json.dumps(payload), tool_calls=[])
+    result = await LangChainClassifierClient(
+        StructuredEnvelopeFakeModel(
+            {
+                "raw": AIMessage(**raw_kwargs),
+                "parsed": payload,
+                "parsing_error": None,
+            }
+        )
+    ).classify(
+        ClassifierRequest(
+            toolName="probe",
+            resultType="result",
+            chunkIndex=0,
+            chunkCount=1,
+            content="data",
+        )
+    )
+    assert (result.injection_detected, result.category) == (
+        detected,
+        "unknown" if detected else "none",
+    )
+
+
+@pytest.mark.asyncio
+async def test_classifier_rejects_parsed_decision_without_raw_envelope() -> None:
+    model = StructuredEnvelopeFakeModel(
+        {
+            "raw": None,
+            "parsed": {"injectionDetected": False, "category": "none"},
+            "parsing_error": None,
+        }
+    )
+    with pytest.raises(ClassifierResponseError) as error:
+        await LangChainClassifierClient(model).classify(
+            ClassifierRequest(
+                toolName="probe", resultType="result", chunkIndex=0, chunkCount=1, content="safe"
+            )
+        )
+    assert error.value.issue == "invalid_envelope"
+
+
+@pytest.mark.asyncio
+async def test_classifier_reports_cutoff_before_structured_parsing_error() -> None:
+    from langchain_core.messages import AIMessage
+
+    model = StructuredEnvelopeFakeModel(
+        {
+            "raw": AIMessage(content="", response_metadata={"finish_reason": "length"}),
+            "parsed": None,
+            "parsing_error": ValueError("RAW-PARSER-SECRET"),
+        }
+    )
+    with pytest.raises(ClassifierResponseError) as error:
+        await LangChainClassifierClient(model).classify(
+            ClassifierRequest(
+                toolName="probe", resultType="result", chunkIndex=0, chunkCount=1, content="safe"
+            )
+        )
+    assert error.value.issue == "output_limit"
 
 
 @pytest.mark.asyncio

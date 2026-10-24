@@ -30,7 +30,7 @@ The sandbox runs as a one-shot batch process (OLS-3066). There is **no HTTP serv
 
 ### Agent execution
 
-7. **Provider startup.** The batch entrypoint calls `resolve_model_family()` once and passes its result to `resolve_model_route(model_family=...)`. Routing returns `(None, model_route)` for Anthropic and Vertex/Google or `(sdk, None)` for legacy OpenAI, without constructing model clients. Reasoning and MCP configuration are parsed before OTLP export or readiness I/O, then `run_readiness_checks(model_family, model_route)` (see `health-probes.md`) validates the same family's credentials and required route parameters. After tracer initialization and MCP admission, batch calls `create_provider("deepagents", model_route)` and uses `model_route.model` for Anthropic and Vertex/Google; the legacy OpenAI path retains `create_provider(sdk.name)`, Azure credential handoff, and `resolve_startup_model()` / `resolve_router_model()`. [PLANNED: OLS-3743] It also validates required `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` and `LIGHTSPEED_AGENT_MAX_TURNS` before invoking the provider. When readiness or required configuration checks fail, the sandbox MUST fail before invoking the LLM (sandbox failure path, rule 23). Provider selection cannot change mid-process.
+7. **Provider startup.** The batch entrypoint calls `resolve_model_family()` once and passes its result to `resolve_model_route(model_family=...)`. Routing returns `(None, model_route)` for Anthropic, Vertex/Google, native/custom OpenAI, and Azure, while Vertex/OpenAI raises `NotImplementedError` pending OLS-4472, without constructing model clients. Reasoning and MCP configuration are parsed before OTLP export or readiness I/O, then `run_readiness_checks(model_family, model_route)` (see `health-probes.md`) validates the same family's credentials and required route parameters. After tracer initialization and MCP admission, batch calls `create_provider("deepagents", model_route)` and uses `model_route.model` for every migrated route, including Azure's two auth modes; the legacy SDK-name dispatch, model-resolution helpers, and credential handoff have been removed. [PLANNED: OLS-3743] It also validates required `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` and `LIGHTSPEED_AGENT_MAX_TURNS` before invoking the provider. When readiness or required configuration checks fail, the sandbox MUST fail before invoking the LLM (sandbox failure path, rule 23). Provider selection cannot change mid-process.
 
 8. **Agent query.** The sandbox runs `run_agent_query()` with system prompt, query, output schema, context, skills directory, model, MCP servers, and reasoning config. Tool execution (kubectl, oc) is unchanged — delegated to provider SDKs.
 
@@ -106,8 +106,7 @@ The agent returns structured JSON via `run_agent_query()` (formerly HTTP `RunRes
 | `LIGHTSPEED_AGENT_MAX_TURNS` | [PLANNED: OLS-3743] Required provider iteration cap resolved by the operator |
 | `LIGHTSPEED_SKILLS_DIR` | Skills root and provider `cwd` (default `/app/skills`) |
 | `resolve_model_family()` | SDK env/credential mapping and readiness requirements, resolved once per run |
-| `resolve_model_route(model_family=...)` | Anthropic or Vertex/Google DeepAgents route and authoritative model, or legacy OpenAI SDK configuration |
-| `resolve_router_model()` | Legacy OpenAI model resolution from `LIGHTSPEED_MODEL` → SDK env; fails if neither supplies a model |
+| `resolve_model_route(model_family=...)` | Typed DeepAgents route and authoritative model for all implemented providers; Vertex/OpenAI is deferred to OLS-4472 |
 | Input files under `/input/` | Query, schema, context, template, optional system prompt |
 
 ## Constraints
@@ -136,7 +135,7 @@ status is generic (see `batch_log_contract.py`).
 | [test_ready.py](../../../tests/test_ready.py) | 7 | R1 readiness checks (`health-probes.md`) |
 | [test_publish_results_publish.py](../../../tests/test_publish_results_publish.py) | 21, 24 | K8s create + status replace |
 | [test_publish_results_status.py](../../../tests/test_publish_results_status.py) | 21 | Status assembly from agent output |
-| [test_model_resolution.py](../../../tests/test_model_resolution.py) | 7 | Model env resolution |
+| [test_model_router.py](../../../tests/test_model_router.py) | 7 | Model precedence and unimplemented Vertex/OpenAI rejection |
 | Live batch BDD | 4–23 (semantic) | [e2e-testing.md](e2e-testing.md) Verification map — context echo, structured output, skills, analysis output, MCP, reasoning, OTEL |
 
 Offline analysis schema helpers: [test_analysis_schemas.py](../../../tests/test_analysis_schemas.py),

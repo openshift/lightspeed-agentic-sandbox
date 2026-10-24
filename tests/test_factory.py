@@ -1,6 +1,5 @@
 """Tests for provider factory."""
 
-import importlib
 from unittest.mock import Mock
 
 import pytest
@@ -20,18 +19,10 @@ def test_create_provider_requires_name():
         create_provider()  # type: ignore[call-arg]
 
 
-def test_create_provider_explicit_name():
-    # SDK might not be installed — just verify the right import is attempted.
-    try:
-        provider = create_provider("openai")
-        assert provider.name == "openai"
-    except ImportError:
-        pass
-
-
-def test_legacy_gemini_provider_is_removed():
-    with pytest.raises(ValueError, match="Supported: deepagents, openai"):
-        create_provider("gemini")
+@pytest.mark.parametrize("name", ["openai", "gemini"])
+def test_legacy_provider_is_removed(name):
+    with pytest.raises(ValueError, match=r"Unknown provider: .*Supported: deepagents$"):
+        create_provider(name)
 
 
 def test_deepagents_provider_receives_resolved_route():
@@ -48,8 +39,3 @@ def test_deepagents_provider_receives_resolved_route():
 def test_deepagents_provider_requires_resolved_route():
     with pytest.raises(ValueError, match="resolved model route"):
         create_provider("deepagents")
-
-
-def test_openai_provider_module_imports_without_eager_optional_sdk_imports():
-    module = importlib.import_module("lightspeed_agentic.providers.openai")
-    assert module.OpenAIProvider().name == "openai"

@@ -2,21 +2,36 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import subprocess
+from collections.abc import Iterator
+from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
+from urllib.parse import urlsplit
 
 import jsonschema
 import pytest
-from kubernetes.client import ApiException  # type: ignore[import-untyped]
+from kubernetes.client import (  # type: ignore[import-untyped]
+    ApiClient,
+    ApiException,
+    Configuration,
+    CoreV1Api,
+)
+from urllib3.response import HTTPResponse
 
+from lightspeed_agentic.logging import EventLogger
+from lightspeed_agentic.types import ResultEvent
 from tests.e2e.batch_log_contract import PROVIDER_OUTPUT_LOG_PREFIX
 from tests.e2e.batch_runner import (
     _body_from_result_cr,
     _build_job_spec,
     _delete_config_map_ignore_not_found,
     _enrich_body_from_pod_logs,
+    _fetch_job_pod_logs,
     _needs_pod_log_enrichment,
     _parse_echo_token_from_pod_logs,
     _parse_provider_output_json,
@@ -24,6 +39,8 @@ from tests.e2e.batch_runner import (
     build_result_template,
     run_batch_query,
 )
+from tests.e2e.k8s_helpers import fetch_pod_logs
+from tests.e2e.otel_verify import fetch_otel_collector_logs
 from tests.e2e.schemas_contract import ECHO_TOKEN_SCHEMA
 from tests.e2e.skills_fixtures import (
     E2E_POD_SKILLS_DIR,
@@ -48,10 +65,11 @@ from tests.e2e.suite_setup import (
         ("anthropic-bedrock-deepagents", True),
         ("anthropic-deepagents", True),
         ("openai-agents", True),
-        ("azure-openai-agents", False),
+        ("azure-openai-agents", True),
+        ("unsupported", False),
     ],
 )
-def test_inspection_provider_guard_admits_migrated_openai_but_not_legacy_azure(
+def test_inspection_provider_guard_admits_migrated_providers(
     monkeypatch: pytest.MonkeyPatch, provider_name: str, supported: bool
 ) -> None:
     pytest.importorskip("pytest_bdd")
@@ -305,6 +323,23 @@ class TestEnrichBodyFromPodLogs:
     def test_skips_enrichment_when_cr_has_failure_reason(self) -> None:
         body = {"success": False, "summary": "agent error", "failureReason": "load_skill failed"}
         assert _needs_pod_log_enrichment(body) is False
+
+    @pytest.mark.parametrize(
+        ("output_json", "expected"),
+        [
+            ('{"summary": "first\\nsecond"}', "first\nsecond"),
+            (r'{"summary": "literal \\n and C:\\namespaces"}', r"literal \n and C:\namespaces"),
+        ],
+    )
+    def test_preserves_json_escapes_in_single_output_line(
+        self, output_json: str, expected: str
+    ) -> None:
+        logs = PROVIDER_OUTPUT_LOG_PREFIX + output_json
+        parsed = _parse_provider_output_json(logs)
+        assert parsed is not None
+        assert parsed["summary"] == expected
+        enriched = _enrich_body_from_pod_logs({"success": True, "summary": "Step completed"}, logs)
+        assert enriched["summary"] == expected
 
     def test_parses_escaped_newline_logs(self) -> None:
         body = {"success": True, "summary": "Step completed"}
@@ -607,6 +642,126 @@ class TestRunBatchQuery:
         assert result.error is not None
         assert "not found" in result.error
         core_api.replace_namespaced_config_map.assert_called_once()
+
+
+@pytest.fixture
+def log_http(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
+    class ObservedResponse(HTTPResponse):
+        close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            super().close()
+
+    class UnreadableBody(BytesIO):
+        def read(self, *_args: Any, **_kwargs: Any) -> bytes:
+            raise RuntimeError("offline log read failed")
+
+    state = SimpleNamespace(body=b"", read_error=False, responses=[], queries=[])
+
+    def respond(method: str, url: str, **kwargs: Any) -> HTTPResponse:
+        assert method == "GET"
+        path = urlsplit(url).path
+        if path.endswith("/log"):
+            state.queries.append(dict(kwargs.get("fields") or []))
+            body = UnreadableBody() if state.read_error else BytesIO(state.body)
+            response = ObservedResponse(
+                body=body, status=200, headers={"Content-Type": "text/plain"}, preload_content=False
+            )
+            state.responses.append(response)
+            return response
+        assert path == "/api/v1/namespaces/ns/pods"
+        return HTTPResponse(
+            body=json.dumps(
+                {
+                    "apiVersion": "v1",
+                    "kind": "PodList",
+                    "metadata": {},
+                    "items": [
+                        {"metadata": {"name": "pod-a", "namespace": "ns", "uid": "offline-uid"}}
+                    ],
+                }
+            ).encode(),
+            status=200,
+            headers={"Content-Type": "application/json"},
+        )
+
+    with ApiClient(Configuration(host="https://offline-kubernetes.invalid")) as api:
+        monkeypatch.setattr(api.rest_client.pool_manager, "request", respond)
+        state.core = CoreV1Api(api)
+        yield state
+
+
+def _read_logs(reader: str, core: CoreV1Api) -> str:
+    if reader == "batch":
+        return _fetch_job_pod_logs(core, "ns", "offline-job")
+    if reader == "pods":
+        return fetch_pod_logs(core, namespace="ns", label_selector="app=test", tail_lines=7)[
+            "pod-a"
+        ]
+    return fetch_otel_collector_logs(core, "ns", tail_lines=None)
+
+
+@pytest.mark.parametrize("reader", ["batch", "pods", "collector"])
+@pytest.mark.parametrize(
+    "log_text",
+    [
+        (
+            '[provider:run] output: {"summary": "<tool_data source=\\"list_namespaces\\">'
+            '\\ne2e-sentinel-ns-7f3a9\\n</tool_data>"}\n'
+        ),
+        "Starting\nUnicode π 🍵; apostrophe's; literal \\n and C:\\namespaces\\test\nFinished\n",
+        "",
+    ],
+    ids=["json-escapes", "unicode-and-literal-backslashes", "empty"],
+)
+def test_native_log_readers_preserve_text(log_http: Any, reader: str, log_text: str) -> None:
+    log_http.body = log_text.encode("utf-8")
+    result = _read_logs(reader, log_http.core)
+    prefix = "=== collector pod/pod-a uid=offline-uid ===\n" if reader == "collector" else ""
+    assert result == prefix + log_text
+    assert len(log_http.responses) == 1
+    # Observe our ownership boundary before fixture teardown. urllib3 may close
+    # its body automatically after reading; the raw response still needs closing.
+    assert log_http.responses[0].close_calls == 1
+    expected_query: dict[str, Any] = {"timestamps": reader == "collector"}
+    if reader != "collector":
+        expected_query["tailLines"] = 200 if reader == "batch" else 7
+    assert log_http.queries == [expected_query]
+
+
+@pytest.mark.parametrize("reader", ["batch", "pods", "collector"])
+def test_native_log_readers_close_response_on_read_failure(log_http: Any, reader: str) -> None:
+    log_http.read_error = True
+    with pytest.raises(RuntimeError, match="offline log read failed"):
+        _read_logs(reader, log_http.core)
+    assert len(log_http.responses) == 1
+    assert log_http.responses[0].close_calls == 1
+
+
+@pytest.mark.parametrize("reader", ["batch", "pods", "collector"])
+def test_native_log_readers_replace_invalid_utf8(log_http: Any, reader: str) -> None:
+    log_http.body = b"Malformed byte: \xff\n"
+    result = _read_logs(reader, log_http.core)
+    prefix = "=== collector pod/pod-a uid=offline-uid ===\n" if reader == "collector" else ""
+    assert result == prefix + "Malformed byte: \ufffd\n"
+    assert log_http.responses[0].close_calls == 1
+
+
+def test_native_batch_logs_preserve_mcp_sentinel(
+    log_http: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    summary = (
+        '<tool_data source="list_namespaces">\nNamespaces: e2e-sentinel-ns-7f3a9\n</tool_data>'
+    )
+    with caplog.at_level(logging.INFO, logger="lightspeed_agentic"):
+        EventLogger("run").log(ResultEvent(text=json.dumps({"success": True, "summary": summary})))
+    log_http.body = caplog.text.encode("utf-8")
+    logs = _fetch_job_pod_logs(log_http.core, "ns", "offline-job")
+    body = _enrich_body_from_pod_logs({"success": True, "summary": "Step completed"}, logs)
+    assert body["success"] is True
+    assert body["summary"] == summary
+    assert "e2e-sentinel-ns-7f3a9" in body["summary"]
 
 
 class TestConfigMapJobOwner:

@@ -549,6 +549,116 @@ def test_read_first_mounted_secret_in_dir_sorted(tmp_path: Path) -> None:
 
 # ── Azure readiness ──
 
+
+@pytest.mark.parametrize(
+    ("change", "expected_status"),
+    [
+        ({"base_url": None}, "error: Azure OpenAI requires a resolved HTTPS endpoint"),
+        ({"base_url": ""}, "error: Azure OpenAI requires a resolved HTTPS endpoint"),
+        (
+            {"base_url": "http://azure.example.test"},
+            "error: Azure OpenAI requires a resolved HTTPS endpoint",
+        ),
+        ({"provider": None}, "error: Azure OpenAI requires a resolved API version"),
+        ({"provider_kind": "vertex"}, "error: Azure OpenAI requires a resolved API version"),
+        ({"api_version": ""}, "error: Azure OpenAI requires a resolved API version"),
+        ({"api_version": "   "}, "error: Azure OpenAI requires a resolved API version"),
+        ({"credentials": None}, "error: Azure OpenAI requires resolved Azure credentials"),
+        ({"credentials_kind": "vertex"}, "error: Azure OpenAI requires resolved Azure credentials"),
+        ({"api_key": ""}, "error: Azure OpenAI requires a nonempty resolved API key"),
+        ({"api_key": "  \t\n"}, "error: Azure OpenAI requires a nonempty resolved API key"),
+    ],
+)
+def test_azure_readiness_rejects_unresolved_configuration_without_ambient_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, change: dict[str, object], expected_status: str
+) -> None:
+    from dataclasses import replace
+
+    from lightspeed_agentic.config import (
+        AzureApiKeyCredentialSource,
+        AzureProviderParameters,
+        VertexCredentialSource,
+        VertexProviderParameters,
+    )
+
+    # Ambient values must not repair the immutable resolved snapshot.
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://ambient.example.test")
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "AMBIENT-SECRET")
+    monkeypatch.setenv("OPENAI_API_KEY", "UNRELATED-SECRET")
+    family = ResolvedModelFamily(
+        "openai",
+        (),
+        hosting="azure",
+        model="operator-deployment",
+        base_url="https://resolved.example.test",
+        provider=AzureProviderParameters("2024-08-01-preview"),
+        credentials=AzureApiKeyCredentialSource("RESOLVED-SECRET"),
+    )
+    if "credentials_kind" in change:
+        credential_file = tmp_path / "credentials.json"
+        credential_file.write_text("{}", encoding="utf-8")
+        family = replace(family, credentials=VertexCredentialSource(credential_file))
+    elif "provider_kind" in change:
+        family = replace(
+            family, provider=VertexProviderParameters(project="project", region="region")
+        )
+    elif "api_version" in change:
+        family = replace(family, provider=AzureProviderParameters(change["api_version"]))
+    elif "api_key" in change:
+        family = replace(family, credentials=AzureApiKeyCredentialSource(change["api_key"]))
+    else:
+        family = replace(family, **change)
+
+    ready, checks = run_readiness_checks(family)
+
+    assert ready is False
+    assert checks == {"provider_env": "ok", "provider_configuration": expected_status}
+    assert "SECRET" not in repr(checks)
+
+
+@pytest.mark.parametrize("auth_mode", ["api-key", "entra"])
+def test_azure_readiness_accepts_resolved_configuration_without_constructing_clients(
+    monkeypatch: pytest.MonkeyPatch, auth_mode: str
+) -> None:
+    from lightspeed_agentic.config import (
+        AzureApiKeyCredentialSource,
+        AzureEntraCredentialSource,
+        AzureProviderParameters,
+    )
+
+    def no_client_or_token(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("readiness must not construct clients or acquire tokens")
+
+    monkeypatch.setattr(
+        "lightspeed_agentic.providers.models.openai.create_azure_model", no_client_or_token
+    )
+    monkeypatch.setattr(
+        "lightspeed_agentic.providers.cloud_credentials.create_azure_credentials",
+        no_client_or_token,
+    )
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+    source = (
+        AzureApiKeyCredentialSource("resolved-key")
+        if auth_mode == "api-key"
+        else AzureEntraCredentialSource("tenant", "client", "secret")
+    )
+    family = ResolvedModelFamily(
+        "openai",
+        (),
+        hosting="azure",
+        model="operator-deployment",
+        base_url="https://resolved.example.test",
+        provider=AzureProviderParameters("2024-08-01-preview"),
+        credentials=source,
+    )
+
+    ready, checks = run_readiness_checks(family)
+
+    assert ready is True
+    assert checks == {"provider_env": "ok", "provider_configuration": "ok"}
+
+
 _AZURE_ENTRA = ResolvedSDK(
     "openai",
     (),  # no env vars needed — credentials are file-based

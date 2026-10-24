@@ -2,17 +2,76 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
+    from azure.core.credentials_async import AsyncTokenCredential
     from google.auth.credentials import Credentials
 
-    from lightspeed_agentic.config import BedrockCredentialSource, VertexCredentialSource
+    from lightspeed_agentic.config import (
+        AzureCredentialSource,
+        BedrockCredentialSource,
+        VertexCredentialSource,
+    )
 
 _CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 _TARGET_SERVICE_ACCOUNT_FILE = "target_service_account"
+
+
+@dataclass(frozen=True)
+class AzureModelCredentials:
+    """Native Azure auth settings and the identity resource the caller must close."""
+
+    api_key: str = field(repr=False)
+    token_provider: Callable[[], Awaitable[str]] | None = field(default=None, repr=False)
+    credential: AsyncTokenCredential | None = field(default=None, repr=False)
+
+    async def aclose(self) -> None:
+        """Release the native identity transport, including after failed acquisition."""
+        if self.credential is not None:
+            await self.credential.close()
+
+
+def _configure_azure_identity_tls(request: Any) -> None:
+    """Supply shared TLS through Azure's native aiohttp request options."""
+    from lightspeed_agentic.tls import get_ssl_context
+
+    request.context.options["ssl"] = get_ssl_context()
+
+
+def create_azure_credentials(source: AzureCredentialSource) -> AzureModelCredentials:
+    """Use the resolved key or create a lazy native Entra credential/callback.
+
+    Azure Identity owns token acquisition, caching, refresh, and its lazy HTTP
+    session. The caller owns aclose(), even if model construction or execution
+    subsequently fails. This helper neither reads credentials from environment
+    nor constructs a model client or acquires a token.
+    """
+    from lightspeed_agentic.config import AzureApiKeyCredentialSource
+
+    if isinstance(source, AzureApiKeyCredentialSource):
+        return AzureModelCredentials(api_key=source.api_key)
+
+    from azure.identity.aio import ClientSecretCredential, get_bearer_token_provider
+    from openai.lib.azure import API_KEY_SENTINEL
+
+    credential = ClientSecretCredential(
+        source.tenant_id,
+        source.client_id,
+        source.client_secret,
+        raw_request_hook=_configure_azure_identity_tls,
+    )
+    return AzureModelCredentials(
+        api_key=API_KEY_SENTINEL,
+        token_provider=get_bearer_token_provider(
+            credential, "https://cognitiveservices.azure.com/.default"
+        ),
+        credential=credential,
+    )
 
 
 def _read_target_service_account(source_path: Path) -> str | None:

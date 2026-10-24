@@ -18,9 +18,5 @@ def create_provider(name: str, model_route: ResolvedModelRoute | None = None) ->
             from lightspeed_agentic.providers.deepagents import DeepAgentsProvider
 
             return DeepAgentsProvider(model_route)
-        case "openai":
-            from lightspeed_agentic.providers.openai import OpenAIProvider
-
-            return OpenAIProvider()
         case _:
-            raise ValueError(f"Unknown provider: {name}. Supported: deepagents, openai")
+            raise ValueError(f"Unknown provider: {name}. Supported: deepagents")

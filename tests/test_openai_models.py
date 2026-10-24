@@ -17,6 +17,7 @@ import jsonschema
 import pytest
 
 from lightspeed_agentic import tls
+from lightspeed_agentic.inspection.client import CLASSIFIER_OUTPUT_TOKENS
 from lightspeed_agentic.providers.model_router import ModelParameters
 
 
@@ -587,6 +588,7 @@ def _openai_response_stream(
     *,
     input_tokens: int,
     output_tokens: int,
+    reasoning: bool = False,
 ) -> httpx.Response:
     """Encode scripted native Responses events, including real streaming tool arguments."""
     response = _openai_response(
@@ -640,6 +642,27 @@ def _openai_response_stream(
             {"type": "response.completed", "response": response},
         ]
     )
+    if reasoning:
+        reasoning_item = {
+            "id": f"rs_{response_id}",
+            "type": "reasoning",
+            "summary": [],
+            "status": "completed",
+        }
+        response["output"].insert(0, reasoning_item)
+        for event in events:
+            if "output_index" in event:
+                event["output_index"] += 1
+        # A completed stream must not be confused with the initial item snapshot
+        # that LangChain retains in its aggregated reasoning content block.
+        events[1:1] = [
+            {
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {**reasoning_item, "status": "in_progress"},
+            },
+            {"type": "response.output_item.done", "output_index": 0, "item": reasoning_item},
+        ]
     content = "".join(
         f"event: {event['type']}\ndata: {json.dumps({**event, 'sequence_number': index})}\n\n"
         for index, event in enumerate(events)
@@ -822,6 +845,113 @@ async def test_native_openai_deepagent_reads_file_and_shapes_structured_result(
     for span in generations:
         assert span.attributes["gen_ai.provider.name"] == "openai"
         assert span.attributes["gen_ai.response.model"] == "gpt-4.1-mini"
+
+
+@pytest.mark.parametrize("native", [False, True], ids=["compatible-chat", "native-responses"])
+@pytest.mark.parametrize(
+    "reply_kind", ["benign", "malicious", "conflicting-decisions", "duplicate-keys"]
+)
+@pytest.mark.asyncio
+async def test_openai_classifier_validates_original_native_decisions(
+    captured_openai_requests: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    native: bool,
+    reply_kind: str,
+) -> None:
+    from lightspeed_agentic.inspection.client import LangChainClassifierClient
+    from lightspeed_agentic.inspection.errors import ClassifierResponseError
+    from lightspeed_agentic.inspection.models import ClassifierRequest
+    from lightspeed_agentic.providers.deepagents import _close_model_clients
+    from lightspeed_agentic.providers.models.openai import (
+        create_native_openai_model,
+        create_openai_compatible_model,
+    )
+
+    parameters = ModelParameters(
+        model="gpt-4.1-mini" if native else "served-model",
+        api_key="resolved-key",
+        base_url="https://api.openai.com/v1" if native else "https://custom.example/v1",
+    )
+    model = (create_native_openai_model if native else create_openai_compatible_model)(parameters)
+    output_version = model.output_version
+    transport = model.root_async_client._client._transport
+    native_request = transport.handle_async_request
+
+    async def reply(request: httpx.Request) -> httpx.Response:
+        await native_request(request)
+        detected = reply_kind == "malicious"
+        arguments = json.dumps(
+            {"injectionDetected": detected, "category": "unknown" if detected else "none"}
+        )
+        if reply_kind == "duplicate-keys":
+            arguments = (
+                '{"injectionDetected":true,"category":"unknown",'
+                '"injectionDetected":false,"category":"none"}'
+            )
+        calls = [
+            {
+                "type": "function_call",
+                "name": "ClassifierDecision",
+                "arguments": arguments,
+                "id": "fc_one",
+                "call_id": "call_one",
+                "status": "completed",
+            }
+        ]
+        if reply_kind == "conflicting-decisions":
+            calls.append(
+                {
+                    "type": "function_call",
+                    "name": "ClassifierDecision",
+                    "arguments": '{"injectionDetected":true,"category":"unknown"}',
+                    "id": "fc_two",
+                    "call_id": "call_two",
+                    "status": "completed",
+                }
+            )
+        if native:
+            payload = _openai_response("resp_classifier", calls[0], input_tokens=3, output_tokens=2)
+            payload["output"] = calls
+            return httpx.Response(200, json=payload, request=request)
+        return _openai_chat_completion(
+            "chatcmpl_classifier",
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": call["call_id"],
+                        "type": "function",
+                        "function": {"name": call["name"], "arguments": call["arguments"]},
+                    }
+                    for call in calls
+                ],
+            },
+            stream=False,
+        )
+
+    monkeypatch.setattr(transport, "handle_async_request", reply)
+    try:
+        client = LangChainClassifierClient(model)
+        request = ClassifierRequest(
+            toolName="probe", resultType="result", chunkIndex=0, chunkCount=1, content="data"
+        )
+        if reply_kind in ("conflicting-decisions", "duplicate-keys"):
+            with pytest.raises(ClassifierResponseError):
+                await client.classify(request)
+        else:
+            decision = await client.classify(request)
+            assert (decision.injection_detected, decision.category) == (
+                reply_kind == "malicious",
+                "unknown" if reply_kind == "malicious" else "none",
+            )
+        assert model.output_version == output_version
+    finally:
+        await _close_model_clients(model)
+    requests, sync_client, async_client = captured_openai_requests
+    assert len(requests) == 1
+    assert sync_client.is_closed
+    assert async_client.is_closed
 
 
 def _openai_chat_completion(
@@ -1272,7 +1402,7 @@ async def test_compatible_openai_deepagent_runs_skill_and_admitted_mcp_with_insp
     )
     assert [
         body.get("max_completion_tokens", body.get("max_tokens")) for body in classifier_requests
-    ] == [128, 128, 128]
+    ] == [4096, 4096, 4096]
     assert [item["params"]["name"] for item in mcp_requests if item["method"] == "tools/call"] == [
         "read_sentinel"
     ]
@@ -1764,7 +1894,9 @@ async def test_openai_model_clients_are_closed_by_deepagents_cleanup(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("compatible", [False, True], ids=["native", "compatible"])
-@pytest.mark.parametrize("max_output_tokens", [None, 128], ids=["sdk-default", "classifier-limit"])
+@pytest.mark.parametrize(
+    "max_output_tokens", [None, CLASSIFIER_OUTPUT_TOKENS], ids=["sdk-default", "classifier-limit"]
+)
 @pytest.mark.parametrize(
     "captured_openai_requests",
     [{"injectionDetected": False, "category": "none"}],
@@ -1803,7 +1935,7 @@ async def test_classifier_output_budget_reaches_openai_http_request(
     assert len(requests) == 1
     body = json.loads(requests[0].content)
     token_field = "max_completion_tokens" if compatible else "max_output_tokens"
-    assert body.get(token_field) == max_output_tokens
+    assert body.get(token_field) == (None if max_output_tokens is None else 4096)
     assert (
         not ({"max_tokens", "max_completion_tokens", "max_output_tokens"} - {token_field})
         & body.keys()
@@ -1817,7 +1949,9 @@ def test_openai_model_module_import_does_not_load_optional_sdk() -> None:
             sys.executable,
             "-c",
             "import sys; import lightspeed_agentic.providers.models.openai; "
-            "assert 'langchain_openai' not in sys.modules",
+            "assert 'langchain_openai' not in sys.modules; "
+            "assert 'azure.identity' not in sys.modules; "
+            "assert 'openai' not in sys.modules",
         ],
         cwd=project_root,
         env={**os.environ, "PYTHONPATH": os.path.join(project_root, "src")},

@@ -17,6 +17,7 @@ from lightspeed_agentic.config import (
     VertexCredentialSource,
     VertexProviderParameters,
 )
+from lightspeed_agentic.inspection.client import CLASSIFIER_OUTPUT_TOKENS
 from lightspeed_agentic.providers import cloud_credentials
 from lightspeed_agentic.providers.model_router import ModelParameters
 from lightspeed_agentic.providers.models.gemini import create_vertex_gemini_model
@@ -78,11 +79,15 @@ def test_vertex_gemini_model_leaves_adc_to_sdk_without_impersonation(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("max_output_tokens", [None, 128], ids=["sdk-default", "classifier-limit"])
+@pytest.mark.parametrize("finish_reason", ["STOP", "MAX_TOKENS"])
+@pytest.mark.parametrize(
+    "max_output_tokens", [None, CLASSIFIER_OUTPUT_TOKENS], ids=["sdk-default", "classifier-limit"]
+)
 async def test_classifier_output_budget_reaches_gemini_http_request(
-    monkeypatch: pytest.MonkeyPatch, max_output_tokens: int | None
+    monkeypatch: pytest.MonkeyPatch, max_output_tokens: int | None, finish_reason: str
 ) -> None:
     from lightspeed_agentic.inspection.client import LangChainClassifierClient
+    from lightspeed_agentic.inspection.errors import ClassifierResponseError
     from lightspeed_agentic.inspection.models import ClassifierRequest
 
     credentials = AnonymousCredentials()
@@ -110,7 +115,7 @@ async def test_classifier_output_budget_reaches_gemini_http_request(
                                 }
                             ],
                         },
-                        "finishReason": "STOP",
+                        "finishReason": finish_reason,
                     }
                 ],
                 "usageMetadata": {
@@ -138,7 +143,7 @@ async def test_classifier_output_budget_reaches_gemini_http_request(
         api_client._async_httpx_client = async_client
         api_client._http_options.httpx_async_client = async_client
         try:
-            decision = await LangChainClassifierClient(model).classify(
+            call = LangChainClassifierClient(model).classify(
                 ClassifierRequest(
                     toolName="probe",
                     resultType="result",
@@ -147,12 +152,19 @@ async def test_classifier_output_budget_reaches_gemini_http_request(
                     content="safe",
                 )
             )
+            if finish_reason == "MAX_TOKENS":
+                with pytest.raises(ClassifierResponseError) as error:
+                    await call
+                assert error.value.issue == "output_limit"
+            else:
+                assert (await call).injection_detected is False
         finally:
             model.client.close()
             await model.client.aio.aclose()
 
-    assert decision.injection_detected is False
     assert len(requests) == 1
     body = json.loads(requests[0].content)
-    assert body.get("generationConfig", {}).get("maxOutputTokens") == max_output_tokens
+    assert body.get("generationConfig", {}).get("maxOutputTokens") == (
+        None if max_output_tokens is None else 4096
+    )
     assert not {"max_tokens", "max_completion_tokens", "max_output_tokens"} & body.keys()

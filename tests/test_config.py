@@ -296,6 +296,7 @@ def test_azure_resolves_legacy_settings_without_mutating_sdk_environment(
     assert model_family.model == "gpt-4.1"
     assert model_family.base_url == "https://my-resource.openai.azure.com"
     assert model_family.azure_api_version == "2024-08-01-preview"
+    assert model_family.provider == config.AzureProviderParameters(api_version="2024-08-01-preview")
     assert "OPENAI_MODEL" not in os.environ
     assert "AZURE_OPENAI_ENDPOINT" not in os.environ
     assert "AZURE_OPENAI_API_VERSION" not in os.environ
@@ -764,6 +765,7 @@ def test_azure_defaults_to_structured_output_api_version(
 
     assert model_family.name == "openai"
     assert model_family.azure_api_version == "2024-08-01-preview"
+    assert model_family.provider == config.AzureProviderParameters(api_version="2024-08-01-preview")
     assert "AZURE_OPENAI_API_VERSION" not in os.environ
 
 
@@ -789,16 +791,35 @@ def test_azure_entra_id_takes_precedence_over_api_key(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """When both SP files and apitoken exist, Entra ID wins."""
+    """Complete SP files win over both API-key sources without rewriting env."""
     _setup_azure_env(monkeypatch)
-    _write_sp_files(tmp_path)
+    _write_sp_files(
+        tmp_path,
+        client_id=" cid\n",
+        tenant_id=" tid\n",
+        client_secret=" csec\n",  # noqa: S106 - Test credential.
+    )
     (tmp_path / "apitoken").write_text("also-a-key", encoding="utf-8")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "ambient-azure-key")
     monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
+    env_before = dict(os.environ)
 
     model_family = resolve_model_family()
 
-    assert model_family.azure_credentials is not None
-    assert "AZURE_OPENAI_API_KEY" not in os.environ
+    assert model_family.credentials == config.AzureEntraCredentialSource(
+        client_id="cid",
+        tenant_id="tid",
+        client_secret="csec",  # noqa: S106
+    )
+    assert model_family.azure_credentials == {
+        "client_id": "cid",
+        "tenant_id": "tid",
+        "client_secret": "csec",
+    }
+    assert model_family.azure_api_key is None
+    assert model_family.azure_auth_mode == "entra_id"
+    assert model_family.expected_envs == ()
+    assert dict(os.environ) == env_before
 
 
 def test_azure_incomplete_sp_files_falls_back_to_api_key(
@@ -849,3 +870,185 @@ def test_azure_no_credentials_raises(
 
     with pytest.raises(ValueError, match=r"Azure .* credentials"):
         resolve_model_family()
+
+
+@pytest.mark.parametrize("auth_source", ["entra", "file", "env"])
+def test_azure_resolution_populates_typed_parameters(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, auth_source: str
+) -> None:
+    _setup_azure_env(monkeypatch)
+    monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
+    if auth_source == "entra":
+        _write_sp_files(tmp_path)
+    elif auth_source == "file":
+        (tmp_path / "apitoken").write_text(" file-key\n", encoding="utf-8")
+    else:
+        monkeypatch.setenv("AZURE_OPENAI_API_KEY", " env-key\n")
+    env_before = dict(os.environ)
+
+    family = resolve_model_family()
+
+    assert family.provider is not None
+    assert family.provider == config.AzureProviderParameters(api_version="2025-03-01-preview")
+    assert family.hosting == "azure"
+    assert family.expected_envs == ()  # Readiness uses the resolved credential source.
+    assert family.model == "gpt-4.1"
+    assert family.base_url == "https://my-resource.openai.azure.com"
+    if auth_source == "entra":
+        assert family.credentials == config.AzureEntraCredentialSource(
+            client_id="cid",
+            tenant_id="tid",
+            client_secret="csec",  # noqa: S106
+        )
+    else:
+        assert family.credentials == config.AzureApiKeyCredentialSource(
+            api_key="file-key" if auth_source == "file" else "env-key"
+        )
+    assert dict(os.environ) == env_before
+
+
+@pytest.mark.parametrize(
+    ("file_content", "expected_key"),
+    [(" file-key\n", "file-key"), (" \n\t", "env-key"), (None, "env-key")],
+    ids=["file-before-env", "blank-file-falls-back", "missing-file-falls-back"],
+)
+def test_azure_typed_api_key_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    file_content: str | None,
+    expected_key: str,
+) -> None:
+    _setup_azure_env(monkeypatch)
+    monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", " env-key\n")
+    if file_content is not None:
+        (tmp_path / "apitoken").write_text(file_content, encoding="utf-8")
+    env_before = dict(os.environ)
+
+    family = resolve_model_family()
+
+    assert family.credentials is not None
+    assert family.credentials == config.AzureApiKeyCredentialSource(api_key=expected_key)
+    assert expected_key not in repr(family.credentials)
+    assert family.azure_api_key == expected_key
+    assert family.azure_credentials is None
+    assert family.azure_auth_mode == "api_key"
+    assert dict(os.environ) == env_before
+
+
+@pytest.mark.parametrize("unusable_file", ["client_id", "tenant_id", "client_secret"])
+@pytest.mark.parametrize("file_state", ["missing", "blank"])
+@pytest.mark.parametrize("fallback", ["file", "env", None], ids=["file-key", "env-key", "no-key"])
+def test_azure_incomplete_credentials_keep_fallback_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    unusable_file: str,
+    file_state: str,
+    fallback: str | None,
+) -> None:
+    _setup_azure_env(monkeypatch)
+    _write_sp_files(
+        tmp_path,
+        client_id="fallback-client-private",
+        tenant_id="fallback-tenant-private",
+        client_secret="fallback-secret-private",  # noqa: S106 - Test credential.
+    )
+    monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
+    if file_state == "missing":
+        (tmp_path / unusable_file).unlink()
+    else:
+        (tmp_path / unusable_file).write_text(" \n\t", encoding="utf-8")
+    if fallback == "file":
+        (tmp_path / "apitoken").write_text("fallback-key", encoding="utf-8")
+    elif fallback == "env":
+        monkeypatch.setenv("AZURE_OPENAI_API_KEY", "fallback-key")
+    else:
+        # Credentials for another provider must not rescue an unusable Azure set.
+        monkeypatch.setenv("OPENAI_API_KEY", "unrelated-openai-key")
+    env_before = dict(os.environ)
+
+    if fallback is None:
+        with pytest.raises(ValueError, match="Azure OpenAI credentials not found") as error:
+            resolve_model_family()
+        assert "client_id, tenant_id, client_secret" in str(error.value)
+        assert "apitoken" in str(error.value)
+        assert "AZURE_OPENAI_API_KEY" in str(error.value)
+        for secret in (
+            "unrelated-openai-key",
+            "fallback-client-private",
+            "fallback-tenant-private",
+            "fallback-secret-private",
+        ):
+            assert secret not in str(error.value)
+    else:
+        family = resolve_model_family()
+        assert family.credentials is not None
+        assert family.credentials == config.AzureApiKeyCredentialSource(api_key="fallback-key")
+        assert family.azure_credentials is None
+        assert family.azure_auth_mode == "api_key"
+    assert dict(os.environ) == env_before
+
+
+@pytest.mark.parametrize("legacy_sdk", [False, True], ids=["family", "legacy-handoff"])
+def test_azure_service_principal_values_are_hidden_from_configuration_repr(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, legacy_sdk: bool
+) -> None:
+    _setup_azure_env(monkeypatch)
+    _write_sp_files(
+        tmp_path,
+        client_id="private-client-value",
+        tenant_id="private-tenant-value",
+        client_secret="private-secret-value",  # noqa: S106
+    )
+    monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
+    family = resolve_model_family()
+    value = (
+        config.ResolvedSDK(
+            name="openai",
+            expected_envs=(),
+            azure_auth_mode=family.azure_auth_mode,
+            azure_credentials=family.azure_credentials,
+        )
+        if legacy_sdk
+        else family
+    )
+
+    for secret in ("private-client-value", "private-tenant-value", "private-secret-value"):
+        assert secret not in repr(value)
+        assert secret not in repr(family.credentials)
+
+
+@pytest.mark.parametrize("entra", [False, True], ids=["api-key", "entra"])
+def test_azure_typed_configuration_retains_the_resolved_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, entra: bool
+) -> None:
+    _setup_azure_env(monkeypatch)
+    monkeypatch.setenv("LIGHTSPEED_LLM_CREDENTIALS_PATH", str(tmp_path))
+    if entra:
+        _write_sp_files(tmp_path)
+    else:
+        (tmp_path / "apitoken").write_text("original-key", encoding="utf-8")
+    family = resolve_model_family()
+
+    _write_sp_files(
+        tmp_path,
+        client_id="new-client",
+        tenant_id="new-tenant",
+        client_secret="new-secret",  # noqa: S106 - Test credential.
+    )
+    (tmp_path / "apitoken").write_text("new-key", encoding="utf-8")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "new-env-key")
+    monkeypatch.setenv("LIGHTSPEED_PROVIDER_API_VERSION", "2024-08-01-preview")
+    monkeypatch.setenv("LIGHTSPEED_PROVIDER_URL", "https://different.example.test")
+
+    assert family.provider is not None
+    assert family.provider == config.AzureProviderParameters(api_version="2025-03-01-preview")
+    assert family.base_url == "https://my-resource.openai.azure.com"
+    if entra:
+        assert family.credentials == config.AzureEntraCredentialSource(
+            client_id="cid",
+            tenant_id="tid",
+            client_secret="csec",  # noqa: S106
+        )
+    else:
+        assert family.credentials == config.AzureApiKeyCredentialSource(api_key="original-key")

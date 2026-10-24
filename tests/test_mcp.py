@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,7 +27,6 @@ from lightspeed_agentic.mcp import (
     parse_mcp_servers,
     render_mcp_policy_context,
     split_admitted_mcp_servers,
-    to_openai_mcp_servers,
 )
 
 
@@ -757,35 +755,3 @@ class TestDiscoverAndAdmitMCPServer:
         assert "reason=missing_rbac_metadata" in caplog.text
         assert "reason=no_admitted_tools" in caplog.text
         assert "Delete a namespace" not in caplog.text
-
-
-class TestOpenAIAdapter:
-    def test_creates_servers(self) -> None:
-        servers = [
-            AdmittedMCPProviderServer(
-                name="ocp-mcp",
-                url="https://ocp:8443/mcp",
-                allowed_tool_names=("get_pod",),
-            )
-        ]
-        result = to_openai_mcp_servers(servers)
-        assert len(result) == 1
-        from agents.mcp import MCPServerStreamableHttp
-
-        assert isinstance(result[0], MCPServerStreamableHttp)
-        assert result[0].name == "ocp-mcp"
-        assert "httpx_client_factory" in result[0].params
-        assert cast(Any, result[0]).tool_filter == {"allowed_tool_names": ["get_pod"]}
-
-    def test_passes_headers(self) -> None:
-        servers = [
-            AdmittedMCPProviderServer(
-                name="ext",
-                url="http://ext/mcp",
-                headers=(ResolvedMCPHeader(name="Auth", value="Bearer x"),),
-                allowed_tool_names=("get_pod",),
-            )
-        ]
-        result = to_openai_mcp_servers(servers)
-        assert result[0].params["headers"] == {"Auth": "Bearer x"}
-        assert "httpx_client_factory" in result[0].params

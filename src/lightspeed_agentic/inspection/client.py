@@ -9,7 +9,7 @@ from typing import Any, Protocol
 from lightspeed_agentic.inspection.errors import ClassifierResponseError
 from lightspeed_agentic.inspection.models import ClassifierDecision, ClassifierRequest
 
-CLASSIFIER_OUTPUT_TOKENS = 128
+CLASSIFIER_OUTPUT_TOKENS = 4096
 
 CLASSIFIER_SYSTEM_INSTRUCTION = """You are a tool-result safety classifier.
 
@@ -47,36 +47,74 @@ def _reject_duplicate_object_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any
     return payload
 
 
-def _response_text(response: Any) -> str:
-    """Extract only completed text without refusals or ambiguous tool-call data."""
-    if getattr(response, "tool_calls", None) or getattr(response, "invalid_tool_calls", None):
-        raise ClassifierResponseError("invalid_envelope")
+def _validate_response(response: Any, *, structured: bool = False) -> None:
+    """Reject unsafe raw replies before trusting either parsed decisions or text."""
     additional = getattr(response, "additional_kwargs", None)
-    if isinstance(additional, dict):
-        if additional.get("refusal") is not None:
-            raise ClassifierResponseError("refusal")
-        if additional.get("function_call") is not None or additional.get("tool_calls") not in (
-            None,
-            [],
-        ):
-            raise ClassifierResponseError("invalid_envelope")
+    if isinstance(additional, dict) and additional.get("refusal") is not None:
+        raise ClassifierResponseError("refusal")
     metadata = getattr(response, "response_metadata", None)
     if isinstance(metadata, dict):
-        if metadata.get("stop_reason") == "refusal":
+        finish = metadata.get("finish_reason")
+        stop = metadata.get("stop_reason")
+        status = metadata.get("status")
+        if stop == "refusal" or finish in ("content_filter", "SAFETY"):
             raise ClassifierResponseError("refusal")
-        for key, allowed in (
-            ("finish_reason", (None, "stop", "STOP")),
-            ("stop_reason", (None, "end_turn", "stop_sequence")),
-            ("status", (None, "completed")),
+        if metadata.get("error") is not None or status in ("failed", "cancelled"):
+            raise ClassifierResponseError("provider_response_error")
+        details = metadata.get("incomplete_details")
+        if (
+            finish in ("length", "MAX_TOKENS")
+            or stop in ("max_tokens", "model_context_window_exceeded")
+            or (isinstance(details, dict) and details.get("reason") == "max_output_tokens")
         ):
-            if metadata.get(key) not in allowed:
+            raise ClassifierResponseError("output_limit")
+        if details is not None or status in ("incomplete", "in_progress", "queued"):
+            raise ClassifierResponseError("incomplete_response")
+        for value, allowed in (
+            (
+                finish,
+                (None, "stop", "STOP", "tool_calls", "function_call")
+                if structured
+                else (None, "stop", "STOP"),
+            ),
+            (
+                stop,
+                (None, "end_turn", "stop_sequence", "tool_use")
+                if structured
+                else (None, "end_turn", "stop_sequence"),
+            ),
+            (status, (None, "completed")),
+        ):
+            if value not in allowed:
                 raise ClassifierResponseError("invalid_envelope")
+    content = getattr(response, "content", response)
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "refusal":
+                raise ClassifierResponseError("refusal")
+            if block.get("status") not in (None, "completed"):
+                raise ClassifierResponseError("incomplete_response")
+    if getattr(response, "invalid_tool_calls", None):
+        raise ClassifierResponseError("invalid_envelope")
+
+
+def _response_text(response: Any) -> str:
+    """Extract only completed text without refusals or ambiguous tool-call data."""
+    _validate_response(response)
+    if getattr(response, "tool_calls", None):
+        raise ClassifierResponseError("invalid_envelope")
+    additional = getattr(response, "additional_kwargs", None)
+    if isinstance(additional, dict) and (
+        additional.get("function_call") is not None
+        or additional.get("tool_calls") not in (None, [])
+    ):
+        raise ClassifierResponseError("invalid_envelope")
     content = getattr(response, "content", response)
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        if any(isinstance(block, dict) and block.get("type") == "refusal" for block in content):
-            raise ClassifierResponseError("refusal")
         if any(
             not isinstance(block, dict)
             or block.get("type") != "text"
@@ -96,10 +134,61 @@ def _decision_from_text(text: str) -> ClassifierDecision:
         payload = json.loads(text, object_pairs_hook=_reject_duplicate_object_keys)
     except (json.JSONDecodeError, ValueError):
         raise ClassifierResponseError("non_json") from None
+    return _decision_from_payload(payload)
+
+
+def _decision_from_payload(payload: Any) -> ClassifierDecision:
     try:
         return ClassifierDecision.model_validate(payload)
     except (TypeError, ValueError):
         raise ClassifierResponseError("schema_mismatch") from None
+
+
+def _decision_from_native_calls(calls: Any) -> ClassifierDecision:
+    """Require one classifier call and reject duplicate keys in serialized arguments."""
+    if not isinstance(calls, list) or len(calls) != 1 or not isinstance(calls[0], dict):
+        raise ClassifierResponseError("invalid_envelope")
+    call = calls[0].get("function", calls[0])
+    if not isinstance(call, dict) or call.get("name") != ClassifierDecision.__name__:
+        raise ClassifierResponseError("invalid_envelope")
+    arguments = call.get("arguments", call.get("args", call.get("input")))
+    if isinstance(arguments, str):
+        return _decision_from_text(arguments)
+    return _decision_from_payload(arguments)
+
+
+def _structured_decision(response: Any, parsed: Any) -> ClassifierDecision:
+    """Do not let lossy SDK parsing hide multiple calls or duplicate argument keys."""
+    calls = getattr(response, "tool_calls", None)
+    if calls:
+        decision = _decision_from_native_calls(calls)
+        # SDKs expose the same call in different forms. Check each available
+        # representation independently; do not count those copies as extra calls.
+        originals: list[Any] = []
+        additional = getattr(response, "additional_kwargs", None)
+        if isinstance(additional, dict):
+            if additional.get("tool_calls") is not None:
+                originals.append(additional["tool_calls"])
+            if additional.get("function_call") is not None:
+                originals.append([additional["function_call"]])
+        content = getattr(response, "content", None)
+        if isinstance(content, list):
+            native_blocks = [
+                block
+                for block in content
+                if isinstance(block, dict)
+                and block.get("type") in ("function_call", "tool_use", "tool_call")
+            ]
+            if native_blocks:
+                originals.append(native_blocks)
+        for original in originals:
+            if _decision_from_native_calls(original) != decision:
+                raise ClassifierResponseError("invalid_envelope")
+    else:
+        decision = _decision_from_text(_response_text(response))
+    if _decision_from_payload(parsed) != decision:
+        raise ClassifierResponseError("invalid_envelope")
+    return decision
 
 
 class LangChainClassifierClient:
@@ -143,16 +232,16 @@ class LangChainClassifierClient:
         target = self._structured_model or self._model
         response = await target.ainvoke(messages, config={"tags": ["nostream"]})
         if self._structured_model is not None:
-            if (
-                not isinstance(response, dict)
-                or response.get("parsing_error") is not None
-                or (response.get("parsed") is None and response.get("raw") is None)
-            ):
+            if not isinstance(response, dict):
+                raise ClassifierResponseError("schema_mismatch")
+            if response.get("raw") is None:
+                raise ClassifierResponseError("invalid_envelope")
+            # A parsed object does not override provider cutoff/refusal/error signals.
+            # Check these before parsing errors to retain the precise cutoff reason.
+            _validate_response(response["raw"], structured=True)
+            if response.get("parsing_error") is not None:
                 raise ClassifierResponseError("schema_mismatch")
             if response.get("parsed") is None:
                 return _decision_from_text(_response_text(response["raw"]))
-            try:
-                return ClassifierDecision.model_validate(response["parsed"])
-            except (TypeError, ValueError):
-                raise ClassifierResponseError("schema_mismatch") from None
+            return _structured_decision(response["raw"], response["parsed"])
         return _decision_from_text(_response_text(response))

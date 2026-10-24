@@ -82,6 +82,19 @@ async def _classify_with_retries(
                 if isinstance(exc, ValueError) or type(exc).__name__ == "ValidationError"
                 else "provider_error"
             )
+            if isinstance(exc, ClassifierResponseError):
+                logger.warning(
+                    "tool result safety classifier response rejected: response_issue=%s attempt=%d",
+                    response_issue,
+                    attempt + 1,
+                    extra={
+                        "inspection.failure_type": failure_type,
+                        "inspection.response_issue": response_issue,
+                        "inspection.attempt_count": attempt + 1,
+                        "inspection.chunk_index": request.chunk_index,
+                        "inspection.chunk_count": request.chunk_count,
+                    },
+                )
             if attempt == 2:
                 raise InspectionError(
                     CLASSIFIER_FAILURE_MESSAGE,
@@ -152,6 +165,7 @@ async def inspect_tool_result(
             "inspection.chunk_count": chunk.chunk_count,
             "inspection.chunk_index": chunk.chunk_index,
             "inspection.enabled": True,
+            "inspection.output_token_limit": output_tokens,
             "tool.name": tool_name,
         }
         if provider:
@@ -199,14 +213,27 @@ async def inspect_tool_result(
                 extra: dict[str, object] = {
                     "inspection.outcome": "classifier_error",
                     "inspection.failure_type": exc.failure_type,
+                    "inspection.attempt_count": exc.attempt_count or 3,
                 }
+                if exc.response_issue is not None:
+                    extra["inspection.response_issue"] = exc.response_issue
                 if exc.provider_status_code is not None:
                     extra["inspection.provider_status_code"] = exc.provider_status_code
                 if exc.provider_error_type is not None:
                     extra["inspection.provider_error_type"] = exc.provider_error_type
                 if exc.provider_error_reason is not None:
                     extra["inspection.provider_error_reason"] = exc.provider_error_reason
-                logger.warning("tool result safety inspection failed", extra=extra)
+                logger.warning(
+                    "tool result safety inspection failed: "
+                    "failure_type=%s response_issue=%s attempts=%d "
+                    "provider_status=%s provider_reason=%s",
+                    exc.failure_type,
+                    exc.response_issue or "not_available",
+                    exc.attempt_count or 3,
+                    exc.provider_status_code if exc.provider_status_code is not None else "unknown",
+                    exc.provider_error_reason or "unknown",
+                    extra=extra,
+                )
                 raise
 
             span.set_attribute("inspection.attempt_count", attempt_count)

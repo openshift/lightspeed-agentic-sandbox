@@ -16,6 +16,7 @@ import httpx
 import pytest
 
 from lightspeed_agentic import tls
+from lightspeed_agentic.inspection.client import CLASSIFIER_OUTPUT_TOKENS
 
 
 @pytest.fixture(autouse=True)
@@ -400,11 +401,15 @@ async def test_vertex_requests_preserve_api_version_and_explicit_paths(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("hosting", ["direct", "bedrock", "vertex"])
-@pytest.mark.parametrize("max_output_tokens", [None, 128], ids=["sdk-default", "classifier-limit"])
+@pytest.mark.parametrize("stop_reason", ["tool_use", "max_tokens"])
+@pytest.mark.parametrize(
+    "max_output_tokens", [None, CLASSIFIER_OUTPUT_TOKENS], ids=["sdk-default", "classifier-limit"]
+)
 async def test_classifier_output_budget_reaches_anthropic_http_request(
     monkeypatch: pytest.MonkeyPatch,
     hosting: str,
     max_output_tokens: int | None,
+    stop_reason: str,
 ) -> None:
     from lightspeed_agentic.config import (
         AnthropicCredentialSource,
@@ -415,6 +420,7 @@ async def test_classifier_output_budget_reaches_anthropic_http_request(
         VertexProviderParameters,
     )
     from lightspeed_agentic.inspection.client import LangChainClassifierClient
+    from lightspeed_agentic.inspection.errors import ClassifierResponseError
     from lightspeed_agentic.inspection.models import ClassifierRequest
     from lightspeed_agentic.providers.models import anthropic as anthropic_models
 
@@ -437,7 +443,7 @@ async def test_classifier_output_budget_reaches_anthropic_http_request(
                         "input": {"injectionDetected": False, "category": "none"},
                     }
                 ],
-                "stop_reason": "tool_use",
+                "stop_reason": stop_reason,
                 "stop_sequence": None,
                 "usage": {"input_tokens": 10, "output_tokens": 13},
             },
@@ -480,7 +486,7 @@ async def test_classifier_output_budget_reaches_anthropic_http_request(
                     )
                 )
                 model.async_client.access_token = "test-token"  # noqa: S105 - offline SDK credential
-            decision = await LangChainClassifierClient(model).classify(
+            call = LangChainClassifierClient(model).classify(
                 ClassifierRequest(
                     toolName="probe",
                     resultType="result",
@@ -489,15 +495,203 @@ async def test_classifier_output_budget_reaches_anthropic_http_request(
                     content="safe",
                 )
             )
-
-    assert decision.injection_detected is False
+            if stop_reason == "max_tokens":
+                with pytest.raises(ClassifierResponseError) as error:
+                    await call
+                assert error.value.issue == "output_limit"
+            else:
+                assert (await call).injection_detected is False
     assert len(requests) == 1
     body = json.loads(requests[0].content)
     if max_output_tokens is None:
-        assert body["max_tokens"] > 128  # Keep the SDK's model-profile default.
+        assert body["max_tokens"] > 1024  # Keep the SDK's model-profile default.
     else:
-        assert body["max_tokens"] == 128
+        assert body["max_tokens"] == 4096
     assert not {"max_output_tokens", "max_completion_tokens"} & body.keys()
+
+
+@pytest.mark.parametrize(
+    ("decision_kind", "expected_outcome", "response_issue", "attempts"),
+    [
+        ("benign", "benign", None, 1),
+        ("malicious", "malicious", None, 1),
+        ("cutoff", "classifier_error", "output_limit", 3),
+        ("ambiguous", "classifier_error", "invalid_envelope", 3),
+    ],
+)
+@pytest.mark.asyncio
+async def test_anthropic_classifier_uses_nonstreaming_transport_inside_agent_graph(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    span_exporter: Any,
+    decision_kind: str,
+    expected_outcome: str,
+    response_issue: str | None,
+    attempts: int,
+) -> None:
+    from lightspeed_agentic.config import AnthropicCredentialSource, ModelParameters
+    from lightspeed_agentic.inspection.errors import ToolResultSafetyInspectionFailed
+    from lightspeed_agentic.providers.deepagents import DeepAgentsProvider
+    from lightspeed_agentic.providers.model_router import ResolvedModelRoute
+    from lightspeed_agentic.providers.models.anthropic import create_direct_model
+    from lightspeed_agentic.types import ProviderQueryOptions, ResultEvent, ToolResultEvent
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    main: list[dict[str, Any]] = []
+    classifications: list[dict[str, Any]] = []
+
+    def reply(content: list[dict[str, Any]], stop: str, stream: bool) -> httpx.Response:
+        message = {
+            "id": "msg_offline",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-haiku-4-5",
+            "content": content,
+            "stop_reason": stop,
+            "stop_sequence": None,
+            "usage": {"input_tokens": 10, "output_tokens": 13},
+        }
+        if not stream:
+            return httpx.Response(200, json=message)
+        events = [
+            {"type": "message_start", "message": {**message, "content": [], "stop_reason": None}}
+        ]
+        for index, block in enumerate(content):
+            tool = block["type"] == "tool_use"
+            events.extend(
+                [
+                    {
+                        "type": "content_block_start",
+                        "index": index,
+                        "content_block": {**block, "input": {}} if tool else {**block, "text": ""},
+                    },
+                    {
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": json.dumps(block["input"]),
+                        }
+                        if tool
+                        else {"type": "text_delta", "text": block["text"]},
+                    },
+                    {"type": "content_block_stop", "index": index},
+                ]
+            )
+        events.extend(
+            [
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": stop, "stop_sequence": None},
+                    "usage": message["usage"],
+                },
+                {"type": "message_stop"},
+            ]
+        )
+        sse = "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events)
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        classifier = {tool["name"] for tool in body.get("tools", [])} == {"ClassifierDecision"}
+        if classifier:
+            classifications.append(body)
+            content = [
+                {
+                    "type": "tool_use",
+                    "id": "call_decision",
+                    "name": "ClassifierDecision",
+                    "input": {
+                        "injectionDetected": decision_kind == "malicious",
+                        "category": "unknown" if decision_kind == "malicious" else "none",
+                    },
+                }
+            ]
+            if decision_kind == "ambiguous":
+                content.append(
+                    {
+                        **content[0],
+                        "id": "call_other",
+                        "input": {"injectionDetected": True, "category": "unknown"},
+                    }
+                )
+            stop = "max_tokens" if decision_kind == "cutoff" else "tool_use"
+        else:
+            main.append(body)
+            if len(main) == 1:
+                content = [
+                    {
+                        "type": "tool_use",
+                        "id": "call_execute",
+                        "name": "execute",
+                        "input": {"command": "printf 'offline-tool-result'"},
+                    }
+                ]
+                stop = "tool_use"
+            else:
+                assert len(main) == 2
+                content = [{"type": "text", "text": "offline-answer"}]
+                stop = "end_turn"
+        return reply(content, stop, bool(body.get("stream")))
+
+    transport = httpx.MockTransport(respond)
+    with httpx.Client(transport=transport) as sync_client:
+        async with httpx.AsyncClient(transport=transport) as async_client:
+            monkeypatch.setattr(tls, "create_http_client", lambda: sync_client)
+            monkeypatch.setattr(tls, "create_async_http_client", lambda: async_client)
+            route = ResolvedModelRoute(
+                route="anthropic",
+                model="claude-haiku-4-5",
+                create_model=create_direct_model,
+                model_parameters=ModelParameters(
+                    model="claude-haiku-4-5",
+                    credentials=AnthropicCredentialSource(api_key="test-api-key"),
+                ),
+                telemetry_provider="anthropic",
+                structured_output_method="function_calling",
+            )
+            provider = DeepAgentsProvider(route)
+            options = ProviderQueryOptions(
+                prompt="Run the shell command and finish.",
+                system_prompt="Follow the request.",
+                model=route.model,
+                cwd=str(tmp_path),
+                allowed_tools=["Bash"],
+                max_turns=5,
+                tool_output_inspection_enabled=True,
+            )
+            events: list[Any] = []
+
+            async def collect() -> None:
+                async for event in provider.query(options):
+                    events.append(event)
+
+            if decision_kind == "benign":
+                await collect()
+                assert isinstance(events[-1], ResultEvent)
+                assert events[-1].text == "offline-answer"
+                assert any(isinstance(event, ToolResultEvent) for event in events)
+                assert len(main) == 2
+            else:
+                with pytest.raises(ToolResultSafetyInspectionFailed):
+                    await collect()
+                assert not any(
+                    isinstance(event, (ToolResultEvent, ResultEvent)) for event in events
+                )
+                assert len(main) == 1
+
+    assert len(classifications) == attempts
+    assert all(not body.get("stream") for body in classifications)
+    assert all(body["max_tokens"] == 4096 and "thinking" not in body for body in classifications)
+    assert all(body.get("stream") is True for body in main)
+    inspections = [
+        span for span in span_exporter.get_finished_spans() if span.name == "tool_result.inspection"
+    ]
+    assert len(inspections) == 1
+    assert inspections[0].attributes["inspection.outcome"] == expected_outcome
+    assert inspections[0].attributes["inspection.attempt_count"] == attempts
+    if response_issue:
+        assert inspections[0].attributes["inspection.response_issue"] == response_issue
 
 
 def test_module_import_does_not_load_optional_provider_sdks() -> None:

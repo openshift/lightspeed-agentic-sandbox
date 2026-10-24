@@ -451,28 +451,3 @@ def render_mcp_policy_context(policies: list[MCPPolicyEntry]) -> str:
 def _headers_dict(server: ResolvedMCPServer | AdmittedMCPProviderServer) -> dict[str, str]:
     """Convert already-resolved headers to the SDK connection format."""
     return {h.name: h.value for h in server.headers}
-
-
-def to_openai_mcp_servers(servers: list[AdmittedMCPProviderServer]) -> list[Any]:
-    """Convert resolved servers to OpenAI Agents MCP server instances."""
-    from agents.mcp import MCPServerStreamableHttp, MCPServerStreamableHttpParams
-
-    from lightspeed_agentic.tls import create_async_http_client
-
-    result: list[Any] = []
-    for s in servers:
-        params = MCPServerStreamableHttpParams(
-            url=s.url,
-            timeout=s.timeout,
-            httpx_client_factory=create_async_http_client,
-        )
-        if s.headers:
-            params["headers"] = _headers_dict(s)
-        result.append(
-            MCPServerStreamableHttp(
-                params=params,
-                name=s.name,
-                tool_filter={"allowed_tool_names": list(s.allowed_tool_names)},
-            )
-        )
-    return result

@@ -2,8 +2,8 @@
 
 Multi-provider agentic sandbox for OpenShift Lightspeed. This repo runs as a
 one-shot batch process with a DeepAgents harness for Anthropic, Vertex Gemini,
-and native or custom OpenAI-compatible endpoints (including vLLM). Azure and
-Vertex/OpenAI retain the legacy OpenAI provider adapter.
+native or custom OpenAI-compatible endpoints (including vLLM), and Azure OpenAI.
+Vertex/OpenAI is unimplemented pending OLS-4472; the legacy OpenAI adapter is removed.
 When editing it, optimize for thin provider wrappers, consistent event mapping,
 and tests that stay offline unless you are intentionally running live cluster BDD.
 
@@ -98,7 +98,7 @@ Use this table to navigate from component → spec → executable tests:
 | [run-api.md](.ai/spec/what/run-api.md) | Batch entrypoint: input files, context prefix, timeouts, Result CR publishing | [test_batch.py](tests/test_batch.py), [test_batch_input.py](tests/test_batch_input.py), [test_run_agent.py](tests/test_run_agent.py), [test_publish_results_publish.py](tests/test_publish_results_publish.py), [test_publish_results_status.py](tests/test_publish_results_status.py) |
 | [health-probes.md](.ai/spec/what/health-probes.md) | Readiness checks at batch startup (R1) | [test_ready.py](tests/test_ready.py), [test_batch.py](tests/test_batch.py) (readiness fail-fast) |
 | [provider-contract.md](.ai/spec/what/provider-contract.md) | Provider adapter rules: events, structured output, thin-adapter principle | [test_run_agent.py](tests/test_run_agent.py), [test_deepagents.py](tests/test_deepagents.py); live batch: [skills.feature](tests/e2e/features/skills.feature), [structured_output.feature](tests/e2e/features/structured_output.feature), [analysis_output.feature](tests/e2e/features/analysis_output.feature), [mcp.feature](tests/e2e/features/mcp.feature), [reasoning_config.feature](tests/e2e/features/reasoning_config.feature) |
-| [configuration.md](.ai/spec/what/configuration.md) | Provider selection, model resolution, skills directory, env vars | [test_model_resolution.py](tests/test_model_resolution.py), [test_config.py](tests/test_config.py); live batch: [mcp.feature](tests/e2e/features/mcp.feature), [reasoning_config.feature](tests/e2e/features/reasoning_config.feature) |
+| [configuration.md](.ai/spec/what/configuration.md) | Provider selection, model resolution, skills directory, env vars | [test_model_router.py](tests/test_model_router.py), [test_config.py](tests/test_config.py); live batch: [mcp.feature](tests/e2e/features/mcp.feature), [reasoning_config.feature](tests/e2e/features/reasoning_config.feature) |
 | [e2e-testing.md](.ai/spec/what/e2e-testing.md) | Batch cluster BDD harness (OpenShift Jobs, Result CRs, fixtures) | Live batch: [sandbox_e2e.feature](tests/e2e/features/sandbox_e2e.feature), [structured_output.feature](tests/e2e/features/structured_output.feature), [skills.feature](tests/e2e/features/skills.feature), [analysis_output.feature](tests/e2e/features/analysis_output.feature), [mcp.feature](tests/e2e/features/mcp.feature), [reasoning_config.feature](tests/e2e/features/reasoning_config.feature); helpers: [test_batch_e2e_helpers.py](tests/test_batch_e2e_helpers.py), [test_e2e_credentials.py](tests/test_e2e_credentials.py), [test_analysis_schemas.py](tests/test_analysis_schemas.py) |
 
 ## Quick Commands
@@ -135,21 +135,20 @@ src/lightspeed_agentic/
 │   └── status.py         # Status assembly (conditions, failureReason)
 ├── providers/
 │   ├── deepagents.py     # Route-driven DeepAgents adapter
-│   ├── openai.py         # Legacy openai-agents adapter
-│   ├── model_router.py   # Typed DeepAgents routes; legacy SDK configuration for OpenAI
+│   ├── model_router.py   # Typed DeepAgents routes; Vertex/OpenAI deferred to OLS-4472
 │   └── models/
 │       ├── anthropic.py  # Explicit direct, Bedrock, and Vertex model constructors
 │       ├── gemini.py     # Vertex Gemini model constructor
 │       └── openai.py     # OpenAI Responses/Chat Completions models and schema shaping
 ```
 
-| Feature | DeepAgents (Anthropic, Vertex Gemini, native/custom OpenAI) | Legacy OpenAI Agents |
-| --- | --- | --- |
-| Models | Anthropic direct, Bedrock, and Vertex; Gemini on Vertex; native OpenAI and custom/vLLM endpoints | Azure, Vertex/OpenAI |
-| Tools | `LocalShellBackend` + `/skills/` `FilesystemBackend` route + MCP tools | Native `SandboxAgent` shell/filesystem/skills |
-| Skills | `/skills/` virtual route passed to `create_deep_agent()` when skills exist | Native `Skills` capability |
-| Structured output | Tool-free second pass without reasoning; native OpenAI uses strict JSON schema, compatible endpoints preserve the supplied schema | Existing endpoint-specific `output_type` / two-pass behavior |
-| Streaming | `astream(stream_mode="messages")` | `Runner.run_streamed()` |
+| Feature | DeepAgents |
+| --- | --- |
+| Models | Anthropic direct, Bedrock, and Vertex; Gemini on Vertex; native/custom OpenAI; Azure API key/Entra ID |
+| Tools | `LocalShellBackend` + `/skills/` `FilesystemBackend` route + MCP tools |
+| Skills | `/skills/` virtual route passed to `create_deep_agent()` when skills exist |
+| Structured output | Tool-free second pass without reasoning; native OpenAI uses strict JSON schema, compatible endpoints preserve the supplied schema |
+| Streaming | `astream(stream_mode="messages")` |
 
 Keep provider adapters thin. The SDK should own tool execution and skill
 discovery; `tools.py` holds the shared allowlist constant only. The SKILL.md
@@ -172,7 +171,8 @@ for the route, artifact storage, and execution limits.
   `model_router.py` and `providers/models/`, not the adapter. Native OpenAI means
   hosting `openai` with no endpoint override or an HTTPS `api.openai.com` hostname.
   Custom/vLLM endpoints use Chat Completions; native OpenAI uses Responses.
-  Azure and Vertex/OpenAI retain the legacy adapter.
+  Azure uses the same DeepAgents harness through its native Azure model integration;
+  Vertex/OpenAI is unimplemented pending OLS-4472.
   See configuration rule 3a for endpoint precedence and HTTPS validation.
 - `types.py` event objects are frozen dataclasses. New event types should follow
   the same pattern and stay simple to serialize/log.

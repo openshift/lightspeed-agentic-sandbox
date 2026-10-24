@@ -8,12 +8,12 @@ import sys
 from pathlib import Path
 
 
-def test_gemini_route_is_lazy_and_legacy_provider_is_absent() -> None:
+def test_gemini_route_is_lazy_and_legacy_providers_are_absent() -> None:
     project_root = Path(__file__).resolve().parents[1]
     script = r"""
 import builtins
 
-blocked = ("deepagents", "langchain", "langgraph", "langchain_google_genai")
+blocked = ("deepagents", "langchain", "langgraph", "langchain_google_genai", "agents")
 original_import = builtins.__import__
 
 def guarded_import(name, *args, **kwargs):
@@ -25,13 +25,13 @@ builtins.__import__ = guarded_import
 import lightspeed_agentic.batch
 from lightspeed_agentic.factory import create_provider
 
-assert create_provider("openai").name == "openai"
-try:
-    create_provider("gemini")
-except ValueError as exc:
-    assert "Unknown provider" in str(exc)
-else:
-    raise AssertionError("legacy Gemini provider should not be registered")
+for name in ("openai", "gemini"):
+    try:
+        create_provider(name)
+    except ValueError as exc:
+        assert "Unknown provider" in str(exc)
+    else:
+        raise AssertionError(f"legacy provider should not be registered: {name}")
 
 from pathlib import Path
 from lightspeed_agentic.config import ResolvedModelFamily

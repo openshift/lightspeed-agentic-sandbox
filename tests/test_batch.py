@@ -4,15 +4,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-import httpx
 import pytest
 
 from lightspeed_agentic.batch import BatchInput, InputReadError
@@ -23,7 +19,6 @@ from lightspeed_agentic.mcp import (
     MCPConfigError,
     MCPPolicyEntry,
 )
-from lightspeed_agentic.providers.openai import OpenAIProvider
 from lightspeed_agentic.run_agent import AgentResult
 
 from .helpers import make_model_route
@@ -46,88 +41,25 @@ _MOCK_FAMILY = ResolvedModelFamily("anthropic", ("ANTHROPIC_API_KEY",), hosting=
 _MOCK_ROUTE = make_model_route(Mock(), model="test-model")
 
 
-class TestProviderLifecycle:
-    def test_closes_keepalive_connection_on_query_loop(self) -> None:
-        """The batch owns the async client until teardown on its query loop."""
-        from lightspeed_agentic.batch import _run_with_provider_cleanup
-
-        class Handler(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
-
-            def do_GET(self) -> None:
-                self.send_response(200)
-                self.send_header("Content-Length", "2")
-                self.end_headers()
-                self.wfile.write(b"ok")
-
-            def log_message(self, *_args: object) -> None:
-                pass
-
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        provider = OpenAIProvider()
-        try:
-
-            async def run_query(_provider: OpenAIProvider) -> AgentResult:
-                from openai import AsyncAzureOpenAI
-
-                provider._client = AsyncAzureOpenAI(
-                    azure_endpoint=f"http://127.0.0.1:{server.server_port}",
-                    api_version="2025-03-01-preview",
-                    api_key="test",
-                    http_client=httpx.AsyncClient(),
-                )
-                response = await provider._client._client.get(
-                    f"http://127.0.0.1:{server.server_port}/probe"
-                )
-                assert response.text == "ok"
-                return AgentResult(output={"success": True})
-
-            with patch("lightspeed_agentic.batch.run_agent_query", side_effect=run_query):
-                result = asyncio.run(_run_with_provider_cleanup(provider))
-            assert result.output == {"success": True}
-            assert provider._client is None
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=5)
-
-    @pytest.mark.asyncio
-    async def test_closes_credential_when_client_close_fails(self) -> None:
-        provider = OpenAIProvider()
-        client = AsyncMock()
-        client.close.side_effect = RuntimeError("client teardown failed")
-        credential = AsyncMock()
-        provider._client = client
-        provider._azure_credential = credential
-
-        with pytest.raises(RuntimeError, match="client teardown failed"):
-            await provider.aclose()
-
-        credential.close.assert_awaited_once_with()
-
-
 class TestBatchMain:
     @pytest.mark.parametrize(
-        ("hosting", "family", "adapter", "base_url"),
+        ("hosting", "family", "base_url"),
         [
-            ("anthropic", "anthropic", "deepagents", None),
-            ("vertex", "anthropic", "deepagents", None),
-            ("bedrock", "anthropic", "deepagents", None),
-            ("vertex", "google", "deepagents", None),
-            ("vertex", "openai", "openai", None),
-            ("openai", "openai", "deepagents", None),
-            ("openai", "openai", "deepagents", "https://vllm.example.test/v1"),
-            ("azure", "openai", "openai", None),
+            ("anthropic", "anthropic", None),
+            ("vertex", "anthropic", None),
+            ("bedrock", "anthropic", None),
+            ("vertex", "google", None),
+            ("openai", "openai", None),
+            ("openai", "openai", "https://vllm.example.test/v1"),
+            ("azure", "openai", None),
         ],
     )
     def test_resolved_route_controls_provider_and_query_model(
-        self, hosting: str, family: str, adapter: str, base_url: str | None
+        self, hosting: str, family: str, base_url: str | None
     ) -> None:
         from lightspeed_agentic.batch import main
 
-        provider = SimpleNamespace(name=adapter, aclose=AsyncMock())
+        provider = SimpleNamespace(name="deepagents", aclose=AsyncMock())
         result = AgentResult(output={"success": True, "summary": "done"})
         with (
             patch.dict(
@@ -169,26 +101,23 @@ class TestBatchMain:
 
         resolve_family.assert_called_once_with()
         assert ready.call_args.args[0].name == family
-        if adapter == "deepagents":
-            assert ready.call_args.args[1] is create.call_args.args[1]
-        else:
-            assert ready.call_args.args[1] is None
+        assert len(create.call_args.args) == 2
+        assert ready.call_args.args[1] is create.call_args.args[1]
         assert query.call_args.kwargs["model"] == "exact-configured-model"
         assert query.call_args.args[0] is provider
-        if adapter == "deepagents":
-            assert create.call_args.args[0] == "deepagents"
-            route = create.call_args.args[1]
-            assert route.model == "exact-configured-model"
-            expected_route = (
-                "anthropic"
-                if hosting == "anthropic"
-                else ("openai-compatible" if base_url else "openai")
-                if hosting == "openai"
-                else f"{hosting}/{family if hosting == 'vertex' else 'anthropic'}"
-            )
-            assert route.route == expected_route
-        else:
-            create.assert_called_once_with(adapter)
+        assert create.call_args.args[0] == "deepagents"
+        route = create.call_args.args[1]
+        assert route.model == "exact-configured-model"
+        expected_route = (
+            "anthropic"
+            if hosting == "anthropic"
+            else ("openai-compatible" if base_url else "openai")
+            if hosting == "openai"
+            else "azure"
+            if hosting == "azure"
+            else f"{hosting}/{family if hosting == 'vertex' else 'anthropic'}"
+        )
+        assert route.route == expected_route
         provider.aclose.assert_awaited_once_with()
         assert publish.call_args.args[1] == result.output
         exit_mock.assert_not_called()
@@ -298,7 +227,6 @@ class TestBatchMain:
                 return_value=(True, {"provider_env": "ok"}),
             ),
             patch("lightspeed_agentic.batch.create_provider") as create_provider,
-            patch("lightspeed_agentic.batch.resolve_router_model", return_value="test-model"),
             patch("lightspeed_agentic.batch.run_agent_query", new_callable=AsyncMock) as run_query,
             patch("lightspeed_agentic.batch.publish_agent_result") as publish,
             patch("lightspeed_agentic.batch.otel_runtime_enabled", return_value=True),
@@ -366,7 +294,6 @@ class TestBatchMain:
             patch("lightspeed_agentic.batch.parse_max_turns", return_value=200),
             patch("lightspeed_agentic.batch.run_readiness_checks", return_value=(True, {})),
             patch("lightspeed_agentic.batch.create_provider") as create_provider,
-            patch("lightspeed_agentic.batch.resolve_router_model", return_value="test-model"),
             patch(
                 "lightspeed_agentic.batch.run_agent_query",
                 new_callable=AsyncMock,
@@ -406,7 +333,6 @@ class TestBatchMain:
             patch("lightspeed_agentic.batch.parse_agent_timeout", return_value=300),
             patch("lightspeed_agentic.batch.parse_max_turns", return_value=200),
             patch("lightspeed_agentic.batch.create_provider") as create_provider,
-            patch("lightspeed_agentic.batch.resolve_router_model", return_value="test-model"),
             patch("lightspeed_agentic.batch.run_agent_query", new_callable=AsyncMock) as run_query,
             patch("lightspeed_agentic.batch.publish_agent_result"),
             patch("lightspeed_agentic.batch.otel_runtime_enabled", return_value=False),
@@ -446,7 +372,6 @@ class TestBatchMain:
             patch("lightspeed_agentic.batch.parse_agent_timeout", return_value=300),
             patch("lightspeed_agentic.batch.parse_max_turns", return_value=200),
             patch("lightspeed_agentic.batch.create_provider") as create_provider,
-            patch("lightspeed_agentic.batch.resolve_router_model", return_value="test-model"),
             patch("lightspeed_agentic.batch.run_agent_query", new_callable=AsyncMock) as run_query,
             patch("lightspeed_agentic.batch.publish_agent_result"),
             patch("lightspeed_agentic.batch.otel_runtime_enabled", return_value=False),
@@ -485,7 +410,6 @@ class TestBatchMain:
             patch("lightspeed_agentic.batch.parse_agent_timeout", return_value=300),
             patch("lightspeed_agentic.batch.parse_max_turns", return_value=200),
             patch("lightspeed_agentic.batch.create_provider") as create_provider,
-            patch("lightspeed_agentic.batch.resolve_router_model", return_value="test-model"),
             patch("lightspeed_agentic.batch.run_agent_query", new_callable=AsyncMock) as run_query,
             patch("lightspeed_agentic.batch.publish_agent_result"),
             patch("lightspeed_agentic.batch.otel_runtime_enabled", return_value=False),
@@ -538,6 +462,86 @@ class TestBatchMain:
             )
             exit_mock.assert_called_once_with(1)
 
+    def test_vertex_openai_exits_before_readiness_discovery_or_provider_creation(self) -> None:
+        from lightspeed_agentic.batch import main
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "LIGHTSPEED_PROVIDER": "vertex",
+                    "LIGHTSPEED_MODEL_PROVIDER": "openai",
+                    "LIGHTSPEED_MODEL": "configured-model",
+                    "LIGHTSPEED_AGENT_TIMEOUT_SECONDS": "300",
+                    "LIGHTSPEED_AGENT_MAX_TURNS": "200",
+                },
+                clear=True,
+            ),
+            patch("lightspeed_agentic.batch.read_batch_inputs", return_value=_INPUTS),
+            patch("lightspeed_agentic.batch.configure_tls"),
+            patch(
+                "lightspeed_agentic.batch.run_readiness_checks",
+                side_effect=AssertionError("unimplemented route must not reach readiness"),
+            ),
+            patch(
+                "lightspeed_agentic.batch.discover_and_admit_mcp_servers",
+                side_effect=AssertionError("discovery must not run"),
+            ),
+            patch(
+                "lightspeed_agentic.batch.create_provider",
+                side_effect=AssertionError("provider must not be constructed"),
+            ),
+            patch("lightspeed_agentic.batch.write_termination_log") as write_log,
+            patch("lightspeed_agentic.batch.sys.exit") as exit_mock,
+        ):
+            main()
+
+        write_log.assert_called_once_with("Vertex/OpenAI is not implemented (OLS-4472)")
+        exit_mock.assert_called_once_with(1)
+
+    def test_azure_configuration_fails_readiness_before_discovery_or_provider_creation(
+        self, tmp_path
+    ) -> None:
+        from lightspeed_agentic.batch import main
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "LIGHTSPEED_PROVIDER": "azure",
+                    "LIGHTSPEED_MODEL": "operator-deployment",
+                    "LIGHTSPEED_PROVIDER_URL": "http://azure.example.test",
+                    "LIGHTSPEED_LLM_CREDENTIALS_PATH": str(tmp_path),
+                    "LIGHTSPEED_AGENT_TIMEOUT_SECONDS": "300",
+                    "LIGHTSPEED_AGENT_MAX_TURNS": "200",
+                    "AZURE_OPENAI_API_KEY": "RESOLVED-SECRET",
+                },
+                clear=True,
+            ),
+            patch("lightspeed_agentic.batch.read_batch_inputs", return_value=_INPUTS),
+            patch("lightspeed_agentic.batch.configure_tls"),
+            patch("lightspeed_agentic.batch.otel_runtime_enabled", return_value=False),
+            patch(
+                "lightspeed_agentic.batch.discover_and_admit_mcp_servers",
+                side_effect=AssertionError("discovery must not run"),
+            ),
+            patch(
+                "lightspeed_agentic.batch.create_provider",
+                side_effect=AssertionError("provider must not be constructed"),
+            ),
+            patch("lightspeed_agentic.batch.write_termination_log") as write_log,
+            patch("lightspeed_agentic.batch.sys.exit") as exit_mock,
+        ):
+            # Real family resolution, route selection, and readiness, not a mocked verdict.
+            main()
+
+            write_log.assert_called_once_with(
+                "readiness failed: provider_env=ok; "
+                "provider_configuration=error: Azure OpenAI requires a resolved HTTPS endpoint; "
+                "model_route=ok"
+            )
+            exit_mock.assert_called_once_with(1)
+
     def test_reasoning_config_failure_before_tracer_writes_termination_log(self) -> None:
         with (
             patch("lightspeed_agentic.batch.read_batch_inputs", return_value=_INPUTS),
@@ -575,7 +579,6 @@ class TestBatchMain:
             ),
             patch("lightspeed_agentic.batch.otel_runtime_enabled", return_value=False),
             patch("lightspeed_agentic.batch.create_provider") as create_provider,
-            patch("lightspeed_agentic.batch.resolve_router_model", return_value="test-model"),
             patch("lightspeed_agentic.batch.run_agent_query", new_callable=AsyncMock) as run_query,
             patch("lightspeed_agentic.batch.publish_agent_result"),
             patch("lightspeed_agentic.batch.init_tracer") as init_tracer,
@@ -667,7 +670,6 @@ class TestBatchMain:
                 return_value=(True, {"provider_env": "ok"}),
             ),
             patch("lightspeed_agentic.batch.create_provider") as create_provider,
-            patch("lightspeed_agentic.batch.resolve_router_model", return_value="test-model"),
             patch(
                 "lightspeed_agentic.batch.run_agent_query",
                 new_callable=AsyncMock,

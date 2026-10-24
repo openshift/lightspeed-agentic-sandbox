@@ -15,7 +15,7 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from lightspeed_agentic.config import (
     parse_agent_timeout,
@@ -23,8 +23,6 @@ from lightspeed_agentic.config import (
     parse_reasoning_config,
     parse_tool_output_inspection_enabled,
     resolve_model_family,
-    resolve_router_model,
-    resolve_startup_model,
 )
 from lightspeed_agentic.factory import create_provider
 from lightspeed_agentic.inspection.errors import ToolResultSafetyInspectionFailed
@@ -36,7 +34,7 @@ from lightspeed_agentic.mcp import (
     render_mcp_policy_context,
     split_admitted_mcp_servers,
 )
-from lightspeed_agentic.providers.model_router import ResolvedModelRoute, resolve_model_route
+from lightspeed_agentic.providers.model_router import resolve_model_route
 from lightspeed_agentic.publish_results.publish import (
     PublishError,
     publish_agent_result,
@@ -176,7 +174,7 @@ def main() -> None:
     try:
         configure_tls()
         model_family = resolve_model_family()
-        sdk, model_route = resolve_model_route(model_family=model_family)
+        _sdk, model_route = resolve_model_route(model_family=model_family)
         reasoning_config = parse_reasoning_config()
         mcp_servers = parse_mcp_servers()
         agent_timeout_seconds = parse_agent_timeout()
@@ -197,16 +195,8 @@ def main() -> None:
 
         admitted_mcp_servers = asyncio.run(discover_and_admit_mcp_servers(mcp_servers))
         provider_mcp_servers, mcp_policies = split_admitted_mcp_servers(admitted_mcp_servers)
-        if sdk is not None:
-            provider = create_provider(sdk.name)
-            if sdk.azure_credentials:
-                cast(Any, provider)._azure_credentials = sdk.azure_credentials
-            startup_model = resolve_startup_model(sdk.name)
-            model = resolve_router_model(provider.name, startup_model)
-        else:
-            model_route = cast(ResolvedModelRoute, model_route)
-            provider = create_provider("deepagents", model_route)
-            model = model_route.model
+        provider = create_provider("deepagents", model_route)
+        model = model_route.model
         audit_enabled = os.environ.get("LIGHTSPEED_AUDIT_ENABLED", "").strip().lower() == "true"
         capture_content = _resolve_capture_content(audit_enabled)
         skills_dir = os.environ.get("LIGHTSPEED_SKILLS_DIR", DEFAULT_SKILLS_DIR)

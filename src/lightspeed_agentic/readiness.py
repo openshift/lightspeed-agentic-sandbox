@@ -5,9 +5,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from lightspeed_agentic.config import (
     AnthropicCredentialSource,
+    AzureApiKeyCredentialSource,
+    AzureEntraCredentialSource,
+    AzureProviderParameters,
     BedrockCredentialSource,
     BedrockProviderParameters,
     ResolvedModelFamily,
@@ -84,6 +88,27 @@ def _check_bedrock_credentials(source: object) -> str:
     return "ok"
 
 
+def _check_azure_configuration(family: ResolvedModelFamily) -> str:
+    """Validate resolved Azure startup settings without constructing SDK clients."""
+    if not family.base_url or urlsplit(family.base_url).scheme != "https":
+        return "error: Azure OpenAI requires a resolved HTTPS endpoint"
+    if (
+        not isinstance(family.provider, AzureProviderParameters)
+        or not family.provider.api_version.strip()
+    ):
+        return "error: Azure OpenAI requires a resolved API version"
+    if not isinstance(
+        family.credentials, (AzureApiKeyCredentialSource, AzureEntraCredentialSource)
+    ):
+        return "error: Azure OpenAI requires resolved Azure credentials"
+    if (
+        isinstance(family.credentials, AzureApiKeyCredentialSource)
+        and not family.credentials.api_key.strip()
+    ):
+        return "error: Azure OpenAI requires a nonempty resolved API key"
+    return "ok"
+
+
 def _check_model_route(route: ResolvedModelRoute) -> str:
     """Validate required connection settings for a resolved model route."""
     parameters = route.model_parameters
@@ -132,7 +157,11 @@ def run_readiness_checks(
 ) -> tuple[bool, dict[str, str]]:
     """Return overall readiness and per-check status strings."""
     checks = {"provider_env": check_provider_env(sdk.expected_envs, sdk.credential_file_envs)}
-    if isinstance(sdk, ResolvedModelFamily) and isinstance(sdk.credentials, VertexCredentialSource):
+    if isinstance(sdk, ResolvedModelFamily) and sdk.hosting == "azure":
+        checks["provider_configuration"] = _check_azure_configuration(sdk)
+    elif isinstance(sdk, ResolvedModelFamily) and isinstance(
+        sdk.credentials, VertexCredentialSource
+    ):
         credential_path = sdk.credentials.credentials_file
         if not credential_path.is_file() or read_mounted_secret(credential_path) is None:
             checks["provider_credentials"] = (

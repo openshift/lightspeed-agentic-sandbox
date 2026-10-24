@@ -1,22 +1,18 @@
-"""Resolve model construction or return an unmigrated adapter's SDK config.
+"""Resolve model construction for supported DeepAgents routes.
 
 Routing happens at startup, without importing provider SDKs or creating clients.
 """
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import urlparse
 
 from lightspeed_agentic.config import (
-    DEFAULT_AZURE_API_VERSION,
     ModelParameters,
     ResolvedModelFamily,
-    ResolvedSDK,
-    VertexCredentialSource,
     _is_native_openai_endpoint,
     resolve_model_family,
 )
@@ -24,6 +20,8 @@ from lightspeed_agentic.config import (
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel, LanguageModelInput
     from langchain_core.runnables import Runnable
+
+    from lightspeed_agentic.config import AzureProviderParameters
 
 
 ModelCreator = Callable[[ModelParameters, dict[str, Any] | None], "BaseChatModel"]
@@ -56,8 +54,8 @@ def resolve_model_route(
     model: str | None = None,
     *,
     model_family: ResolvedModelFamily | None = None,
-) -> tuple[ResolvedSDK, None] | tuple[None, ResolvedModelRoute]:
-    """Return SDK config for legacy adapters or a typed route for migrated models.
+) -> tuple[None, ResolvedModelRoute]:
+    """Return a typed route; Vertex/OpenAI is deferred to OLS-4472.
 
     Route model precedence is an explicit override, then the resolved family model.
     Every model family must resolve a model; model clients remain unconstructed and
@@ -70,66 +68,68 @@ def resolve_model_route(
         raise ValueError(f"No model configured for {model_family.name}")
     match model_family.name:
         case "openai":
-            if model_family.hosting == "openai":
-                from lightspeed_agentic.providers.models.openai import (
-                    bind_openai_compatible_output,
-                    create_native_openai_model,
-                    create_openai_compatible_model,
-                    native_openai_structured_output_schema,
-                    openai_compatible_structured_output_schema,
-                )
+            match model_family.hosting:
+                case "azure":
+                    from lightspeed_agentic.providers.models.openai import (
+                        azure_structured_output_schema,
+                        bind_azure_output,
+                        create_azure_model,
+                    )
 
-                is_native = _uses_native_openai_endpoint(model_family)
-                return None, ResolvedModelRoute(
-                    route="openai" if is_native else "openai-compatible",
-                    model=effective_model,
-                    create_model=(
-                        create_native_openai_model if is_native else create_openai_compatible_model
-                    ),
-                    model_parameters=ModelParameters(
+                    provider = cast("AzureProviderParameters", model_family.provider)
+                    return None, ResolvedModelRoute(
+                        route="azure",
                         model=effective_model,
-                        base_url=model_family.base_url,
-                        api_key=model_family.api_key,
-                    ),
-                    telemetry_provider="openai",
-                    structured_output_method="json_schema",
-                    structured_output_schema_mode="raw_json_schema",
-                    translate_output_schema=(
-                        native_openai_structured_output_schema
-                        if is_native
-                        else openai_compatible_structured_output_schema
-                    ),
-                    bind_structured_output=None if is_native else bind_openai_compatible_output,
-                )
-            # The legacy OpenAI adapter reads these SDK-specific settings from env.
-            if model_family.hosting == "vertex":
-                if model_family.model:
-                    os.environ["OPENAI_MODEL"] = model_family.model
-                if model_family.base_url:
-                    os.environ["OPENAI_BASE_URL"] = model_family.base_url
-            elif model_family.hosting == "azure":
-                if model_family.model:
-                    os.environ["OPENAI_MODEL"] = model_family.model
-                if model_family.azure_api_key:
-                    os.environ["AZURE_OPENAI_API_KEY"] = model_family.azure_api_key
-                if model_family.base_url:
-                    os.environ["AZURE_OPENAI_ENDPOINT"] = model_family.base_url
-                os.environ["AZURE_OPENAI_API_VERSION"] = (
-                    model_family.azure_api_version or DEFAULT_AZURE_API_VERSION
-                )
-            if model_family.hosting == "vertex" and isinstance(
-                model_family.credentials, VertexCredentialSource
-            ):
-                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(
-                    model_family.credentials.credentials_file
-                )
-            return ResolvedSDK(
-                name="openai",
-                expected_envs=model_family.expected_envs,
-                credential_file_envs=model_family.credential_file_envs,
-                azure_auth_mode=model_family.azure_auth_mode,
-                azure_credentials=model_family.azure_credentials,
-            ), None
+                        create_model=create_azure_model,
+                        model_parameters=ModelParameters(
+                            model=effective_model,
+                            base_url=model_family.base_url,
+                            provider=model_family.provider,
+                            credentials=model_family.credentials,
+                        ),
+                        telemetry_provider="openai",
+                        structured_output_method="json_schema",
+                        structured_output_schema_mode="raw_json_schema",
+                        translate_output_schema=lambda schema: azure_structured_output_schema(
+                            schema, api_version=provider.api_version
+                        ),
+                        bind_structured_output=bind_azure_output,
+                    )
+                case "openai":
+                    from lightspeed_agentic.providers.models.openai import (
+                        bind_openai_compatible_output,
+                        create_native_openai_model,
+                        create_openai_compatible_model,
+                        native_openai_structured_output_schema,
+                        openai_compatible_structured_output_schema,
+                    )
+
+                    is_native = _uses_native_openai_endpoint(model_family)
+                    return None, ResolvedModelRoute(
+                        route="openai" if is_native else "openai-compatible",
+                        model=effective_model,
+                        create_model=(
+                            create_native_openai_model
+                            if is_native
+                            else create_openai_compatible_model
+                        ),
+                        model_parameters=ModelParameters(
+                            model=effective_model,
+                            base_url=model_family.base_url,
+                            api_key=model_family.api_key,
+                        ),
+                        telemetry_provider="openai",
+                        structured_output_method="json_schema",
+                        structured_output_schema_mode="raw_json_schema",
+                        translate_output_schema=(
+                            native_openai_structured_output_schema
+                            if is_native
+                            else openai_compatible_structured_output_schema
+                        ),
+                        bind_structured_output=None if is_native else bind_openai_compatible_output,
+                    )
+                case _:
+                    raise NotImplementedError("Vertex/OpenAI is not implemented (OLS-4472)")
         case "google":
             from lightspeed_agentic.providers.models.gemini import create_vertex_gemini_model
 

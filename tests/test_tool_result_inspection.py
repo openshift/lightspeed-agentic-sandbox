@@ -205,7 +205,7 @@ async def test_provider_error_metadata_is_safe_and_preserved() -> None:
 
     assert error.value.provider_status_code == 400
     assert error.value.provider_error_type == "invalid_request_error"
-    assert error.value.provider_error_reason == "message_invalid"
+    assert error.value.provider_error_reason == "unknown"
     assert "contains classifier content" not in repr(error.value)
 
 

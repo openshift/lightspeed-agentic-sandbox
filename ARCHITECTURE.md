@@ -133,7 +133,6 @@ Each adapter is a thin wrapper. The SDK owns tool execution, skill discovery, an
 | Harness | Model integrations | Structured Output | Skills | Tools |
 |---|---|---|---|---|
 | DeepAgents | Anthropic direct, Bedrock, and Vertex; Gemini on Vertex; native OpenAI and custom/vLLM endpoints via `langchain-openai` | Tool-free second pass without reasoning; native OpenAI uses strict JSON schema, compatible endpoints preserve the supplied schema | `/skills/` virtual `CompositeBackend` route when skills exist | `LocalShellBackend` (default) + `/skills/` `FilesystemBackend` route + MCP tools |
-| Legacy OpenAI Agents | Azure, Vertex/OpenAI | Existing endpoint-specific `output_type` / two-pass behavior | `Skills` capability | `SandboxAgent` shell/filesystem |
 
 Batch resolves the model family once and reuses it for routing and credential
 readiness. Anthropic, Vertex/Google, and native/custom OpenAI return a `ResolvedModelRoute` with
@@ -150,8 +149,9 @@ is `api.openai.com`; a non-HTTPS URL with that hostname is rejected. Endpoint
 precedence and normalization are defined in
 [configuration rule 3a](.ai/spec/what/configuration.md). Custom/vLLM endpoints use
 `ChatOpenAI(use_responses_api=False)` through the `openai-compatible` route, with
-raw schema mode and a non-strict schema wrapper. Azure and Vertex/OpenAI retain
-legacy dispatch. The overall single-harness migration
+raw schema mode and a non-strict schema wrapper. Azure uses the shared DeepAgents
+harness with native Azure clients, API-key or Entra ID auth, and version-aware
+Chat Completions/Responses schema handling. Vertex/OpenAI is unimplemented pending OLS-4472; the legacy adapter and dispatch are removed. The overall single-harness migration
 remains partially implemented; live parity and telemetry compatibility review are
 still required.
 
@@ -194,7 +194,7 @@ The container runs as non-root user `agent`. `catatonit` is PID 1. The batch mod
 
 ## Key Decisions
 
-- **One provider per pod:** Selected at startup through `config.resolve_model_family()` and `providers.model_router.resolve_model_route()`. Anthropic, Vertex/Google, and native/custom OpenAI receive an explicit DeepAgents model route; Azure and Vertex/OpenAI retain legacy adapter dispatch.
+- **One provider per pod:** Selected at startup through `config.resolve_model_family()` and `providers.model_router.resolve_model_route()`. Anthropic, Vertex/Google, native/custom OpenAI, and Azure receive an explicit DeepAgents model route; Vertex/OpenAI is unimplemented pending OLS-4472.
 
 - **Thin adapters:** Provider modules map SDK events to a normalized union type; they do not re-implement SDK behavior.
 

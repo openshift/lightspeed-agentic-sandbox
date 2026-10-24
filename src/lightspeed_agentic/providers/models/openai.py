@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import json
 from operator import itemgetter
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel, LanguageModelInput
     from langchain_core.runnables import Runnable
 
-    from lightspeed_agentic.config import ModelParameters
+    from lightspeed_agentic.config import (
+        AzureCredentialSource,
+        AzureProviderParameters,
+        ModelParameters,
+    )
 
 
 def make_openai_json_schema_strict(schema: dict[str, Any]) -> dict[str, Any]:
@@ -130,11 +134,35 @@ def create_openai_compatible_model(
     if not parameters.base_url or not parameters.base_url.strip():
         raise ValueError("OpenAI-compatible endpoints require a resolved base URL")
 
-    from langchain_core.outputs import ChatGenerationChunk
     from langchain_openai import ChatOpenAI
 
-    class CompatibleChatOpenAI(ChatOpenAI):
-        """Retain server completion IDs and reasoning omitted by SDK stream conversion."""
+    return _create_openai_model(
+        parameters,
+        model_type=_chat_model_with_observed_metadata(ChatOpenAI),
+        use_responses_api=False,
+        model_options=_chat_completions_reasoning_kwargs(reasoning_config),
+    )
+
+
+def _chat_model_with_observed_metadata(model_class: Any) -> type[BaseChatModel]:
+    """Preserve observed Chat response evidence across compatible and Azure models."""
+    from langchain_core.outputs import ChatGenerationChunk, ChatResult
+
+    class CompatibleChatOpenAI(model_class):  # type: ignore[misc]
+        """Retain observed IDs, reasoning, and original native tool-call arguments."""
+
+        def _create_chat_result(
+            self, response: Any, generation_info: dict[str, Any] | None = None
+        ) -> ChatResult:
+            result: ChatResult = super()._create_chat_result(response, generation_info)
+            raw = response if isinstance(response, dict) else response.model_dump(warnings=False)
+            for generation, choice in zip(result.generations, raw["choices"], strict=False):
+                calls = choice.get("message", {}).get("tool_calls")
+                if calls:
+                    # The SDK's normalized args have already lost duplicate keys.
+                    # Preserve original JSON for shared classifier validation.
+                    generation.message.additional_kwargs["tool_calls"] = calls
+            return result
 
         def _convert_chunk_to_generation_chunk(
             self,
@@ -142,7 +170,7 @@ def create_openai_compatible_model(
             default_chunk_class: type[Any],
             base_generation_info: dict[str, Any] | None,
         ) -> ChatGenerationChunk | None:
-            generation = super()._convert_chunk_to_generation_chunk(
+            generation: ChatGenerationChunk | None = super()._convert_chunk_to_generation_chunk(
                 chunk, default_chunk_class, base_generation_info
             )
             if generation is None:
@@ -162,12 +190,76 @@ def create_openai_compatible_model(
                 ]
             return generation
 
-    return _create_openai_model(
-        parameters,
-        model_type=CompatibleChatOpenAI,
-        use_responses_api=False,
-        model_options=_chat_completions_reasoning_kwargs(reasoning_config),
+    return cast("type[BaseChatModel]", CompatibleChatOpenAI)
+
+
+def create_azure_model(
+    parameters: ModelParameters,
+    reasoning_config: dict[str, Any] | None = None,
+) -> BaseChatModel:
+    """Construct the native Azure model from settings already validated by readiness."""
+    from langchain_openai import AzureChatOpenAI
+
+    from lightspeed_agentic.config import azure_api_version_supports_responses
+    from lightspeed_agentic.providers.cloud_credentials import create_azure_credentials
+    from lightspeed_agentic.tls import create_async_http_client, create_http_client
+
+    provider = cast("AzureProviderParameters", parameters.provider)
+    auth = create_azure_credentials(cast("AzureCredentialSource", parameters.credentials))
+    responses = azure_api_version_supports_responses(provider.api_version)
+    kwargs: dict[str, Any] = {
+        "model": parameters.model,
+        "azure_deployment": parameters.model,
+        "azure_endpoint": parameters.base_url,
+        "api_version": provider.api_version,
+        "api_key": auth.api_key,
+        "azure_ad_token": None,
+        "azure_ad_async_token_provider": auth.token_provider,
+        "base_url": None,
+        "openai_api_type": "azure",
+        "use_responses_api": responses,
+        "output_version": "responses/v1" if responses else "v1",
+        "http_client": create_http_client() if auth.token_provider is None else None,
+        "http_async_client": create_async_http_client(),
+    }
+    if parameters.max_output_tokens is not None:
+        kwargs["max_tokens"] = parameters.max_output_tokens
+    if not responses:
+        kwargs["stream_usage"] = True
+    reasoning = (
+        _responses_reasoning_kwargs(reasoning_config)
+        if responses
+        else _chat_completions_reasoning_kwargs(reasoning_config)
     )
+    model = _chat_model_with_observed_metadata(AzureChatOpenAI)(**kwargs, **reasoning)
+    # Kept out of LangChain metadata/serialization; shared cleanup owns this resource.
+    model.__dict__["_lightspeed_owned_resources"] = (auth,)
+    return model
+
+
+def _require_azure_structured_output(api_version: str | None) -> None:
+    from lightspeed_agentic.config import azure_api_version_supports_structured_outputs
+
+    if not azure_api_version_supports_structured_outputs(api_version):
+        raise ValueError("Azure OpenAI structured output requires API version 2024-08-01 or later")
+
+
+def azure_structured_output_schema(schema: dict[str, Any], *, api_version: str) -> dict[str, Any]:
+    """Preserve Azure's non-strict Chat and strict Responses schema contracts."""
+    from lightspeed_agentic.config import azure_api_version_supports_responses
+
+    _require_azure_structured_output(api_version)
+    if azure_api_version_supports_responses(api_version):
+        return native_openai_structured_output_schema(schema)
+    return openai_compatible_structured_output_schema(schema)
+
+
+def bind_azure_output(
+    model: BaseChatModel, schema: dict[str, Any]
+) -> Runnable[LanguageModelInput, dict[str, Any]]:
+    """Bind the explicit Azure JSON schema, independent of deployment-name guesses."""
+    _require_azure_structured_output(getattr(model, "openai_api_version", None))
+    return bind_openai_compatible_output(model, schema)
 
 
 def _create_openai_model(

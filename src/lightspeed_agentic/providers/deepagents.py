@@ -54,7 +54,7 @@ _JSON_SCHEMA_TYPE_MAP: dict[str, type[Any]] = {
 
 
 async def _close_model_clients(model: Any) -> None:
-    """Close already-created sync and async clients without triggering lazy creation."""
+    """Close initialized SDK clients and constructor-owned resources without lazy creation."""
     clients: list[Any] = []
     model_state = getattr(model, "__dict__", {})
     for name in (
@@ -68,12 +68,16 @@ async def _close_model_clients(model: Any) -> None:
         if name in model_state and model_state[name] not in clients:
             clients.append(model_state[name])
 
-    for client in clients:
-        close = getattr(client, "aclose", None) or getattr(client, "close", None)
-        if close is not None:
-            result = close()
-            if inspect.isawaitable(result):
-                await result
+    try:
+        for client in clients:
+            close = getattr(client, "aclose", None) or getattr(client, "close", None)
+            if close is not None:
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+    finally:
+        for resource in model_state.get("_lightspeed_owned_resources", ()):
+            await resource.aclose()
 
 
 def _json_schema_to_pydantic(schema: dict[str, Any], name: str = "OutputModel") -> Any:
@@ -395,36 +399,41 @@ async def _shape_structured_output(
     prompt: str,
     agent_text: str,
     generation_callback: Any,
+    *,
+    prepared_schema: Any | None = None,
 ) -> tuple[Any, int, int]:
     """Shape pass: tool-free structured binding on a model without thinking."""
     from langchain_core.messages import HumanMessage, SystemMessage
 
     format_model = model_route.create_model(model_route.model_parameters, None)
-    validation_schema = schema
-    if model_route.translate_output_schema is not None:
-        schema = model_route.translate_output_schema(schema)
-    if model_route.bind_structured_output is None:
-        structured = format_model.with_structured_output(
-            schema,
-            method=model_route.structured_output_method,
-            include_raw=True,
-        )
-    else:
-        structured = model_route.bind_structured_output(format_model, schema)
-    shape_messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(
-            content=(
-                f"Original user request:\n{prompt}\n\n"
-                f"Agent run output:\n{agent_text}\n\n"
-                "Call the structured response tool with every required field. "
-                "Use native JSON types: booleans for boolean fields, arrays for array fields, "
-                "and objects for object fields. Never serialize an array or object as a string. "
-                "Base the field values only on the agent run output."
-            )
-        ),
-    ]
     try:
+        validation_schema = schema
+        if prepared_schema is not None:
+            schema = prepared_schema
+        elif model_route.translate_output_schema is not None:
+            schema = model_route.translate_output_schema(schema)
+        if model_route.bind_structured_output is None:
+            structured = format_model.with_structured_output(
+                schema,
+                method=model_route.structured_output_method,
+                include_raw=True,
+            )
+        else:
+            structured = model_route.bind_structured_output(format_model, schema)
+        shape_messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(
+                content=(
+                    f"Original user request:\n{prompt}\n\n"
+                    f"Agent run output:\n{agent_text}\n\n"
+                    "Call the structured response tool with every required field. "
+                    "Use native JSON types: booleans for boolean fields, arrays for array fields, "
+                    "and objects for object fields. "
+                    "Never serialize an array or object as a string. "
+                    "Base the field values only on the agent run output."
+                )
+            ),
+        ]
         result = await structured.ainvoke(
             shape_messages,
             config={"callbacks": [generation_callback]},
@@ -548,6 +557,21 @@ class DeepAgentsProvider(AgentProvider):
             options.max_turns,
         )
 
+        # Reject known schema/capability errors before constructing clients or
+        # letting the graph execute tools. Keep the original schema for validation.
+        schema_model: Any | None = None
+        prepared_schema: Any | None = None
+        if options.output_schema:
+            schema_model = (
+                _json_schema_to_pydantic(options.output_schema)
+                if isinstance(options.output_schema, dict)
+                and self._model_route.structured_output_schema_mode == "pydantic"
+                else options.output_schema
+            )
+            prepared_schema = schema_model
+            if self._model_route.translate_output_schema is not None:
+                prepared_schema = self._model_route.translate_output_schema(schema_model)
+
         chat_model = self._model_route.create_model(
             self._model_route.model_parameters, options.reasoning_config
         )
@@ -604,6 +628,9 @@ class DeepAgentsProvider(AgentProvider):
                         ),
                         None,
                     )
+                    # Inherited graph callbacks otherwise auto-stream nested calls;
+                    # nostream hides graph events, not SDK transport streaming.
+                    classifier_model.disable_streaming = True
                     classifier_client = LangChainClassifierClient(classifier_model)
                     model_profile = getattr(classifier_model, "profile", None) or {}
                     context_window_tokens = (
@@ -652,15 +679,6 @@ class DeepAgentsProvider(AgentProvider):
 
             if has_skills(skills_root):
                 agent_kwargs["skills"] = ["/skills/"]
-
-            schema_model: Any | None = None
-            if options.output_schema:
-                schema_model = (
-                    _json_schema_to_pydantic(options.output_schema)
-                    if isinstance(options.output_schema, dict)
-                    and self._model_route.structured_output_schema_mode == "pydantic"
-                    else options.output_schema
-                )
 
             mcp_tools: list[Any] = []
             if options.mcp_servers:
@@ -823,6 +841,7 @@ class DeepAgentsProvider(AgentProvider):
                 options.prompt,
                 result_text,
                 generation_callback,
+                prepared_schema=prepared_schema,
             )
             result_text = stringify(structured)
             total_input_tokens += in_tok

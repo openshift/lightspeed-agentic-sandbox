@@ -16,7 +16,7 @@ These specs define the behavioral rules and codebase navigation for the lightspe
 |------|-------------|
 | [system-overview.md](what/system-overview.md) | System role, component inventory, lifecycle, integration boundaries |
 | [run-api.md](what/run-api.md) | Batch entrypoint: `/input/` files, agent run, Result CR publishing, context prefix, timeouts |
-| [provider-contract.md](what/provider-contract.md) | AgentProvider ABC, event model, structured output, thin-adapter principle, skills delegation; DeepAgents routes including native/custom OpenAI, and remaining legacy OpenAI migration targets |
+| [provider-contract.md](what/provider-contract.md) | AgentProvider ABC, event model, structured output, thin-adapter principle, skills delegation; DeepAgents routes including native/custom OpenAI, and deferred Vertex/OpenAI support |
 | [configuration.md](what/configuration.md) | Environment variables, provider selection, model resolution, container layout, build system |
 | [health-probes.md](what/health-probes.md) | Readiness checks at batch startup (R1); HTTP probes superseded |
 | [audit-logging.md](what/audit-logging.md) | OTel GenAI invocation, tool, and generation spans; legacy choice events and audit-log projections |
@@ -36,7 +36,7 @@ These specs define the behavioral rules and codebase navigation for the lightspe
 |---|---|
 | [0001-tool-output-boundary.md](decisions/0001-tool-output-boundary.md) | DeepAgents-only SAFE-02 boundaries, trust instruction, and model/event separation |
 | [0002-sdk-native-skills-route.md](decisions/0002-sdk-native-skills-route.md) | DeepAgents virtual `/skills/` route and SDK-provided host-path mapping for native shell execution (OLS-4413) |
-| [0003-single-deepagents-harness.md](decisions/0003-single-deepagents-harness.md) | Historical OLS-4434 decision for consolidating model routes on DeepAgents; Anthropic, Vertex/Google, and native/custom OpenAI use it; Azure and Vertex/OpenAI migration remains |
+| [0003-single-deepagents-harness.md](decisions/0003-single-deepagents-harness.md) | Historical OLS-4434 decision for consolidating model routes on DeepAgents; Anthropic, Vertex/Google, native/custom OpenAI, and Azure use it; Vertex/OpenAI migration and route-specific live acceptance remain |
 
 ## Scope
 
@@ -87,6 +87,6 @@ AI agents. Content is optimized for precision and machine consumption.
 
 ## Project Context
 
-This is the agent runtime that runs inside ephemeral sandbox pods. The operator mounts input files at `/input/`, starts the batch container, and reads the Result CR and pod exit status. Anthropic, Vertex Gemini, and native/custom OpenAI use the shared DeepAgents harness; Azure and Vertex/OpenAI retain the legacy provider adapter. The overall migration remains partial; see configuration rule 3a for the native OpenAI endpoint boundary. Result CR publishing uses the Kubernetes Python client, not `oc`.
+This is the agent runtime that runs inside ephemeral sandbox pods. The operator mounts input files at `/input/`, starts the batch container, and reads the Result CR and pod exit status. Anthropic, Vertex Gemini, native/custom OpenAI, and Azure use the shared DeepAgents harness; Vertex/OpenAI is unimplemented pending OLS-4472. The legacy OpenAI adapter and factory entry are removed; harness dependency cleanup remains deferred. Azure's routing and SDK workflows are offline-tested, not live-authentication acceptance. The overall migration remains partial; see configuration rule 3a for the native OpenAI endpoint boundary. Result CR publishing uses the Kubernetes Python client, not `oc`.
 
 Jira tracking: Feature OCPSTRAT-3095, Epic OLS-2894.

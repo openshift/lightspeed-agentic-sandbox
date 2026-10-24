@@ -31,6 +31,7 @@ from tests.e2e.batch_log_contract import (
     _GENERIC_CR_SUMMARIES,
 )
 from tests.e2e.k8s_constants import CRD_GROUP, CRD_VERSION
+from tests.e2e.k8s_helpers import read_pod_logs
 from tests.e2e.skills_fixtures import (
     E2E_POD_OUTPUT_DIR,
     E2E_POD_SKILLS_DIR,
@@ -323,13 +324,6 @@ def _needs_pod_log_enrichment(body: dict[str, Any]) -> bool:
 _PROVIDER_OUTPUT_LOG_PREFIX = PROVIDER_OUTPUT_LOG_PREFIX
 
 
-def _normalize_pod_logs(pod_logs: str) -> str:
-    """Decode escaped newlines returned by some Kubernetes log API responses."""
-    if pod_logs.count("\n") <= 1 and "\\n" in pod_logs:
-        return pod_logs.replace("\\n", "\n")
-    return pod_logs
-
-
 # echo-token.sh stdout: {"token": "<32 hex>", "status": "ok"}
 _ECHO_TOKEN_SCRIPT_JSON_RE = re.compile(r'\{"token":\s*"([0-9a-f]{32})"\s*,\s*"status":\s*"ok"\}')
 _ECHO_TOKEN_HEX_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -337,8 +331,7 @@ _ECHO_TOKEN_HEX_RE = re.compile(r"^[0-9a-f]{32}$")
 
 def _parse_echo_token_from_pod_logs(pod_logs: str) -> str:
     """Return token from echo-token.sh stdout embedded in batch pod logs."""
-    normalized = _normalize_pod_logs(pod_logs)
-    matches = _ECHO_TOKEN_SCRIPT_JSON_RE.findall(normalized)
+    matches = _ECHO_TOKEN_SCRIPT_JSON_RE.findall(pod_logs)
     if matches:
         return matches[-1]  # type: ignore[no-any-return]
     # Some providers (e.g. Gemini ADK) omit raw tool stdout from pod logs but include
@@ -354,12 +347,11 @@ def _parse_echo_token_from_pod_logs(pod_logs: str) -> str:
 
 def _parse_provider_output_json(pod_logs: str) -> dict[str, Any] | None:
     """Extract the agent JSON object logged after ``[provider:run] output:``."""
-    normalized = _normalize_pod_logs(pod_logs)
     marker = _PROVIDER_OUTPUT_LOG_PREFIX
-    idx = normalized.find(marker)
+    idx = pod_logs.find(marker)
     if idx == -1:
         return None
-    tail = normalized[idx + len(marker) :].lstrip()
+    tail = pod_logs[idx + len(marker) :].lstrip()
     try:
         parsed, _end = json.JSONDecoder().raw_decode(tail)
     except json.JSONDecodeError:
@@ -375,12 +367,11 @@ def _enrich_body_from_pod_logs(body: dict[str, Any], pod_logs: str) -> dict[str,
         merged.update(parsed)
         return merged
 
-    normalized = _normalize_pod_logs(pod_logs)
     marker = _PROVIDER_OUTPUT_LOG_PREFIX
-    idx = normalized.find(marker)
+    idx = pod_logs.find(marker)
     if idx == -1:
         return body
-    text = normalized[idx + len(marker) :].split("\n", 1)[0].strip()
+    text = pod_logs[idx + len(marker) :].split("\n", 1)[0].strip()
     if not text or not body.get("success"):
         return body
     merged = dict(body)
@@ -623,10 +614,9 @@ def _fetch_job_pod_logs(core_api: CoreV1Api, namespace: str, job_name: str) -> s
         return ""
     pod_name = pods.items[0].metadata.name  # pyright: ignore[reportAttributeAccessIssue, reportOptionalMemberAccess, reportIndexIssue]
     try:
-        raw = core_api.read_namespaced_pod_log(name=pod_name, namespace=namespace, tail_lines=200)  # pyright: ignore[reportArgumentType]
+        return read_pod_logs(core_api, name=pod_name, namespace=namespace, tail_lines=200)  # pyright: ignore[reportArgumentType]
     except ApiException:
         return ""
-    return _normalize_pod_logs(raw)  # pyright: ignore[reportArgumentType]
 
 
 def _fetch_termination_message(core_api: CoreV1Api, namespace: str, job_name: str) -> str | None:

@@ -636,7 +636,7 @@ async def test_resolved_route_controls_all_model_roles(
     assert route.model_parameters.max_output_tokens is None
     assert create_model.call_args_list == [
         call(route.model_parameters, reasoning),
-        call(replace(route.model_parameters, max_output_tokens=128), None),
+        call(replace(route.model_parameters, max_output_tokens=4096), None),
         call(route.model_parameters, None),
     ]
     assert create_agent.call_args.kwargs["model"] is main_model
