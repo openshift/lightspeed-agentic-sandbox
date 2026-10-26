@@ -192,23 +192,44 @@ def _structured_decision(response: Any, parsed: Any) -> ClassifierDecision:
 class LangChainClassifierClient:
     """Run a strict classifier call through a LangChain chat model.
 
-    Prefer structured function-call decisions. Models that return only JSON text
+    Prefer structured decisions. Models that return only JSON text
     must satisfy the same strict decision schema. Never recover malformed tool
     calls, refusals, incomplete responses, or structured parsing errors.
     Configure token limits on the supplied model before structured wrapping.
     """
 
-    def __init__(self, model: ChatModel) -> None:
+    def __init__(
+        self,
+        model: ChatModel,
+        *,
+        method: str = "function_calling",
+        native_json_schema: bool = False,
+    ) -> None:
         self._model = model
-        bind_structured = getattr(model, "with_structured_output", None)
         self._structured_model = None
+        if native_json_schema:
+            # ChatAnthropicVertex ignores method="json_schema" in
+            # with_structured_output and always forces a tool call. Bind the
+            # native output format instead; parse and validate the raw text.
+            from anthropic import transform_schema
+
+            self._model = model.bind(
+                output_config={
+                    "format": {
+                        "type": "json_schema",
+                        "schema": transform_schema(ClassifierDecision),
+                    }
+                }
+            )
+            return
+        bind_structured = getattr(model, "with_structured_output", None)
         if callable(bind_structured):
             # Lightweight test/fake models may expose the base method without
             # implementing tool binding; retain the text-parser compatibility path.
             with suppress(NotImplementedError):
                 self._structured_model = bind_structured(
                     ClassifierDecision,
-                    method="function_calling",
+                    method=method,
                     include_raw=True,
                 )
 

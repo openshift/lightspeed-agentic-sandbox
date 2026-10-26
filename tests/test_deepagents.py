@@ -684,6 +684,13 @@ async def test_close_model_clients_closes_only_initialized_clients() -> None:
     ("route_id", "telemetry_provider", "method"),
     [
         ("anthropic", "anthropic", "function_calling"),
+        ("anthropic", "anthropic", "sonnet-5-5"),
+        ("vertex/anthropic", "gcp.vertex_ai", "sonnet-5-5"),
+        ("bedrock/anthropic", "aws.bedrock", "sonnet-5-5"),
+        ("anthropic", "anthropic", "opus-5-5"),
+        ("vertex/anthropic", "gcp.vertex_ai", "opus-5-5"),
+        ("bedrock/anthropic", "aws.bedrock", "fable-5-1"),
+        ("anthropic", "anthropic", "fable-5-1"),
         ("anthropic", "anthropic", "json_schema"),
         ("vertex/anthropic", "gcp.vertex_ai", "json_schema"),
         ("vertex/google", "gcp.vertex_ai", "json_schema"),
@@ -696,7 +703,7 @@ async def test_resolved_route_controls_all_model_roles(
     monkeypatch: pytest.MonkeyPatch,
     route_id: str,
     telemetry_provider: str,
-    method: Literal["function_calling", "json_schema"],
+    method: Literal["function_calling", "json_schema", "sonnet-5-5", "opus-5-5", "fable-5-1"],
     reasoning: dict[str, Any] | None,
 ) -> None:
     from lightspeed_agentic.providers import deepagents as mod
@@ -735,11 +742,16 @@ async def test_resolved_route_controls_all_model_roles(
         }
     )
     create_model = Mock(side_effect=[main_model, classifier_model, format_model])
+    named_model = method in {"sonnet-5-5", "opus-5-5", "fable-5-1"}
+    anthropic_route = route_id in {"anthropic", "vertex/anthropic", "bedrock/anthropic"}
+    model_name = f"claude-{method}" if named_model else "route-selected-model"
+    if route_id == "bedrock/anthropic" and named_model:
+        model_name = f"global.anthropic.{model_name}-v1:0"
     route = replace(
-        make_model_route(create_model, model="route-selected-model"),
+        make_model_route(create_model, model=model_name),
         route=route_id,
         telemetry_provider=telemetry_provider,
-        structured_output_method=method,
+        structured_output_method="function_calling" if named_model else method,
         structured_output_schema_mode=(
             "raw_json_schema"
             if route_id in {"vertex/google", "openai", "openai-compatible"}
@@ -786,6 +798,15 @@ async def test_resolved_route_controls_all_model_roles(
         call(route.model_parameters, None),
     ]
     assert create_agent.call_args.kwargs["model"] is main_model
+    if route_id == "vertex/anthropic":
+        classifier_model.with_structured_output.assert_not_called()
+        output_config = classifier_model.bind.call_args.kwargs["output_config"]
+        assert output_config["format"]["type"] == "json_schema"
+    else:
+        assert classifier_model.with_structured_output.call_args.kwargs == {
+            "method": "json_schema" if anthropic_route else "function_calling",
+            "include_raw": True,
+        }
     assert "response_format" not in create_agent.call_args.kwargs
     format_model.with_structured_output.assert_called_once()
     shaping_schema = format_model.with_structured_output.call_args.args[0]
@@ -802,7 +823,7 @@ async def test_resolved_route_controls_all_model_roles(
     else:
         assert isinstance(shaping_schema, type)
     assert format_model.with_structured_output.call_args.kwargs == {
-        "method": method,
+        "method": "function_calling" if named_model else method,
         "include_raw": True,
     }
     result = next(event for event in events if isinstance(event, ResultEvent))

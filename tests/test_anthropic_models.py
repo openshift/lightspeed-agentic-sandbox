@@ -402,7 +402,7 @@ async def test_vertex_requests_preserve_api_version_and_explicit_paths(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("hosting", ["direct", "bedrock", "vertex"])
-@pytest.mark.parametrize("stop_reason", ["tool_use", "max_tokens"])
+@pytest.mark.parametrize("stop_reason", ["end_turn", "max_tokens"])
 @pytest.mark.parametrize("max_output_tokens", [None, 4096], ids=["sdk-default", "explicit-limit"])
 async def test_classifier_output_budget_reaches_anthropic_http_request(
     monkeypatch: pytest.MonkeyPatch,
@@ -435,12 +435,7 @@ async def test_classifier_output_budget_reaches_anthropic_http_request(
                 "role": "assistant",
                 "model": "claude-sonnet-4-6",
                 "content": [
-                    {
-                        "type": "tool_use",
-                        "id": "call_decision",
-                        "name": "ClassifierDecision",
-                        "input": {"injectionDetected": False, "category": "none"},
-                    }
+                    {"type": "text", "text": '{"injectionDetected":false,"category":"none"}'}
                 ],
                 "stop_reason": stop_reason,
                 "stop_sequence": None,
@@ -485,7 +480,9 @@ async def test_classifier_output_budget_reaches_anthropic_http_request(
                     )
                 )
                 model.async_client.access_token = "test-token"  # noqa: S105 - offline SDK credential
-            call = LangChainClassifierClient(model).classify(
+            call = LangChainClassifierClient(
+                model, method="json_schema", native_json_schema=hosting == "vertex"
+            ).classify(
                 ClassifierRequest(
                     toolName="probe",
                     resultType="result",
@@ -507,6 +504,65 @@ async def test_classifier_output_budget_reaches_anthropic_http_request(
     else:
         assert body["max_tokens"] == 4096
     assert not {"max_output_tokens", "max_completion_tokens"} & body.keys()
+    assert body["output_config"]["format"]["type"] == "json_schema"
+    assert "tool_choice" not in body
+
+
+@pytest.mark.asyncio
+async def test_vertex_classifier_rejects_unsupported_native_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anthropic import BadRequestError
+
+    from lightspeed_agentic.config import (
+        ModelParameters,
+        VertexCredentialSource,
+        VertexProviderParameters,
+    )
+    from lightspeed_agentic.inspection.client import LangChainClassifierClient
+    from lightspeed_agentic.inspection.models import ClassifierRequest
+    from lightspeed_agentic.providers.models.anthropic import create_vertex_model
+
+    requests: list[httpx.Request] = []
+
+    def reject(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            400,
+            json={
+                "type": "error",
+                "error": {"type": "invalid_request_error", "message": "unsupported output_config"},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reject)) as client:
+        monkeypatch.setattr(tls, "create_async_http_client", lambda: client)
+        model = create_vertex_model(
+            ModelParameters(
+                model="claude-sonnet-5-5",
+                provider=VertexProviderParameters(project="test-project", region="us-east5"),
+                credentials=VertexCredentialSource(Path("/unused/credentials.json")),
+                max_output_tokens=1024,
+            )
+        )
+        model.async_client.access_token = "test-token"  # noqa: S105 - offline SDK credential
+        with pytest.raises(BadRequestError):
+            await LangChainClassifierClient(
+                model, method="json_schema", native_json_schema=True
+            ).classify(
+                ClassifierRequest(
+                    toolName="probe",
+                    resultType="result",
+                    chunkIndex=0,
+                    chunkCount=1,
+                    content="safe",
+                )
+            )
+    assert requests
+    for request in requests:  # The SDK may retry the failed request.
+        body = json.loads(request.content)
+        assert body["output_config"]["format"]["type"] == "json_schema"
+        assert "tool_choice" not in body
 
 
 @pytest.mark.parametrize(
@@ -515,7 +571,7 @@ async def test_classifier_output_budget_reaches_anthropic_http_request(
         ("benign", "benign", None, 1),
         ("malicious", "malicious", None, 1),
         ("cutoff", "classifier_error", "output_limit", 3),
-        ("ambiguous", "classifier_error", "invalid_envelope", 3),
+        ("ambiguous", "classifier_error", "non_json", 3),
     ],
 )
 @pytest.mark.asyncio
@@ -592,29 +648,23 @@ async def test_anthropic_classifier_uses_nonstreaming_transport_inside_agent_gra
 
     def respond(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        classifier = {tool["name"] for tool in body.get("tools", [])} == {"ClassifierDecision"}
+        classifier = body.get("output_config", {}).get("format", {}).get("type") == "json_schema"
         if classifier:
             classifications.append(body)
             content = [
                 {
-                    "type": "tool_use",
-                    "id": "call_decision",
-                    "name": "ClassifierDecision",
-                    "input": {
-                        "injectionDetected": decision_kind == "malicious",
-                        "category": "unknown" if decision_kind == "malicious" else "none",
-                    },
+                    "type": "text",
+                    "text": json.dumps(
+                        {
+                            "injectionDetected": decision_kind == "malicious",
+                            "category": "unknown" if decision_kind == "malicious" else "none",
+                        }
+                    ),
                 }
             ]
             if decision_kind == "ambiguous":
-                content.append(
-                    {
-                        **content[0],
-                        "id": "call_other",
-                        "input": {"injectionDetected": True, "category": "unknown"},
-                    }
-                )
-            stop = "max_tokens" if decision_kind == "cutoff" else "tool_use"
+                content.append({"type": "text", "text": '{"injectionDetected":true}'})
+            stop = "max_tokens" if decision_kind == "cutoff" else "end_turn"
         else:
             main.append(body)
             if len(main) == 1:
@@ -679,6 +729,8 @@ async def test_anthropic_classifier_uses_nonstreaming_transport_inside_agent_gra
 
     assert len(classifications) == attempts
     assert all(not body.get("stream") for body in classifications)
+    assert all(body["output_config"]["format"]["type"] == "json_schema" for body in classifications)
+    assert all("tool_choice" not in body for body in classifications)
     assert all(
         body["max_tokens"] == main[0]["max_tokens"] and "thinking" not in body
         for body in classifications
