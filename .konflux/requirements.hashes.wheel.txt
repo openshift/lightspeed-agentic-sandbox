@@ -20,8 +20,6 @@ azure-core==1.41.0 \
     --hash=sha256:c48efb0ab2d42215cfb53cb348d5fe4a1edbf90d6da90c1a2060b665dfd956a4
 azure-identity==1.25.3 \
     --hash=sha256:ddb57aa5e631f75dfad74a87841dc1b6ba48f0c4f128cd82f493de456229e344
-bracex==3.0 \
-    --hash=sha256:192f782cc5ec7dbccb2f4a99d485c9bea21d516f98e47453b735fd72d6873ef6
 certifi==2026.6.17 \
     --hash=sha256:36a32caf926900a4f112e18621636a19ce6474c5b2aeb148588147d2633ec530
 cffi==2.1.0 \
@@ -91,8 +89,6 @@ jiter==0.17.0 \
     --hash=sha256:e717ee7b9300c5caec4593d7653ceeb7da05da7e6cdaf4993784985fa255104a
 jmespath==1.1.0 \
     --hash=sha256:c4b79578b9c4fb420b287be212eb0932c4d92219ecd32f19d32de47a27348a81
-joserfc==1.7.3 \
-    --hash=sha256:f85dfff64d29e9ca5abba9e45b81e86da0c028daab26fd85bf2fed35ec90b718
 jsonpatch==1.33 \
     --hash=sha256:d72bc6ca3fee977708f97ebc1c17e9adaa64f1e6b8307cd57247fc318a70ea39
 jsonpointer==3.1.1 \
