@@ -52,7 +52,7 @@ RUN if [ "${HERMETIC_BUILD}" = "true" ]; then \
 # ---------------------------------------------------------------------------
 # origincli stage: provides oc (kubectl is a symlink to oc in this image)
 # ---------------------------------------------------------------------------
-FROM registry.redhat.io/openshift4/ose-cli-rhel9:v4.21 AS origincli
+# FROM registry.redhat.io/openshift4/ose-cli-rhel9:latest AS origincli
 
 # ---------------------------------------------------------------------------
 # podman stage: provides catatonit init binary
@@ -99,8 +99,8 @@ RUN ${RUNTIME_DNF_COMMAND} install -y --nodocs \
 COPY --from=builder /app/.venv/lib/python3.12/site-packages /opt/app-root/lib64/python3.12/site-packages
 
 # oc from the origincli stage; kubectl is a symlink to oc in that image
-COPY --from=origincli /usr/bin/oc /usr/bin/oc
-RUN ln -s /usr/bin/oc /usr/bin/kubectl
+# COPY --from=origincli /usr/bin/oc /usr/bin/oc
+# RUN ln -s /usr/bin/oc /usr/bin/kubectl
 
 # catatonit init binary from the podman stage
 COPY --from=podman /usr/libexec/podman/catatonit /usr/bin/catatonit
