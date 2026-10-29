@@ -151,6 +151,8 @@ def resolve_model_route(
             )
         case "anthropic":
             from lightspeed_agentic.providers.models.anthropic import (
+                anthropic_tool_schema,
+                bind_anthropic_output,
                 create_bedrock_model,
                 create_direct_model,
                 create_vertex_model,
@@ -172,6 +174,8 @@ def resolve_model_route(
                         ),
                         telemetry_provider="gcp.vertex_ai",
                         structured_output_method="json_schema",
+                        translate_output_schema=anthropic_tool_schema,
+                        bind_structured_output=bind_anthropic_output,
                     )
                 case "bedrock":
                     return ResolvedModelRoute(
@@ -186,6 +190,8 @@ def resolve_model_route(
                         ),
                         telemetry_provider="aws.bedrock",
                         structured_output_method="function_calling",
+                        translate_output_schema=anthropic_tool_schema,
+                        bind_structured_output=bind_anthropic_output,
                     )
                 case _:
                     # Configuration guarantees the remaining hosting is direct Anthropic.
@@ -207,4 +213,6 @@ def resolve_model_route(
                         ),
                         telemetry_provider="anthropic",
                         structured_output_method=method,
+                        translate_output_schema=anthropic_tool_schema,
+                        bind_structured_output=bind_anthropic_output,
                     )

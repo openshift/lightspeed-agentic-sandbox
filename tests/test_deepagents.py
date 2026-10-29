@@ -1180,7 +1180,8 @@ async def test_shaping_prompt_requests_native_json_types_once(
         with pytest.raises(ValueError, match="Structured output"):
             await shape()
     else:
-        assert await shape() == {"success": False, "actionsTaken": []}
+        shaped = await shape()
+        assert shaped.model_dump() == {"success": False, "actionsTaken": []}
     bound.ainvoke.assert_awaited_once()
     tool_schema = convert_to_anthropic_tool(model.with_structured_output.call_args.args[0])[
         "input_schema"
