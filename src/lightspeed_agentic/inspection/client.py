@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from contextlib import suppress
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from lightspeed_agentic.inspection.errors import ClassifierResponseError
 from lightspeed_agentic.inspection.models import ClassifierDecision, ClassifierRequest
@@ -213,7 +213,7 @@ class LangChainClassifierClient:
             # native output format instead; parse and validate the raw text.
             from anthropic import transform_schema
 
-            self._model = model.bind(
+            self._model = cast(Any, model).bind(
                 output_config={
                     "format": {
                         "type": "json_schema",

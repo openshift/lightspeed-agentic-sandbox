@@ -746,6 +746,281 @@ async def test_anthropic_classifier_uses_nonstreaming_transport_inside_agent_gra
         assert inspections[0].attributes["inspection.response_issue"] == response_issue
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hosting", ["bedrock", "vertex"])
+async def test_model_without_explicit_limit_uses_model_profile_max_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+    hosting: str,
+) -> None:
+    """The adapters' low defaults truncate large structured output."""
+    from lightspeed_agentic.config import (
+        BedrockCredentialSource,
+        BedrockProviderParameters,
+        ModelParameters,
+        VertexCredentialSource,
+        VertexProviderParameters,
+    )
+    from lightspeed_agentic.providers.models.anthropic import (
+        create_bedrock_model,
+        create_vertex_model,
+    )
+
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_limits",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-sonnet-5",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        )
+
+    transport = httpx.MockTransport(respond)
+    with httpx.Client(transport=transport) as sync_client:
+        async with httpx.AsyncClient(transport=transport) as async_client:
+            monkeypatch.setattr(tls, "create_http_client", lambda: sync_client)
+            monkeypatch.setattr(tls, "create_async_http_client", lambda: async_client)
+            if hosting == "bedrock":
+                model = create_bedrock_model(
+                    ModelParameters(
+                        model="global.anthropic.claude-sonnet-5",
+                        provider=BedrockProviderParameters(region="us-west-2"),
+                        credentials=BedrockCredentialSource(
+                            access_key_id="test-access-key",
+                            secret_access_key="test-secret-key",  # noqa: S106 - test credential
+                        ),
+                    )
+                )
+            else:
+                model = create_vertex_model(
+                    ModelParameters(
+                        model="claude-sonnet-5",
+                        provider=VertexProviderParameters(project="test-project", region="global"),
+                        credentials=VertexCredentialSource(Path("/unused/credentials.json")),
+                    )
+                )
+                model.async_client.access_token = "test-token"  # noqa: S105 - offline SDK credential
+            await model.ainvoke("hello")
+
+    body = json.loads(requests[0].content)
+    assert body["max_tokens"] == 128_000  # Model-profile default, not the adapter cap.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hosting", ["direct", "bedrock", "vertex"])
+async def test_structured_output_shaping_reaches_anthropic_http_request(
+    monkeypatch: pytest.MonkeyPatch,
+    hosting: str,
+) -> None:
+    """Shaping must not send forced tool_choice on routes that reject it."""
+    from lightspeed_agentic.config import (
+        AnthropicCredentialSource,
+        BedrockCredentialSource,
+        BedrockProviderParameters,
+        ModelParameters,
+        VertexCredentialSource,
+        VertexProviderParameters,
+    )
+    from lightspeed_agentic.providers.model_router import resolve_model_route
+
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        content = [
+            {
+                "type": "tool_use",
+                "id": "call_shape",
+                "name": "ShapeOutput",
+                "input": {"status": "ok"},
+            }
+        ]
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_shape",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-sonnet-5-5",
+                "content": content,
+                "stop_reason": "tool_use",
+                "stop_sequence": None,
+                "usage": {"input_tokens": 7, "output_tokens": 5},
+            },
+        )
+
+    transport = httpx.MockTransport(respond)
+    with httpx.Client(transport=transport) as sync_client:
+        async with httpx.AsyncClient(transport=transport) as async_client:
+            monkeypatch.setattr(tls, "create_http_client", lambda: sync_client)
+            monkeypatch.setattr(tls, "create_async_http_client", lambda: async_client)
+            if hosting == "vertex":
+                # A static token avoids the refresh that anonymous credentials attempt.
+                from google.oauth2.credentials import Credentials as _TokenCredentials
+
+                from lightspeed_agentic.providers import cloud_credentials
+
+                monkeypatch.setattr(
+                    cloud_credentials,
+                    "create_vertex_credentials",
+                    lambda _source: _TokenCredentials(token="test-token"),  # noqa: S106
+                )
+            if hosting == "direct":
+                params = ModelParameters(
+                    model="claude-sonnet-5-5",
+                    credentials=AnthropicCredentialSource(api_key="test-api-key"),
+                )
+            elif hosting == "bedrock":
+                params = ModelParameters(
+                    model="global.anthropic.claude-sonnet-5-5-v1:0",
+                    provider=BedrockProviderParameters(region="us-west-2"),
+                    credentials=BedrockCredentialSource(
+                        access_key_id="test-access-key",
+                        secret_access_key="test-secret-key",  # noqa: S106 - test credential
+                    ),
+                )
+            else:
+                params = ModelParameters(
+                    model="claude-sonnet-5-5",
+                    provider=VertexProviderParameters(project="test-project", region="us-east5"),
+                    credentials=VertexCredentialSource(Path("/unused/credentials.json")),
+                )
+            route = resolve_model_route(
+                "claude-sonnet-5-5",
+                model_family=_anthropic_family_for(hosting, params),
+            )
+            from langchain_core.callbacks import BaseCallbackHandler
+
+            from lightspeed_agentic.providers.deepagents import _shape_structured_output
+
+            class _NoopCallback(BaseCallbackHandler):
+                def close_open(self, *_args: Any, **_kwargs: Any) -> None: ...
+
+            parsed, _in_tok, _out_tok = await _shape_structured_output(
+                route,
+                {
+                    "title": "ShapeOutput",
+                    "description": "Shaped final answer.",
+                    "type": "object",
+                    "properties": {"status": {"type": "string"}},
+                    "required": ["status"],
+                    "additionalProperties": False,
+                },
+                "shape system prompt",
+                "original request",
+                "agent answer",
+                _NoopCallback(),
+            )
+
+    assert parsed == {"status": "ok"}
+    assert len(requests) == 1
+    body = json.loads(requests[0].content)
+    # All Anthropic routes shape through the shared unforced-tool binder:
+    # the tool is offered but never forced, and no grammar is sent.
+    assert [tool["name"] for tool in body["tools"]] == ["ShapeOutput"]
+    assert "tool_choice" not in body
+    assert "output_config" not in body
+
+
+def _anthropic_family_for(
+    hosting: str,
+    params: Any,
+) -> Any:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        name="anthropic",
+        hosting=hosting,
+        model=params.model,
+        base_url=params.base_url,
+        provider=params.provider,
+        credentials=params.credentials,
+    )
+
+
+@pytest.mark.asyncio
+async def test_structured_output_shaping_rejects_schema_invalid_vertex_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Production supplies a Pydantic schema; unvalidated text must fail."""
+    from pydantic import BaseModel
+
+    from lightspeed_agentic.config import (
+        ModelParameters,
+        VertexCredentialSource,
+        VertexProviderParameters,
+    )
+    from lightspeed_agentic.providers.deepagents import _shape_structured_output
+    from lightspeed_agentic.providers.model_router import resolve_model_route
+
+    class ShapeModel(BaseModel):
+        status: str
+
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_bad",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-sonnet-5-5",
+                "content": [{"type": "text", "text": '{"status": 42}'}],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "usage": {"input_tokens": 3, "output_tokens": 2},
+            },
+        )
+
+    transport = httpx.MockTransport(respond)
+    with httpx.Client(transport=transport) as sync_client:
+        async with httpx.AsyncClient(transport=transport) as async_client:
+            monkeypatch.setattr(tls, "create_http_client", lambda: sync_client)
+            monkeypatch.setattr(tls, "create_async_http_client", lambda: async_client)
+            from google.oauth2.credentials import Credentials as _TokenCredentials
+
+            from lightspeed_agentic.providers import cloud_credentials
+
+            monkeypatch.setattr(
+                cloud_credentials,
+                "create_vertex_credentials",
+                lambda _source: _TokenCredentials(token="test-token"),  # noqa: S106
+            )
+            params = ModelParameters(
+                model="claude-sonnet-5-5",
+                provider=VertexProviderParameters(project="test-project", region="global"),
+                credentials=VertexCredentialSource(Path("/unused/credentials.json")),
+            )
+            route = resolve_model_route(
+                "claude-sonnet-5-5",
+                model_family=_anthropic_family_for("vertex", params),
+            )
+            from langchain_core.callbacks import BaseCallbackHandler
+
+            class _NoopCallback(BaseCallbackHandler):
+                def close_open(self, *_args: Any, **_kwargs: Any) -> None: ...
+
+            with pytest.raises(ValueError, match="does not match configured schema"):
+                await _shape_structured_output(
+                    route,
+                    ShapeModel,
+                    "shape system prompt",
+                    "original request",
+                    "agent answer",
+                    _NoopCallback(),
+                )
+
+
 def test_module_import_does_not_load_optional_provider_sdks() -> None:
     result = subprocess.run(
         [

@@ -499,7 +499,9 @@ async def _shape_structured_output(
     prepared_schema: Any | None = None,
 ) -> tuple[Any, int, int]:
     """Shape pass: tool-free structured binding on a model without thinking."""
+
     from langchain_core.messages import HumanMessage, SystemMessage
+    from pydantic import BaseModel
 
     format_model = model_route.create_model(model_route.model_parameters, None)
     try:
@@ -552,6 +554,16 @@ async def _shape_structured_output(
         try:
             # Local definitions/references work; an empty registry never fetches URLs.
             validate(parsed, validation_schema, registry=Registry())
+        except ValidationError:
+            raise ValueError("Structured output does not match configured schema") from None
+    elif isinstance(validation_schema, type) and issubclass(validation_schema, BaseModel):
+        # Binders and SDK parsers may return plain dictionaries for Pydantic-mode
+        # routes; validate them here so schema-invalid values cannot succeed.
+        from pydantic import ValidationError
+
+        try:
+            if not isinstance(parsed, validation_schema):
+                validation_schema.model_validate(parsed)
         except ValidationError:
             raise ValueError("Structured output does not match configured schema") from None
     elif parsed is None:
