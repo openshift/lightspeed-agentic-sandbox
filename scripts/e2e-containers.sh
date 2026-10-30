@@ -306,10 +306,7 @@ run_one() {
 
     sync_provider_model "${provider}"
     _configure_batch_job_env "${provider}"
-    echo "e2e: model LIGHTSPEED_MODEL=${LIGHTSPEED_MODEL:-} OPENAI_MODEL=${OPENAI_MODEL:-} ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-} GEMINI_MODEL=${GEMINI_MODEL:-}"
-    echo "e2e: batch job env LIGHTSPEED_MCP_SERVERS=${LIGHTSPEED_MCP_SERVERS:-}"
-    echo "e2e: batch job env LIGHTSPEED_REASONING_CONFIG=${LIGHTSPEED_REASONING_CONFIG:-}"
-    echo "e2e: batch job env OPENAI_BASE_URL=${OPENAI_BASE_URL:-}"
+    echo "e2e: provider configuration will be recorded in sanitized artifacts"
 
     export E2E_PROVIDER="${provider}"
     export CLAUDE_CODE_USE_VERTEX="${CLAUDE_CODE_USE_VERTEX:-}"

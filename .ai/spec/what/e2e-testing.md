@@ -174,6 +174,135 @@ and telemetry assertions. Each scenario applies
 `LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED=true` only to its own batch Job. The
 suite default remains `false`; enabling coverage is not live acceptance evidence.
 
+### Focused live safety evidence (OLS-4477)
+
+The benign inspection scenario explicitly validates the submitted response schema,
+requires the MCP sentinel in the response, and verifies successful completion and
+an inspection span with the benign outcome. The malicious scenario requires an
+observed nonzero exit from the `agent` container (not a sidecar), normal error
+termination, the **exact** safe termination marker, an API-confirmed 404 for the
+expected run/step Result CR, and a malicious inspection span. An empty cached
+`result_cr`, inaccessible API, missing container status, or marker in pod log text
+is not proof of rejection. A different termination classification is not accepted.
+
+Inspection evidence uses actual Collector span fields and typed span attributes,
+not matching text in tool payloads, events, or links. It joins the expected MCP
+execution (`list_namespaces` or `malicious_probe`) to its inspection by observed
+call ID within the same invocation/trace. Missing or ambiguous identities,
+unrelated tool inspections, and failed native executions cannot satisfy the
+check. Benign evidence requires all declared inspection chunks to pass; a real
+malicious chunk proves rejection without requiring unvisited later chunks.
+The controlled `malicious_probe` test returns the same attack on every call. A
+completed all-benign inspection for any matching call contradicts its expected
+outcome and prevents verification, even if another call is rejected. All matching
+calls must be checked regardless of Collector export order. Benign prefix chunks
+within an ultimately rejected call are not a completed benign inspection; neither
+are incomplete/cancelled chunk groups. This is an expectation for the controlled
+MCP test, not an accuracy threshold for corpus evaluation.
+
+When `ARTIFACT_DIR` is set, `inspection_evidence.py` writes one
+`inspection-<scenario>-<run>.json` after each inspection-enabled test, including
+failures, fixture teardown failures, and skips after scenario setup. Reports retain
+only allowlisted check outcomes and configuration/identity facts: requested image
+and observed container image ID, provider matrix/hosting identity, submitted model,
+authentication mechanism, sanitized
+endpoint origin, API version, execution limits/reasoning settings, Kubernetes run
+identifiers, exit code, and a focused rerun command. URLs omit userinfo, paths,
+query parameters, and fragments. Arbitrary environment variables, secret contents,
+queries, responses, tool results, classifier payloads, and raw termination/log text
+are not copied into these reports. Inspection runs fetch complete batch pod logs
+so the Azure startup authentication decision is not lost to the normal 200-line
+tail; the report retains only the recognized mode, not those logs.
+
+`verified` describes **only the focused batch safety checks** and requires a passed
+test, all expected checks, explicitly enabled inspection, an observed image digest,
+and the required report metadata. Missing Azure startup authentication metadata,
+invalid/unretained reasoning configuration, unavailable image identity,
+and partial/skipped observations remain unverified. Outcomes include setup, call,
+and teardown: any failure takes precedence over skips, any skip prevents
+verification, and `passed` requires all three phases to pass. Completed check
+observations are retained even when a later phase skips or fails. Tests that cannot
+reach inspection-enabled scenario setup may have no report; absence of a report
+is never a pass. Other
+scenarios do not create safety reports. Test-code revision is supplied by the
+surrounding CI run metadata; neither safety nor corpus report helpers access Git
+or record checkout revision/dirty state. Git availability is not a verification
+requirement.
+
+These compact reports are independent of raw log retention and remain subject to
+normal artifact secret scanning. They do **not** replace protected native source
+traces or claim model-context/normalized-event reconstruction, complete endpoint
+resolution, corpus accuracy, or full provider parity. The endpoint origin is from
+runner configuration; secret-supplied overrides and exact endpoint paths require
+separate sanitized configuration evidence. Vertex and Bedrock auth modes identify
+Google credentials and AWS SigV4, not a verified credential principal or assumption
+chain. Dirty test checkouts must be recorded rather than presented as reproducible
+committed source. Missing credentials, custom endpoints, auth variants, or live
+runs remain unverified. Classifier-only corpus measurements use an additional
+BDD scenario, separate from these focused MCP enforcement checks.
+
+### Classifier-only corpus BDD evaluation (OLS-4477)
+
+`tests/evaluation/` snapshots Classic OLS's labeled 18-case full corpus with source
+revision/SHA256 and strict validation. An ordinary scenario in
+`inspection_evaluation.feature` uses the existing BDD cluster clients, provider
+configuration, credentials, TLS mounts, and artifact directory to launch the
+classifier-only Job. A small worker is ConfigMap-mounted into the digest-pinned
+sandbox image and calls production TLS initialization before resolving the model,
+then reuses route/readiness, classifier factory, shared inspector,
+chunking/retry/deadline policy, and client cleanup. It does not execute a main agent
+or MCP tools; the focused MCP scenarios separately test agent enforcement.
+
+Normal local and CI BDD discovery includes this scenario; there is no separate
+host evaluation CLI, shell phase, or pipeline mode/timeout parameter. Existing
+`main`-resolved pipelines already run the tested SNAPSHOT's BDD checkout and need
+no new configuration. The seven provider/credential configurations and their
+optionality are unchanged. Each case has a 60-second budget including retries;
+the corpus BDD scenario has a 1,350-second pytest timeout to allow its
+1,230-second monitoring budget and bounded cleanup to finish, rather than using
+the suite's ordinary 600 seconds. The Job active deadline is 1,200 seconds.
+126 cases per full seven-configuration cycle can incur more calls due to chunks
+and SDK/inspection retries. Standard `-k inspection_evaluation` selects the corpus
+scenario, and `-k 'not inspection_evaluation'` excludes its cost locally.
+
+Ordinary earlier BDD failures do not suppress this scenario under pytest defaults;
+explicit fail-fast options, cancellation, and bootstrap failures can prevent it
+and remain unverified. Failed OpenAI native prechecks do not suppress BDD but still
+fail the provider runner. Operational evaluation failures fail its BDD scenario;
+misclassifications alone do not add an accuracy gate. Existing secret scanning and
+final failure propagation apply to the single BDD run and artifact bundle.
+Updated pipelines use a PipelineRun-unique integration artifact tag for the whole
+suite, including corpus JSON. Older deployed definitions retain their normal
+commit-based tag and still collect the new report.
+
+Reports group observations by runtime-resolved route/requested model/auth
+mechanism and record actual attempts/chunks, TP/TN/FP/FN, classified denominators,
+errors, and missing coverage. Undefined rates are `null`; errors are not
+classifications. A successful evaluation process means valid measurements, not
+acceptable safety accuracy: there is no invented accuracy gate. Mounted corpus
+ConfigMaps are excluded from generic diagnostics. No raw corpus/classifier/tool
+content, credentials, reasoning, or raw SDK errors are added to reports.
+
+Read-only status polling has bounded transient retries under the original host
+wait budget; it never relaunches the corpus Job. Aborted monitoring, wait expiry,
+Ctrl-C, and pytest's signal-based timeout trigger best-effort partial observation
+and cascading Job deletion, including after ConfigMap ownership is attached.
+Connection/read timeouts bound these API requests. Reports retain valid partial
+measurements, mark missing cases unverified, and record cleanup failures. The
+original Ctrl-C or pytest failure is re-raised after reporting, including when
+interrupted during observation or cleanup; the report uses the safe `cancelled`
+failure tag. Confirmed terminal Jobs retain normal TTL cleanup. If deletion cannot
+be requested, the Job active deadline remains the backstop. No new SIGTERM handling
+is implied; SIGKILL and hard-exit timeout methods cannot guarantee cleanup or a
+report.
+
+The baseline's quoted attacks retain upstream malicious labels; there are no
+benign quoted-attack controls, and the chunking-tagged case may fit in one live
+chunk. This is an initial measurement baseline, not broad safety assurance.
+See [evaluation instructions and limitations](../../../tests/evaluation/README.md)
+for execution, retention, authentication coverage, and interpretation. Live
+provider observations remain required before claiming OLS-4477 acceptance.
+
 ### Environment exports
 
 | Variable | Set by | Purpose |
@@ -193,7 +322,7 @@ suite default remains `false`; enabling coverage is not live acceptance evidence
 | `ANTHROPIC_BEDROCK_MODEL` | user | Model name for anthropic-bedrock-deepagents |
 | `E2E_ARGS` | user / `--` passthrough | Extra pytest args (e.g. `-v`, `-k`, single file) |
 | `E2E_SKIP_FIXTURES` | user | Skip `e2e-install-fixtures.sh` when fixtures already present |
-| `ARTIFACT_DIR` | CI | Pytest tee to `e2e-<provider>-pytest.log` and summary file |
+| `ARTIFACT_DIR` | CI | Shared BDD logs/summary/focused safety evidence and corpus JSON reports; local corpus reports fall back to pytest's scenario temporary directory |
 
 ### Response bodies
 
@@ -234,7 +363,7 @@ Feature files and unit tests are also listed under each behavioral spec. Summary
 | [skills.feature](../../../tests/e2e/features/skills.feature) | provider-contract | Skills mount, echo-token skill, single-script argument containing spaces, same-shell setup/check command chain, nonskill query (all provider matrix entries) |
 | [analysis_output.feature](../../../tests/e2e/features/analysis_output.feature) | run-api, provider-contract | find-token skill, operator analysis + component tokens |
 | [mcp.feature](../../../tests/e2e/features/mcp.feature) | provider-contract, configuration | MCP wiring, tool invoke, MCP tool failure envelope |
-| [tool_result_inspection.feature](../../../tests/e2e/features/tool_result_inspection.feature) | provider-contract | DeepAgents tool-result inspection enabled for a focused MCP run |
+| [tool_result_inspection.feature](../../../tests/e2e/features/tool_result_inspection.feature) | provider-contract | Inspection-enabled benign schema/sentinel success; malicious safe exit and API-confirmed Result absence; payload-free per-run reports |
 | [reasoning_config.feature](../../../tests/e2e/features/reasoning_config.feature) | provider-contract, configuration | Reasoning config passthrough |
 | [troubleshooting.feature](../../../tests/e2e/features/troubleshooting.feature) | e2e-testing (troubleshooting) | Cluster-level troubleshooting scenario validation (OLS-3739) |
 
@@ -242,7 +371,8 @@ Unit tests: [test_run_agent.py](../../../tests/test_run_agent.py),
 [test_batch.py](../../../tests/test_batch.py),
 [test_ready.py](../../../tests/test_ready.py),
 [test_batch_e2e_helpers.py](../../../tests/test_batch_e2e_helpers.py) (harness helpers, native Kubernetes SDK log decoding and MCP sentinel reconstruction, no cluster),
-[test_otel_verify.py](../../../tests/test_otel_verify.py) (Collector text reconstruction, incomplete/inconsistent evidence rejection, and executable CI log-retention regression, no cluster),
+[test_otel_verify.py](../../../tests/test_otel_verify.py) (Collector text reconstruction, incomplete/inconsistent and unrelated/payload evidence rejection, and executable CI log-retention regression, no cluster),
+[test_inspection_e2e.py](../../../tests/test_inspection_e2e.py) (actual safety Gherkin/steps with scripted external run/API observations, strict termination/Result/schema checks, pass/fail/skip/teardown report retention and redaction; no live safety claim),
 [test_e2e_credentials.py](../../../tests/test_e2e_credentials.py) (credential preflight, including Bedrock Konflux mount),
 [test_analysis_schemas.py](../../../tests/test_analysis_schemas.py) (operator analysis JSON schemas),
 [test_analysis_tokens.py](../../../tests/test_analysis_tokens.py) (find-token component token assertions).

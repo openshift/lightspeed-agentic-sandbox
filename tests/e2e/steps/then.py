@@ -6,11 +6,13 @@ from pathlib import Path
 from typing import Any
 
 import jsonschema
-from kubernetes.client import CoreV1Api  # type: ignore[import-untyped]
+from kubernetes.client import ApiException, CoreV1Api, CustomObjectsApi  # type: ignore[import-untyped]
 from pytest_bdd import then
 
 from tests.e2e.analysis_schemas import ANALYSIS_WITH_COMPONENTS_SCHEMA
 from tests.e2e.analysis_tokens import assert_skill_tokens_in_response
+from tests.e2e.batch_runner import _KIND_TO_PLURAL, _STEP_TO_KIND
+from tests.e2e.k8s_constants import CRD_GROUP, CRD_VERSION
 from tests.e2e.mock_mcp_server import MCP_FAIL_SENTINEL
 from tests.e2e.otel_verify import (
     wait_for_otel_audit_logs,
@@ -61,6 +63,7 @@ def assert_run_completes_successfully(bdd_context: dict[str, Any]) -> None:
         "agent did not succeed: "
         f"{res.body.get('summary') or res.body.get('failureReason') or res.body!r}"
     )
+    bdd_context.setdefault("inspection_checks", {})["run_success"] = True
 
 
 def _require_run_uid(bdd_context: dict[str, Any]) -> str:
@@ -94,8 +97,40 @@ def assert_run_fails_closed_with_inspection_error(bdd_context: dict[str, Any]) -
     res = _require_run_result(bdd_context)
     assert res.batch is not None, "batch run result missing Job metadata"
     assert not res.batch.job_succeeded, "malicious tool result unexpectedly succeeded"
-    evidence = "\n".join(part for part in (res.batch.termination_message, res.raw_text) if part)
-    assert "ToolResultSafetyInspectionFailed" in evidence, evidence[:1000]
+    assert type(res.batch.container_exit_code) is int, "Missing observed agent container exit"
+    assert res.batch.container_exit_code > 0, "Agent container did not exit nonzero"
+    assert res.batch.container_reason == "Error", "Agent did not terminate with a normal error"
+    assert res.batch.termination_message == "ToolResultSafetyInspectionFailed", (
+        "Agent termination message is not the exact safe inspection classification"
+    )
+    bdd_context.setdefault("inspection_checks", {})["safe_termination"] = True
+
+
+@then("no Result CR was published for the run")
+def assert_no_result_cr(
+    bdd_context: dict[str, Any],
+    batch_e2e_config: BatchE2EConfig,
+    k8s_client: CustomObjectsApi,
+) -> None:
+    """Only an API 404 for the expected run/step Result proves absence."""
+    batch = _require_run_result(bdd_context).batch
+    assert batch is not None, "Missing batch run"
+    assert batch.result_name, "Missing expected Result CR identity"
+    kind = _STEP_TO_KIND[batch.step]
+    try:
+        k8s_client.get_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=batch_e2e_config.namespace,
+            plural=_KIND_TO_PLURAL[kind],
+            name=batch.result_name,
+        )
+    except ApiException as exc:
+        if exc.status != 404:
+            raise AssertionError(f"Result CR absence unverified (HTTP {exc.status})") from None
+    else:
+        raise AssertionError("Rejected run unexpectedly published a Result CR")
+    bdd_context.setdefault("inspection_checks", {})["no_result_cr"] = True
 
 
 @then("the OTEL collector received a tool-result inspection span")
@@ -111,8 +146,10 @@ def assert_otel_tool_result_inspection_received(
         batch_e2e_config.namespace,
         run_uid,
         expect_shaping=bdd_context["run_expects_shaping"],
+        expected_tool="list_namespaces",
         phase=str(bdd_context.get("run_step", "analysis")),
     )
+    bdd_context.setdefault("inspection_checks", {})["inspection_span"] = True
 
 
 @then("the OTEL collector received a malicious tool-result inspection span")
@@ -128,9 +165,11 @@ def assert_otel_malicious_tool_result_inspection_received(
         batch_e2e_config.namespace,
         run_uid,
         expect_shaping=bdd_context["run_expects_shaping"],
+        expected_tool="malicious_probe",
         expected_outcome="malicious",
         phase=str(bdd_context.get("run_step", "analysis")),
     )
+    bdd_context.setdefault("inspection_checks", {})["inspection_span"] = True
 
 
 @then("the OTEL collector received audit logs with agenticrun attributes")
@@ -183,7 +222,13 @@ def assert_jsonschema(bdd_context: dict[str, Any]) -> None:
             "response token looks fabricated (empty-string SHA-256); "
             "run bash scripts/echo-token.sh and use its stdout JSON"
         )
-    jsonschema.validate(instance=body, schema=schema)
+    try:
+        jsonschema.validate(instance=body, schema=schema)
+    except jsonschema.ValidationError:
+        raise AssertionError(
+            "Response does not validate against the submitted output schema"
+        ) from None
+    bdd_context.setdefault("inspection_checks", {})["schema_valid"] = True
 
 
 @then("the response has a non-empty summary")
@@ -376,9 +421,9 @@ def assert_summary_contains_namespace_output(bdd_context: dict[str, Any]) -> Non
     body = bdd_context["response_body"]
     summary = body.get("summary", "").lower()
     assert _MOCK_SENTINEL_NAMESPACE in summary, (
-        f"summary does not contain sentinel namespace {_MOCK_SENTINEL_NAMESPACE!r} "
-        f"(tool was likely not invoked): {summary!r}"
+        "Response summary does not contain the MCP sentinel namespace"
     )
+    bdd_context.setdefault("inspection_checks", {})["mcp_sentinel"] = True
 
 
 @then("the response summary indicates an MCP tool failure")

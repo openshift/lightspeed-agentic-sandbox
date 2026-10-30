@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run sandbox batch BDD integration tests for a single LLM provider.
+# Run sandbox batch BDD tests, including the classifier corpus, for one provider.
 #
 # Called by the Konflux sandbox-integration-test-pipeline after
 # cloning the repo at the SNAPSHOT revision.
@@ -25,6 +25,7 @@
 #   - Working directory is the sandbox repo root
 
 set -euo pipefail
+trap 'exit 130' INT
 trap 'echo "error: $0 line $LINENO: command \"$BASH_COMMAND\" exited with status $?" >&2' ERR
 
 PROVIDER="${1:?Usage: $0 <provider> (anthropic-vertex-deepagents|anthropic-bedrock-deepagents|gemini-vertex-adk|openai-agents|anthropic-deepagents|azure-openai-agents)}"
@@ -181,14 +182,16 @@ _ensure_uv() {
 }
 _ensure_uv
 uv sync --all-extras
+native_checks_exit=0
 if [[ "${PROVIDER}" == "openai-agents" ]]; then
     echo "runner: running native OpenAI request-capture and agent integration tests"
     uv run pytest -q \
         tests/test_openai_models.py::test_openai_model_sends_responses_request_with_configured_settings \
         tests/test_openai_models.py::test_openai_model_omits_reasoning_from_request_when_unconfigured \
         tests/test_openai_models.py::test_native_openai_structured_output_sends_strict_schema_in_responses_request \
-        tests/test_openai_models.py::test_native_openai_deepagent_reads_file_and_shapes_structured_result
+        tests/test_openai_models.py::test_native_openai_deepagent_reads_file_and_shapes_structured_result || native_checks_exit=$?
 fi
+case "${native_checks_exit}" in 130|143) exit "${native_checks_exit}" ;; esac
 export E2E_SKIP_INSTALL=1
 
 ARTIFACT_DIR="${ARTIFACT_DIR:-/workspace/artifacts}"
@@ -200,4 +203,10 @@ if [ -n "${OPERATOR_REPO:-}" ]; then
     echo "runner: OPERATOR_REPO=${OPERATOR_REPO}"
 fi
 echo "runner: credentials configured for ${PROVIDER}, starting batch e2e (namespace=${E2E_NAMESPACE})"
-bash scripts/e2e-containers.sh "${PROVIDER}"
+test_exit=0
+bash scripts/e2e-containers.sh "${PROVIDER}" || test_exit=$?
+echo "runner: native checks exit=${native_checks_exit}; BDD exit=${test_exit}"
+if [ "${native_checks_exit}" -ne 0 ]; then
+    exit "${native_checks_exit}"
+fi
+exit "${test_exit}"

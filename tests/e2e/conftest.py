@@ -20,6 +20,7 @@ from kubernetes.client import (  # type: ignore[import-untyped]
 )
 
 from tests.e2e.batch_runner import run_batch_query
+from tests.e2e.inspection_evidence import inspection_evidence, pytest_runtest_makereport
 from tests.e2e.run_result import E2ERunResult, batch_to_run_result
 from tests.e2e.suite_setup import (
     BatchE2EConfig,
@@ -28,6 +29,7 @@ from tests.e2e.suite_setup import (
 )
 from steps.given import *  # noqa: F403 — step fixtures must be in conftest namespace
 from steps.when import *  # noqa: F403
+from steps.inspection_evaluation import *  # noqa: F403
 from steps.then import *  # noqa: F403
 
 

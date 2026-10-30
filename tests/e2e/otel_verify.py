@@ -21,7 +21,6 @@ DEFAULT_POLL_TIMEOUT_SECONDS = 90.0
 DEFAULT_POLL_INTERVAL_SECONDS = 3.0
 DEFAULT_LOG_TAIL_LINES = None
 TOOL_RESULT_INSPECTION_TIMEOUT_SECONDS = 180.0
-_TRACE_ID_RE = re.compile(r"\bTrace ID\s*:\s*(\S+)")
 
 
 @dataclass
@@ -29,6 +28,7 @@ class _CollectorSpan:
     fields: dict[str, str] = field(default_factory=dict)
     attributes: dict[str, Any] = field(default_factory=dict)
     scope: str = ""
+    valid: bool = True
 
 
 _LOG_PREFIX = re.compile(r"^(?:\[[^\]\r\n]+\]\s+)?(?:\d{4}-\d{2}-\d{2}T\S+\s+)?")
@@ -68,10 +68,13 @@ def _collector_spans(logs: str) -> list[_CollectorSpan]:
             elif line in ("Events:", "Links:"):
                 current = None
                 in_attributes = False
-            elif match := _SPAN_FIELD.fullmatch(line):
-                current.fields[match[1]] = match[2]
+            elif not in_attributes and (match := _SPAN_FIELD.fullmatch(line)):
+                key, value = match.groups()
+                current.valid &= key not in current.fields
+                current.fields[key] = value
             elif in_attributes and (match := _ATTRIBUTE.fullmatch(line)):
                 key, kind, value = match.groups()
+                current.valid &= key not in current.attributes
                 # Only these scalar kinds participate in reconstruction checks.
                 # Other typed values remain literal instead of being guessed.
                 current.attributes[key] = (
@@ -79,6 +82,8 @@ def _collector_spans(logs: str) -> list[_CollectorSpan]:
                     if kind == "Int" and re.fullmatch(r"-?\d+", value)
                     else value
                     if kind == "Str"
+                    else value == "true"
+                    if kind == "Bool" and value in {"true", "false"}
                     else (kind, value)
                 )
     return spans
@@ -155,6 +160,7 @@ def assert_trace_reconstructable(
     for span in exported:
         if span.fields.get("Trace ID") != trace_id:
             continue
+        assert span.valid, "Duplicate span fields or attributes"
         assert span.scope != "gcp.vertex.agent", "Excluded SDK scope reached the collector"
         span_id = span.fields.get("ID", "")
         assert re.fullmatch(r"[0-9a-f]{16}", span_id), "Invalid native span ID"
@@ -370,23 +376,106 @@ def logs_contain_tool_result_inspection_for_run(
     logs: str,
     run_uid: str,
     *,
+    expected_tool: str,
     expected_outcome: str = "benign",
 ) -> bool:
-    """True when a matching inspection span has the expected outcome."""
-    blocks = logs.split("Span #")[1:]
-    run_trace_ids = {
-        match.group(1)
-        for block in blocks
-        if f"agenticrun.uid: Str({run_uid})" in block
-        if (match := _TRACE_ID_RE.search(block)) is not None
+    """Require the intended MCP execution and its isolated inspection, joined by ID."""
+    exported = _collector_spans(logs)
+    roots = {
+        (span.fields.get("Trace ID", ""), span.fields.get("ID", ""))
+        for span in exported
+        if span.valid
+        and span.fields.get("Name") == "invoke_agent"
+        and span.attributes.get("agenticrun.uid") == run_uid
     }
-    return any(
-        "tool_result.inspection" in block
-        and f"inspection.outcome: Str({expected_outcome})" in block
-        and (match := _TRACE_ID_RE.search(block)) is not None
-        and match.group(1) in run_trace_ids
-        for block in blocks
-    )
+    if len(roots) != 1:
+        return False
+    trace_id, root_id = roots.pop()
+    if not re.fullmatch(r"[0-9a-f]{32}", trace_id) or not int(trace_id, 16):
+        return False
+    if not re.fullmatch(r"[0-9a-f]{16}", root_id) or not int(root_id, 16):
+        return False
+    spans: dict[str, _CollectorSpan] = {}
+    for span in exported:
+        if span.fields.get("Trace ID") != trace_id:
+            continue
+        span_id = span.fields.get("ID", "")
+        if not span.valid or not re.fullmatch(r"[0-9a-f]{16}", span_id) or not int(span_id, 16):
+            return False
+        if span_id in spans and spans[span_id] != span:
+            return False
+        spans[span_id] = span  # Identical duplicate collector exports are harmless.
+    matched = False
+    for native in spans.values():
+        attrs = native.attributes
+        call_id = attrs.get("gen_ai.tool.call.id")
+        if not (
+            native.fields.get("Name") == f"execute_tool {expected_tool}"
+            and native.fields.get("Parent ID") == root_id
+            and native.fields.get("Status code") in {"Unset", "Ok"}
+            and attrs.get("agenticrun.uid") == run_uid
+            and attrs.get("gen_ai.operation.name") == "execute_tool"
+            and attrs.get("gen_ai.tool.name") == expected_tool
+            and isinstance(call_id, str)
+            and call_id
+            and "error.type" not in attrs
+        ):
+            continue
+        if (
+            sum(
+                sibling.fields.get("Name") == native.fields["Name"]
+                and sibling.fields.get("Parent ID") == root_id
+                and sibling.attributes.get("gen_ai.tool.call.id") == call_id
+                for sibling in spans.values()
+            )
+            != 1
+        ):
+            continue  # An inspection cannot identify one of two ambiguous executions.
+        inspections = [
+            span
+            for span in spans.values()
+            if span.fields.get("Name") == "tool_result.inspection"
+            and span.fields.get("Parent ID") == root_id
+            and span.attributes.get("tool.name") == expected_tool
+            and span.attributes.get("gen_ai.tool.call.id") == call_id
+        ]
+        if not inspections:
+            continue
+        chunks = [span.attributes for span in inspections]
+        if any(
+            chunk.get("inspection.enabled") is not True
+            or chunk.get("inspection.result_type") != "result"
+            or type(chunk.get("inspection.chunk_count")) is not int
+            or type(chunk.get("inspection.chunk_index")) is not int
+            or not 0 <= chunk["inspection.chunk_index"] < chunk["inspection.chunk_count"]
+            for chunk in chunks
+        ):
+            continue
+        count = chunks[0]["inspection.chunk_count"]
+        complete_benign = (
+            len(inspections) == count
+            and {chunk["inspection.chunk_index"] for chunk in chunks} == set(range(count))
+            and all(chunk["inspection.chunk_count"] == count for chunk in chunks)
+            and all(
+                span.attributes.get("inspection.outcome") == "benign"
+                and span.fields.get("Status code") in {"Unset", "Ok"}
+                for span in inspections
+            )
+        )
+        if expected_outcome == "malicious":
+            # This controlled MCP test returns the same attack on every call.
+            # A later rejection cannot rescue a completed benign inspection of it.
+            if complete_benign:
+                return False
+            matched = matched or any(
+                span.attributes.get("inspection.outcome") == "malicious"
+                and span.fields.get("Status code") == "Error"
+                for span in inspections
+            )
+        elif expected_outcome == "benign" and complete_benign:
+            matched = True
+    # Collector export order is not execution order: check every matching call.
+    return matched
 
 
 def logs_contain_audit_logs_for_run(logs: str, run_uid: str, *, phase: str) -> bool:
@@ -434,6 +523,7 @@ def wait_for_otel_tool_result_inspection(
     run_uid: str,
     *,
     expect_shaping: bool,
+    expected_tool: str,
     expected_outcome: str = "benign",
     timeout_seconds: float = TOOL_RESULT_INSPECTION_TIMEOUT_SECONDS,
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
@@ -442,6 +532,10 @@ def wait_for_otel_tool_result_inspection(
     """Poll for joined generation/source/inspection evidence and the run outcome."""
 
     def reconstructable(logs: str) -> bool:
+        if not logs_contain_tool_result_inspection_for_run(
+            logs, run_uid, expected_tool=expected_tool, expected_outcome=expected_outcome
+        ):
+            return False
         assert_trace_reconstructable(
             logs,
             run_uid,

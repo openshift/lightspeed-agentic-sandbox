@@ -74,6 +74,9 @@ class RunBatchResult:
     result_cr: dict[str, Any] | None = None
     pod_logs: str = ""
     termination_message: str | None = None
+    container_exit_code: int | None = None
+    container_reason: str | None = None
+    image_id: str | None = None
     error: str | None = None
     job_name: str = ""
     result_name: str | None = None
@@ -123,10 +126,16 @@ def _delete_config_map_ignore_not_found(
     core_api: CoreV1Api,
     namespace: str,
     name: str,
+    *,
+    request_timeout: tuple[float, float] | None = None,
 ) -> None:
     """Delete an input ConfigMap; ignore 404 when create partially failed."""
     try:
-        core_api.delete_namespaced_config_map(name, namespace)
+        core_api.delete_namespaced_config_map(
+            name,
+            namespace,
+            **({"_request_timeout": request_timeout} if request_timeout is not None else {}),
+        )
     except ApiException as exc:
         if exc.status != 404:
             raise
@@ -263,8 +272,20 @@ def run_batch_query(
         wait_timeout_seconds,
     )
     result.job_succeeded = job_ok
-    result.pod_logs = _fetch_job_pod_logs(core_api, config.namespace, job_name)
-    result.termination_message = _fetch_termination_message(core_api, config.namespace, job_name)
+    inspection_enabled = {**config.job_env, **(job_env_overrides or {})}.get(
+        "LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED"
+    ) == "true"
+    result.pod_logs = _fetch_job_pod_logs(
+        core_api, config.namespace, job_name, tail_lines=None if inspection_enabled else 200
+    )
+    agent_status = _fetch_agent_container_status(core_api, config.namespace, job_name)
+    if agent_status is not None:
+        result.image_id = agent_status.image_id
+        terminated = agent_status.state.terminated if agent_status.state else None
+        if terminated is not None:
+            result.termination_message = terminated.message
+            result.container_exit_code = terminated.exit_code
+            result.container_reason = terminated.reason
     if mount_skills:
         result.token_file = _parse_echo_token_from_pod_logs(result.pod_logs)
 
@@ -603,28 +624,61 @@ def _wait_for_job(
     return False, f"timeout after {timeout_seconds}s waiting for job/{job_name}"
 
 
-def _fetch_job_pod_logs(core_api: CoreV1Api, namespace: str, job_name: str) -> str:
-    pods = core_api.list_namespaced_pod(namespace=namespace, label_selector=f"job-name={job_name}")
+def _fetch_job_pod_logs(
+    core_api: CoreV1Api,
+    namespace: str,
+    job_name: str,
+    *,
+    tail_lines: int | None = 200,
+    request_timeout: tuple[float, float] | None = None,
+) -> str:
+    pods = core_api.list_namespaced_pod(
+        namespace=namespace,
+        label_selector=f"job-name={job_name}",
+        **({"_request_timeout": request_timeout} if request_timeout is not None else {}),
+    )
     if not pods.items:  # pyright: ignore[reportAttributeAccessIssue, reportOptionalMemberAccess]
         return ""
     pod_name = pods.items[0].metadata.name  # pyright: ignore[reportAttributeAccessIssue, reportOptionalMemberAccess, reportIndexIssue]
     try:
-        return read_pod_logs(core_api, name=pod_name, namespace=namespace, tail_lines=200)  # pyright: ignore[reportArgumentType]
+        return read_pod_logs(
+            core_api,
+            name=pod_name,
+            namespace=namespace,
+            tail_lines=tail_lines,
+            request_timeout=request_timeout,
+        )  # pyright: ignore[reportArgumentType]
     except ApiException:
         return ""
 
 
+def _fetch_agent_container_status(
+    core_api: CoreV1Api,
+    namespace: str,
+    job_name: str,
+    *,
+    request_timeout: tuple[float, float] | None = None,
+) -> Any:
+    """Read the sandbox container, never a sidecar or init-container status."""
+    pods = core_api.list_namespaced_pod(
+        namespace=namespace,
+        label_selector=f"job-name={job_name}",
+        **({"_request_timeout": request_timeout} if request_timeout is not None else {}),
+    )
+    if not pods.items:
+        return None
+    status = pods.items[0].status
+    return (
+        next((item for item in (status.container_statuses or []) if item.name == "agent"), None)
+        if status
+        else None
+    )
+
+
 def _fetch_termination_message(core_api: CoreV1Api, namespace: str, job_name: str) -> str | None:
-    pods = core_api.list_namespaced_pod(namespace=namespace, label_selector=f"job-name={job_name}")
-    if not pods.items:  # pyright: ignore[reportAttributeAccessIssue, reportOptionalMemberAccess]
-        return None
-    statuses = pods.items[0].status.container_statuses or []  # pyright: ignore[reportAttributeAccessIssue, reportOptionalMemberAccess, reportIndexIssue]
-    if not statuses:
-        return None
-    terminated = statuses[0].state.terminated
-    if terminated is None:
-        return None
-    return terminated.message  # type: ignore[no-any-return]
+    status = _fetch_agent_container_status(core_api, namespace, job_name)
+    terminated = status.state.terminated if status is not None and status.state else None
+    return terminated.message if terminated is not None else None
 
 
 def _sanitize_k8s_name(value: str) -> str:
