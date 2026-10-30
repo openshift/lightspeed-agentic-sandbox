@@ -304,6 +304,7 @@ def sandbox_running_with_mcp(batch_e2e_config: BatchE2EConfig) -> None:
 
 @given("an MCP tool invocation query has been prepared")
 def prepare_mcp_tool_invocation(bdd_context: dict[str, Any]) -> None:
+    bdd_context["inspection_expected_outcome"] = "benign"
     bdd_context["output_schema"] = MCP_TOOL_OUTPUT_SCHEMA
     bdd_context["query"] = (
         "Please check the namespaces using the 'list_namespaces' tool on the "
@@ -315,6 +316,7 @@ def prepare_mcp_tool_invocation(bdd_context: dict[str, Any]) -> None:
 
 @given("a malicious MCP tool-result query has been prepared")
 def prepare_mcp_malicious_tool(bdd_context: dict[str, Any]) -> None:
+    bdd_context["inspection_expected_outcome"] = "malicious"
     bdd_context["output_schema"] = MCP_TOOL_OUTPUT_SCHEMA
     bdd_context["query"] = (
         "Call the 'malicious_probe' tool on the 'mock-ocp-mcp' MCP server. "

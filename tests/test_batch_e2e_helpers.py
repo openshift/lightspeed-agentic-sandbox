@@ -28,16 +28,16 @@ from lightspeed_agentic.types import ResultEvent
 from tests.e2e.batch_log_contract import PROVIDER_OUTPUT_LOG_PREFIX
 from tests.e2e.batch_runner import (
     _body_from_result_cr,
-    _build_job_spec,
-    _delete_config_map_ignore_not_found,
     _enrich_body_from_pod_logs,
-    _fetch_job_pod_logs,
     _needs_pod_log_enrichment,
     _parse_echo_token_from_pod_logs,
     _parse_provider_output_json,
-    _set_config_map_job_owner,
+    build_job_spec,
     build_result_template,
+    delete_config_map_ignore_not_found,
+    fetch_job_pod_logs,
     run_batch_query,
+    set_config_map_job_owner,
 )
 from tests.e2e.k8s_helpers import read_pod_logs
 from tests.e2e.otel_verify import fetch_otel_collector_logs
@@ -447,7 +447,7 @@ class TestBuildJobSpec:
         return {item["name"]: item["value"] for item in env}
 
     def test_skill_sources_are_read_only_after_materialization(self) -> None:
-        job = _build_job_spec(
+        job = build_job_spec(
             self._config(),
             "job-name",
             "input-cm",
@@ -469,7 +469,7 @@ class TestBuildJobSpec:
         assert "LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED" not in _session_job_env()
 
     def test_sets_required_execution_limit_env_defaults(self) -> None:
-        job = _build_job_spec(
+        job = build_job_spec(
             self._config(),
             "job-name",
             "input-cm",
@@ -486,7 +486,7 @@ class TestBuildJobSpec:
 
     def test_applies_job_env_override_without_mutating_config(self) -> None:
         config = self._config()
-        job = _build_job_spec(
+        job = build_job_spec(
             config,
             "job-name",
             "input-cm",
@@ -500,7 +500,7 @@ class TestBuildJobSpec:
         assert "LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED" not in config.job_env
 
     def test_timeout_ms_override_rounds_up_to_seconds(self) -> None:
-        job = _build_job_spec(
+        job = build_job_spec(
             self._config(),
             "job-name",
             "input-cm",
@@ -513,7 +513,7 @@ class TestBuildJobSpec:
         assert self._env(job)["LIGHTSPEED_AGENT_TIMEOUT_SECONDS"] == "2"
 
     def test_passes_tls_policy_to_job(self) -> None:
-        job = _build_job_spec(
+        job = build_job_spec(
             self._config(
                 job_env={
                     "LIGHTSPEED_TLS_PROFILE": "IntermediateType",
@@ -535,7 +535,7 @@ class TestBuildJobSpec:
         assert env["LIGHTSPEED_TLS_CIPHER_SUITES"] == '["ECDHE-RSA-AES128-GCM-SHA256"]'
 
     def test_job_env_overrides_execution_limit_defaults(self) -> None:
-        job = _build_job_spec(
+        job = build_job_spec(
             self._config(
                 job_env={
                     "LIGHTSPEED_AGENT_TIMEOUT_SECONDS": "42",
@@ -687,7 +687,7 @@ def log_http(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
 
 def _read_logs(reader: str, core: CoreV1Api) -> str:
     if reader == "batch":
-        return _fetch_job_pod_logs(core, "ns", "offline-job")
+        return fetch_job_pod_logs(core, "ns", "offline-job")
     if reader == "pods":
         return read_pod_logs(core, namespace="ns", name="pod-a", tail_lines=7)
     return fetch_otel_collector_logs(core, "ns", tail_lines=None)
@@ -748,7 +748,7 @@ def test_native_batch_logs_preserve_mcp_sentinel(
     with caplog.at_level(logging.INFO, logger="lightspeed_agentic"):
         EventLogger("run").log(ResultEvent(text=json.dumps({"success": True, "summary": summary})))
     log_http.body = caplog.text.encode("utf-8")
-    logs = _fetch_job_pod_logs(log_http.core, "ns", "offline-job")
+    logs = fetch_job_pod_logs(log_http.core, "ns", "offline-job")
     body = _enrich_body_from_pod_logs({"success": True, "summary": "Step completed"}, logs)
     assert body["success"] is True
     assert body["summary"] == summary
@@ -762,7 +762,7 @@ class TestConfigMapJobOwner:
         cm.metadata.owner_references = None
         core_api.read_namespaced_config_map.return_value = cm
 
-        _set_config_map_job_owner(core_api, "ns", "e2e-input", "e2e-job", "uid-123")
+        set_config_map_job_owner(core_api, "ns", "e2e-input", "e2e-job", "uid-123")
 
         core_api.replace_namespaced_config_map.assert_called_once_with(
             "e2e-input",
@@ -779,10 +779,10 @@ class TestConfigMapJobOwner:
 
     def test_delete_config_map_ignore_not_found(self) -> None:
         core_api = MagicMock()
-        _delete_config_map_ignore_not_found(core_api, "ns", "orphan-cm")
+        delete_config_map_ignore_not_found(core_api, "ns", "orphan-cm")
         core_api.delete_namespaced_config_map.assert_called_once_with("orphan-cm", "ns")
 
     def test_delete_config_map_swallows_404(self) -> None:
         core_api = MagicMock()
         core_api.delete_namespaced_config_map.side_effect = ApiException(status=404)
-        _delete_config_map_ignore_not_found(core_api, "ns", "missing-cm")
+        delete_config_map_ignore_not_found(core_api, "ns", "missing-cm")

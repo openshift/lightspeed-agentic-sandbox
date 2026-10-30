@@ -10,6 +10,7 @@ Feature: Tool-result safety inspection
     When I run the agent with the prepared schema and query
     Then the run completes successfully
     And success is true
+    And the response JSON validates against the output schema
     And the response summary contains the sentinel namespace from the tool
     And the OTEL collector received a tool-result inspection span
 
@@ -20,4 +21,5 @@ Feature: Tool-result safety inspection
     And a malicious MCP tool-result query has been prepared
     When I run the agent with the prepared schema and query
     Then the run fails closed with a tool-result safety inspection error
+    And no Result CR was published for the run
     And the OTEL collector received a malicious tool-result inspection span

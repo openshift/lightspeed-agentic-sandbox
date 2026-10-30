@@ -6,10 +6,10 @@ metadata:
   name: sandbox-integration-test-pipeline
 spec:
   description: |
-    Runs sandbox batch BDD integration tests for a single LLM provider on a Konflux
-    HyperShift hosted cluster. Installs sandbox e2e fixtures (Result CRDs,
-    OTEL, RBAC), syncs LLM credential Secrets, then runs pytest batch Jobs against
-    the SANDBOX_IMAGE from SNAPSHOT.
+    Runs sandbox batch BDD integration tests, including classifier-only corpus
+    evaluation, for one provider configuration on a Konflux HyperShift hosted
+    cluster. Installs e2e fixtures (Result CRDs, OTEL, RBAC), syncs LLM credential
+    Secrets, then runs pytest against the SANDBOX_IMAGE from SNAPSHOT.
 
     Triggered per-provider by IntegrationTestScenario CRs:
       sandbox-integration-anthropic-vertex-deepagents,
@@ -17,7 +17,8 @@ spec:
       sandbox-integration-gemini-vertex-adk,
       sandbox-integration-openai-agents,
       sandbox-integration-anthropic-deepagents,
-      sandbox-integration-azure-openai-agents.
+      sandbox-integration-azure-openai-agents,
+      sandbox-integration-azure-openai-entra-agents.
   params:
     - name: SNAPSHOT
       description: 'The JSON string representing the snapshot of the application under test.'
@@ -62,7 +63,7 @@ spec:
         - name: releases
           value: '{"latest":{"release":{"channel":"stable","version":"$(params.openshift-version-prefix)","architecture":"multi"}}}'
     - name: run-batch-e2e
-      description: Install sandbox e2e fixtures on the HyperShift cluster and run batch BDD tests.
+      description: Install sandbox e2e fixtures and run the BDD suite, including classifier corpus evaluation.
       runAfter:
         - provision-ephemeral-cluster
       params:
@@ -89,6 +90,8 @@ spec:
         results:
           - name: commit
             value: "$(steps.extract-commit.results.commit)"
+          - name: artifact-reference
+            value: "quay.io/openshift-lightspeed/ols-operator-artifacts:$(steps.extract-commit.results.artifact-tag)"
         volumes:
           - name: cluster-credentials
             secret:
@@ -110,9 +113,15 @@ spec:
             results:
               - name: commit
                 type: string
+              - name: artifact-tag
+                type: string
             env:
               - name: SNAPSHOT
                 value: $(params.SNAPSHOT)
+              - name: PROVIDER
+                value: $(params.provider)
+              - name: PIPELINE_RUN_UID
+                value: $(context.pipelineRun.uid)
             image: quay.io/konflux-qe-incubator/konflux-qe-tools:latest
             script: |
               #!/usr/bin/env bash
@@ -132,6 +141,8 @@ spec:
               ")
               echo "sandbox-integration commit=${COMMIT}"
               echo -n "${COMMIT}" > "$(step.results.commit.path)"
+              ARTIFACT_TAG="ols-agentic-sandbox-integration-${PROVIDER}-${PIPELINE_RUN_UID}"
+              printf '%s' "${ARTIFACT_TAG}" > "$(step.results.artifact-tag.path)"
           - name: run-tests
             # Continue to diagnostics even when pytest fails; the final
             # fail-if-any-step-failed step preserves the failure status.
@@ -253,7 +264,7 @@ spec:
               - name: workdir-path
                 value: /workspace/konflux-artifacts
               - name: oci-ref
-                value: "quay.io/openshift-lightspeed/ols-operator-artifacts:ols-agentic-sandbox-integration-$(params.provider)-$(steps.extract-commit.results.commit)"
+                value: "quay.io/openshift-lightspeed/ols-operator-artifacts:$(steps.extract-commit.results.artifact-tag)"
               - name: credentials-volume-name
                 value: ols-konflux-artifacts-bot-creds
           - name: fail-if-any-step-failed
