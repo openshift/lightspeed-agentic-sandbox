@@ -507,7 +507,9 @@ async def _shape_structured_output(
     prepared_schema: Any | None = None,
 ) -> tuple[Any, int, int]:
     """Shape pass: tool-free structured binding on a model without thinking."""
+
     from langchain_core.messages import HumanMessage, SystemMessage
+    from pydantic import BaseModel
 
     format_model = model_route.create_model(model_route.model_parameters, None)
     try:
@@ -560,6 +562,16 @@ async def _shape_structured_output(
         try:
             # Local definitions/references work; an empty registry never fetches URLs.
             validate(parsed, validation_schema, registry=Registry())
+        except ValidationError:
+            raise ValueError("Structured output does not match configured schema") from None
+    elif isinstance(validation_schema, type) and issubclass(validation_schema, BaseModel):
+        # Binders and SDK parsers may return plain dictionaries for Pydantic-mode
+        # routes; validate them here so schema-invalid values cannot succeed.
+        from pydantic import ValidationError
+
+        try:
+            if not isinstance(parsed, validation_schema):
+                validation_schema.model_validate(parsed)
         except ValidationError:
             raise ValueError("Structured output does not match configured schema") from None
     elif parsed is None:
@@ -729,16 +741,26 @@ class DeepAgentsProvider(AgentProvider):
                         inspect_tool_result as run_inspection,
                     )
 
+                    anthropic_route = self._model_route.route in {
+                        "anthropic",
+                        "vertex/anthropic",
+                        "bedrock/anthropic",
+                    }
                     classifier_model = self._model_route.create_model(
                         self._model_route.model_parameters, None
                     )
-                    # Inherited graph callbacks otherwise auto-stream nested calls;
                     # nostream hides graph events, not SDK transport streaming.
                     classifier_model.disable_streaming = True
-                    create_classifier = (
-                        self._model_route.create_classifier_client or LangChainClassifierClient
-                    )
-                    classifier_client = create_classifier(classifier_model)
+                    if self._model_route.create_classifier_client is not None:
+                        classifier_client = self._model_route.create_classifier_client(
+                            classifier_model
+                        )
+                    else:
+                        classifier_client = LangChainClassifierClient(
+                            classifier_model,
+                            method="json_schema" if anthropic_route else "function_calling",
+                            native_json_schema=self._model_route.route == "vertex/anthropic",
+                        )
                     model_profile = getattr(classifier_model, "profile", None) or {}
                     context_window_tokens = (
                         model_profile.get("max_input_tokens")
