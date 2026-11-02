@@ -107,6 +107,7 @@ Use this table to navigate from component → spec → executable tests:
 make install                           # create/update .venv with dev dependencies via uv
 make install-all                       # install all providers + dev + e2e extras
 make lock                              # refresh uv.lock after dependency changes
+make bump                              # refresh uv.lock + .konflux requirements (or PKG=... VERSION=...)
 make test                              # unit tests only; mocked providers, no API calls
 make e2e openai-agents                 # live batch BDD on OpenShift (see e2e-testing.md)
 make lint                              # ruff check src/ tests/
@@ -205,14 +206,14 @@ starts, with no network access during the build itself.
 
 | File | Purpose | How to regenerate |
 | --- | --- | --- |
-| `.konflux/requirements.hashes.wheel.txt` | RHOAI wheel deps with hashes | `make requirements` |
-| `.konflux/requirements.hashes.source.txt` | PyPI sdist deps with hashes | `make requirements` |
-| `.konflux/requirements.hashes.wheel.pypi.txt` | PyPI wheel deps with hashes | `make requirements` |
-| `.konflux/requirements-build.txt` | Build-time deps for source distributions | `make requirements` |
-| `.konflux/requirements.hermetic.txt` | Hashed bootstrap wheels | `make requirements` |
-| `.konflux/requirements.overrides.txt` | Optional RHOAI compatibility overrides (currently no pins) | Edit manually, then `make requirements` |
-| `.konflux/pypi_wheel_only.txt` | Packages that must use PyPI wheels instead of source distributions | Edit manually, then `make requirements` |
-| `.konflux/profiles.toml` | Package index, Python version, architectures, extras, and bootstrap packages | Edit manually, then `make requirements` |
+| `.konflux/requirements.hashes.wheel.txt` | RHOAI wheel deps with hashes | `make bump` |
+| `.konflux/requirements.hashes.source.txt` | PyPI sdist deps with hashes | `make bump` |
+| `.konflux/requirements.hashes.wheel.pypi.txt` | PyPI wheel deps with hashes | `make bump` |
+| `.konflux/requirements-build.txt` | Hashed PyPI build-time deps for source distributions (index-free) | `make bump` |
+| `.konflux/requirements.hermetic.txt` | Hashed RHOAI wheels: bootstrap tools and source-build deps | `make bump` |
+| `.konflux/requirements.overrides.txt` | Optional RHOAI compatibility overrides (currently no pins) | Edit manually, then `make bump` |
+| `.konflux/pypi_wheel_only.txt` | Packages that must use PyPI wheels instead of source distributions | Edit manually, then `make bump` |
+| `.konflux/profiles.toml` | Package index, Python version, architectures, extras, and bootstrap packages | Edit manually, then `make bump` |
 | `.konflux/build.args` | Release base images (RHOAI 3.5) and hermetic build arguments | Edit manually |
 | `.konflux/rpms.in.yaml` | System RPM package list | Edit manually |
 | `.konflux/rpms.lock.yaml` | Resolved RPM lockfile | `make rpm-lockfile` |
@@ -229,21 +230,39 @@ they use wheels. Versions can differ from `uv.lock`.
 `make verify-hermetic-requirements` checks package coverage, stale allowlist
 entries, and orphan packages; RHOAI and PyPI version skew produces warnings.
 
-Requirements regeneration needs a Linux environment, network access, Podman or
-Docker, access to `quay.io/syedriko/uv:prefer-index`, Python 3.12+ with `packaging`
-available to `python3`, and `pybuild-deps` on `PATH`. Build-dependency markers
-follow the host OS; macOS generation omits Linux-only requirements such as
-`secretstorage` and `jeepney`. These are separate from the ordinary
-`make install` setup. For example, install the host tools with
-`uv tool install pybuild-deps` and install `packaging` in the Python environment
-used by `python3`.
+`make bump` is the single entry point: it regenerates the `.konflux/` hermetic
+files and refreshes `uv.lock` in the same run.
+
+```bash
+make bump                                  # refresh all dependencies
+make bump PKG=<package> VERSION=<minimum>  # single package (e.g. a CVE bump)
+```
+
+`VERSION` is a minimum, not an exact pin. For a direct dependency the floor in
+`pyproject.toml` is raised automatically; a transitive package gets a lock-only
+bump. Unrelated packages move only when compatibility requires it.
+
+(`make konflux-requirements` remains an alias for `make bump`.)
+
+Regeneration needs a Linux environment, network access, Podman or Docker, access
+to `quay.io/syedriko/uv:prefer-index`, and network access to the RHOAI index and
+public PyPI. The target provisions Python 3.12 and the resolver's tools
+(`packaging`, `tomlkit`, `pybuild-deps`, `pip-tools`, `pip`) via
+`uv run --no-project`, so they are separate from the ordinary `make install`
+setup. Build-dependency markers follow the host OS; macOS generation omits
+Linux-only requirements such as `secretstorage` and `jeepney`.
+
+Regen must **not** inherit a RHOAI/default extra index. `make bump` scrubs
+`UV_CONFIG_FILE` and the index variables and runs every step with
+`UV_NO_CONFIG=1 PIP_CONFIG_FILE=/dev/null`. Only a direct
+`python scripts/konflux_resolve.py` invocation needs the clean environment set
+by hand.
 
 RPM regeneration needs Podman or Docker and a Red Hat subscription; set
 `ACTIVATION_KEY` and `ORG_ID`. It reads the release base image from
 `.konflux/build.args` and repository definitions from `.konflux/redhat.repo`.
 
 ```bash
-make bump-deps          # upgrade uv.lock + regenerate Konflux requirements and Tekton package lists
 make rpm-lockfile       # regenerate .konflux/rpms.lock.yaml
 ```
 

@@ -54,6 +54,7 @@ dev = [
     "pytest-bdd>=8.1.0",
     "mypy>=1.20.2",
     "ruff>=0.15.12",
+    "tomlkit>=0.14.0",
     "lightspeed-agentic[all]",
 ]
 e2e = [
@@ -87,7 +88,7 @@ select = ["A", "ARG", "ASYNC", "B", "E", "F", "I", "N", "PT", "RUF", "S", "SIM",
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101"]
 "tests/e2e/**/*.py" = ["S101", "I001", "F401"]
-"scripts/**/*.py" = ["S603", "S607"]
+"scripts/**/*.py" = ["S101", "S603", "S607"]
 
 [tool.deptry]
 ignore = ["DEP001", "DEP003", "DEP004", "DEP005"]  # DEP002-only audit

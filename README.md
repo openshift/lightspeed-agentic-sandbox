@@ -54,16 +54,18 @@ Local development uses `uv.lock`; Konflux resolves independently from
 `pyproject.toml` against the RHOAI and PyPI indexes, so versions can differ.
 
 Requirements regeneration needs Podman or Docker, access to
-`quay.io/syedriko/uv:prefer-index`, Python 3.12+ with `packaging`, and
-`pybuild-deps` on `PATH`. Run generation in a Linux environment: build-dependency
+`quay.io/syedriko/uv:prefer-index`, and network access to the RHOAI index and
+PyPI. The target provisions Python 3.12 and the resolver's tools via
+`uv run --no-project`. Run generation in a Linux environment: build-dependency
 markers follow the host OS, so macOS generation omits Linux-only requirements.
 RPM regeneration also needs a Red Hat subscription with `ACTIVATION_KEY` and
 `ORG_ID` set.
 
 ```bash
-make bump-deps          # upgrade uv.lock + regenerate .konflux/requirements.* and Tekton package lists
-make rpm-lockfile       # regenerate .konflux/rpms.lock.yaml
-make verify-hermetic-requirements  # check package coverage; version skew is a warning
+make bump                              # refresh uv.lock + regenerate .konflux/requirements.* and Tekton package lists
+make bump PKG=<package> VERSION=<minimum>  # single package (e.g. a CVE bump)
+make rpm-lockfile                      # regenerate .konflux/rpms.lock.yaml
+make verify-hermetic-requirements      # check package coverage; version skew is a warning
 ```
 
 Review and commit all changed lockfiles, requirements, and Tekton files together.

@@ -1,5 +1,7 @@
 UV := uv
 
+export PATH := $(HOME)/.local/bin:$(PATH)
+
 CONTAINER_RUNTIME := $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
 IMAGE := lightspeed-agentic-sandbox:latest
 BUILD_VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -16,7 +18,7 @@ endif
 endif
 
 .PHONY: install install-all lock test lint format mypy verify verify-hermetic-requirements e2e image clean help \
-       requirements bump-deps rpm-lockfile konflux-requirements check-unused-deps
+       bump install-uv rpm-lockfile konflux-requirements check-unused-deps
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -61,15 +63,30 @@ image: ## Build container image for local development and e2e
 e2e: image ## Batch cluster E2E BDD (make e2e openai-agents). Needs oc/KUBECONFIG; optional: E2E_ARGS, E2E_SKIP_FIXTURES=1.
 	IMAGE="$(IMAGE)" SANDBOX_IMAGE="$(SANDBOX_IMAGE)" E2E_ARGS="$(E2E_ARGS)" bash scripts/e2e-containers.sh $(filter-out e2e,$(MAKECMDGOALS))
 
-requirements: ## Resolve RHOAI+PyPI deps for Konflux hermetic builds (alias for konflux-requirements)
-	$(MAKE) konflux-requirements
+install-uv: ## Install uv, required to resolve and lock dependencies
+	@command -v uv > /dev/null || { echo >&2 "uv is not installed. Installing..."; curl -LsSf https://astral.sh/uv/install.sh | sh; }
+	uv --version
 
-konflux-requirements: ## Resolve RHOAI+PyPI deps for Konflux hermetic builds
-	python3 scripts/konflux_resolve.py --profile cpu
+# Single entry point for dependency updates: refreshes the .konflux hermetic
+# files and uv.lock together. For a single package (e.g. a CVE bump):
+# make bump PKG=<name> VERSION=<minimum>.
+bump: install-uv ## Refresh dependencies, or target PKG=<name> VERSION=<minimum>
+	@if { [ -n "$(PKG)" ] && [ -z "$(VERSION)" ]; } || { [ -z "$(PKG)" ] && [ -n "$(VERSION)" ]; }; then \
+		echo 'Supply PKG and VERSION together: make bump PKG=<name> VERSION=<minimum>' >&2; exit 2; \
+	fi
+	env -u UV_CONFIG_FILE -u UV_INDEX_URL -u UV_DEFAULT_INDEX -u UV_INDEX \
+		-u UV_EXTRA_INDEX_URL -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL \
+		UV_NO_CONFIG=1 PIP_CONFIG_FILE=/dev/null \
+		uv run --no-project --python 3.12 --with packaging --with tomlkit \
+		--with pybuild-deps==0.6.1 --with pip-tools --with pip \
+		python scripts/konflux_resolve.py --profile cpu \
+		$(if $(PKG),--package "$(PKG)" --version "$(VERSION)")
+	env -u UV_CONFIG_FILE -u UV_INDEX_URL -u UV_DEFAULT_INDEX -u UV_INDEX \
+		-u UV_EXTRA_INDEX_URL -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL \
+		UV_NO_CONFIG=1 PIP_CONFIG_FILE=/dev/null \
+		uv lock $(if $(PKG),-P "$(PKG)>=$(VERSION)",--upgrade)
 
-bump-deps: ## Upgrade all dependencies and regenerate requirements
-	$(UV) lock --upgrade
-	$(MAKE) requirements
+konflux-requirements: bump ## Compatibility alias for make bump
 
 rpm-lockfile: .konflux/rpms.in.yaml .konflux/redhat.repo ## Regenerate .konflux/rpms.lock.yaml (requires podman/docker + RH subscription)
 	./scripts/generate-rpm-lock.sh -a $${ACTIVATION_KEY} -g $${ORG_ID}
