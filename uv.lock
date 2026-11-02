@@ -1849,6 +1849,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-bdd" },
+    { name = "pytest-timeout" },
     { name = "referencing" },
     { name = "ruff" },
 ]
@@ -1924,6 +1925,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'e2e'", specifier = ">=1.3.0" },
     { name = "pytest-bdd", marker = "extra == 'dev'", specifier = ">=8.1.0" },
     { name = "pytest-bdd", marker = "extra == 'e2e'", specifier = ">=8.1.0" },
+    { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.4.0" },
     { name = "pytest-timeout", marker = "extra == 'e2e'", specifier = ">=2.4.0" },
     { name = "referencing", marker = "extra == 'deepagents'", specifier = ">=0.37.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.12" },

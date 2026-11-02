@@ -48,14 +48,14 @@ from tests.e2e.suite_setup import (
     E2E_RUN_LABEL,
 )
 
-_KIND_TO_PLURAL: dict[str, str] = {
+KIND_TO_PLURAL: dict[str, str] = {
     "AnalysisResult": "analysisresults",
     "ExecutionResult": "executionresults",
     "VerificationResult": "verificationresults",
     "EscalationResult": "escalationresults",
 }
 
-_STEP_TO_KIND: dict[str, str] = {
+STEP_TO_KIND: dict[str, str] = {
     "analysis": "AnalysisResult",
     "execution": "ExecutionResult",
     "verification": "VerificationResult",
@@ -74,6 +74,9 @@ class RunBatchResult:
     result_cr: dict[str, Any] | None = None
     pod_logs: str = ""
     termination_message: str | None = None
+    container_exit_code: int | None = None
+    container_reason: str | None = None
+    image_id: str | None = None
     error: str | None = None
     job_name: str = ""
     result_name: str | None = None
@@ -98,7 +101,7 @@ def build_result_template(
     session_id: str,
 ) -> dict[str, Any]:
     """Build a Result CR template for ``/input/result-template``."""
-    kind = _STEP_TO_KIND.get(step)
+    kind = STEP_TO_KIND.get(step)
     if kind is None:
         msg = f"unknown batch step: {step!r}"
         raise ValueError(msg)
@@ -119,20 +122,26 @@ def build_result_template(
     }
 
 
-def _delete_config_map_ignore_not_found(
+def delete_config_map_ignore_not_found(
     core_api: CoreV1Api,
     namespace: str,
     name: str,
+    *,
+    request_timeout: tuple[float, float] | None = None,
 ) -> None:
     """Delete an input ConfigMap; ignore 404 when create partially failed."""
     try:
-        core_api.delete_namespaced_config_map(name, namespace)
+        core_api.delete_namespaced_config_map(
+            name,
+            namespace,
+            **({"_request_timeout": request_timeout} if request_timeout is not None else {}),
+        )
     except ApiException as exc:
         if exc.status != 404:
             raise
 
 
-def _set_config_map_job_owner(
+def set_config_map_job_owner(
     core_api: CoreV1Api,
     namespace: str,
     config_map_name: str,
@@ -228,7 +237,7 @@ def run_batch_query(
         cm_created = True
         created_job = batch_api.create_namespaced_job(
             config.namespace,
-            _build_job_spec(
+            build_job_spec(
                 config,
                 job_name,
                 input_cm_name,
@@ -242,7 +251,7 @@ def run_batch_query(
         )
         job_uid = created_job.metadata.uid  # pyright: ignore[reportAttributeAccessIssue, reportOptionalMemberAccess]
         if job_uid:
-            _set_config_map_job_owner(
+            set_config_map_job_owner(
                 core_api,
                 config.namespace,
                 input_cm_name,
@@ -251,7 +260,7 @@ def run_batch_query(
             )
     except ApiException as exc:
         if cm_created:
-            _delete_config_map_ignore_not_found(core_api, config.namespace, input_cm_name)
+            delete_config_map_ignore_not_found(core_api, config.namespace, input_cm_name)
         result.error = f"create batch resources: {exc.reason}"
         return result
 
@@ -263,8 +272,20 @@ def run_batch_query(
         wait_timeout_seconds,
     )
     result.job_succeeded = job_ok
-    result.pod_logs = _fetch_job_pod_logs(core_api, config.namespace, job_name)
-    result.termination_message = _fetch_termination_message(core_api, config.namespace, job_name)
+    inspection_enabled = {**config.job_env, **(job_env_overrides or {})}.get(
+        "LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED"
+    ) == "true"
+    result.pod_logs = fetch_job_pod_logs(
+        core_api, config.namespace, job_name, tail_lines=None if inspection_enabled else 200
+    )
+    agent_status = fetch_agent_container_status(core_api, config.namespace, job_name)
+    if agent_status is not None:
+        result.image_id = agent_status.image_id
+        terminated = agent_status.state.terminated if agent_status.state else None
+        if terminated is not None:
+            result.termination_message = terminated.message
+            result.container_exit_code = terminated.exit_code
+            result.container_reason = terminated.reason
     if mount_skills:
         result.token_file = _parse_echo_token_from_pod_logs(result.pod_logs)
 
@@ -278,7 +299,7 @@ def run_batch_query(
             group=CRD_GROUP,
             version=CRD_VERSION,
             namespace=config.namespace,
-            plural=_KIND_TO_PLURAL[kind],
+            plural=KIND_TO_PLURAL[kind],
             name=result_name,
         )
     except ApiException as exc:
@@ -435,7 +456,7 @@ def _job_container_security_context() -> dict[str, Any]:
     }
 
 
-def _build_job_spec(
+def build_job_spec(
     config: BatchE2EConfig,
     job_name: str,
     input_cm_name: str,
@@ -603,28 +624,61 @@ def _wait_for_job(
     return False, f"timeout after {timeout_seconds}s waiting for job/{job_name}"
 
 
-def _fetch_job_pod_logs(core_api: CoreV1Api, namespace: str, job_name: str) -> str:
-    pods = core_api.list_namespaced_pod(namespace=namespace, label_selector=f"job-name={job_name}")
+def fetch_job_pod_logs(
+    core_api: CoreV1Api,
+    namespace: str,
+    job_name: str,
+    *,
+    tail_lines: int | None = 200,
+    request_timeout: tuple[float, float] | None = None,
+) -> str:
+    pods = core_api.list_namespaced_pod(
+        namespace=namespace,
+        label_selector=f"job-name={job_name}",
+        **({"_request_timeout": request_timeout} if request_timeout is not None else {}),
+    )
     if not pods.items:  # pyright: ignore[reportAttributeAccessIssue, reportOptionalMemberAccess]
         return ""
     pod_name = pods.items[0].metadata.name  # pyright: ignore[reportAttributeAccessIssue, reportOptionalMemberAccess, reportIndexIssue]
     try:
-        return read_pod_logs(core_api, name=pod_name, namespace=namespace, tail_lines=200)  # pyright: ignore[reportArgumentType]
+        return read_pod_logs(
+            core_api,
+            name=pod_name,
+            namespace=namespace,
+            tail_lines=tail_lines,
+            request_timeout=request_timeout,
+        )  # pyright: ignore[reportArgumentType]
     except ApiException:
         return ""
 
 
+def fetch_agent_container_status(
+    core_api: CoreV1Api,
+    namespace: str,
+    job_name: str,
+    *,
+    request_timeout: tuple[float, float] | None = None,
+) -> Any:
+    """Read the sandbox container, never a sidecar or init-container status."""
+    pods = core_api.list_namespaced_pod(
+        namespace=namespace,
+        label_selector=f"job-name={job_name}",
+        **({"_request_timeout": request_timeout} if request_timeout is not None else {}),
+    )
+    if not pods.items:
+        return None
+    status = pods.items[0].status
+    return (
+        next((item for item in (status.container_statuses or []) if item.name == "agent"), None)
+        if status
+        else None
+    )
+
+
 def _fetch_termination_message(core_api: CoreV1Api, namespace: str, job_name: str) -> str | None:
-    pods = core_api.list_namespaced_pod(namespace=namespace, label_selector=f"job-name={job_name}")
-    if not pods.items:  # pyright: ignore[reportAttributeAccessIssue, reportOptionalMemberAccess]
-        return None
-    statuses = pods.items[0].status.container_statuses or []  # pyright: ignore[reportAttributeAccessIssue, reportOptionalMemberAccess, reportIndexIssue]
-    if not statuses:
-        return None
-    terminated = statuses[0].state.terminated
-    if terminated is None:
-        return None
-    return terminated.message  # type: ignore[no-any-return]
+    status = fetch_agent_container_status(core_api, namespace, job_name)
+    terminated = status.state.terminated if status is not None and status.state else None
+    return terminated.message if terminated is not None else None
 
 
 def _sanitize_k8s_name(value: str) -> str:

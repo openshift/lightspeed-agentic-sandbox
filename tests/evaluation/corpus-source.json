@@ -1,0 +1,7 @@
+{
+  "source_repository": "https://github.com/openshift/lightspeed-service",
+  "source_revision": "e7cfa54c46850d7d2fec7524541f740b77f5a436",
+  "source_path": "eval/tool_result_inspection/corpus_full.yaml",
+  "sha256": "36ee80f3e45ee091a823334aad5312958784d02682d37ecc09a21535281f78e4",
+  "case_count": 18
+}
