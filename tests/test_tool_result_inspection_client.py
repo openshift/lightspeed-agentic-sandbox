@@ -534,6 +534,40 @@ async def test_classifier_reports_cutoff_before_structured_parsing_error() -> No
 
 
 @pytest.mark.asyncio
+async def test_classifier_can_bind_json_schema_for_models_without_forced_tool_choice() -> None:
+    class JsonSchemaModel(FakeModel):
+        def with_structured_output(
+            self, schema: Any, *, method: str, include_raw: bool
+        ) -> FakeModel:
+            assert schema is ClassifierDecision
+            assert method == "json_schema"
+            assert include_raw is True
+            from langchain_core.messages import AIMessage
+
+            return StructuredEnvelopeFakeModel(
+                {
+                    "raw": AIMessage(content=self.response.model_dump_json(by_alias=True)),
+                    "parsed": self.response,
+                    "parsing_error": None,
+                }
+            )
+
+    decision = await LangChainClassifierClient(
+        JsonSchemaModel(ClassifierDecision(injectionDetected=False, category="none")),
+        method="json_schema",
+    ).classify(
+        ClassifierRequest(
+            toolName="execute",
+            resultType="result",
+            chunkIndex=0,
+            chunkCount=1,
+            content="benign tool output",
+        )
+    )
+    assert decision == ClassifierDecision(injectionDetected=False, category="none")
+
+
+@pytest.mark.asyncio
 async def test_classifier_rejects_structured_parsing_errors() -> None:
     with pytest.raises(ClassifierResponseError) as exc_info:
         await LangChainClassifierClient(StructuredErrorFakeModel(None)).classify(

@@ -7,6 +7,7 @@ refresh behavior. Provider SDK imports stay local to the selected constructor.
 from __future__ import annotations
 
 from functools import cached_property
+from operator import itemgetter
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit
 
@@ -116,6 +117,70 @@ def create_bedrock_model(
     if thinking:
         kwargs["thinking"] = thinking
     return model_class(**kwargs)
+
+
+def anthropic_tool_schema(schema: Any) -> dict[str, Any]:
+    """Prepare the Anthropic shaping tool during schema preparation.
+
+    Running this conversion at preparation time surfaces deterministic local
+    schema errors before the agent executes tools, instead of during the
+    post-run shaping pass.
+    """
+    from langchain_google_vertexai._anthropic_utils import convert_to_anthropic_tool
+
+    return cast(dict[str, Any], convert_to_anthropic_tool(schema))
+
+
+def bind_anthropic_output(
+    model: Any,
+    schema: Any,
+) -> Any:
+    """Shape through unforced tool calling on every Anthropic route.
+
+    Anthropic models such as Opus 5.5 and Sonnet 5.5 reject a forced
+    ``tool_choice`` with HTTP 400. The pinned LangChain adapters force it in
+    ``with_structured_output`` anyway — the Vertex adapter always, and the
+    direct/Bedrock adapter for every model except a hard-coded name list. The
+    native ``output_config.format`` grammar is not an alternative for the
+    large shaping schema: Vertex rejects oversized compiled grammars with
+    HTTP 400. Bind the shaping tool without a forced choice on all Anthropic
+    routes and accept either a tool call or one strict JSON object; the shared
+    shaping pass validates the parsed value against the original schema.
+    """
+    import json
+
+    from langchain_core.runnables import RunnableLambda, RunnableMap, RunnablePassthrough
+    from langchain_google_vertexai._anthropic_parsers import ToolsOutputParser
+    from langchain_google_vertexai._anthropic_utils import convert_to_anthropic_tool
+
+    tool_parser = ToolsOutputParser(first_tool_only=True, args_only=True)
+
+    if isinstance(schema, dict) and "input_schema" in schema:
+        tool: dict[str, Any] = schema
+    else:
+        tool = cast(dict[str, Any], convert_to_anthropic_tool(schema))
+    tool_name = cast(str, tool["name"])
+
+    def parse(message: Any) -> Any:
+        calls = getattr(message, "tool_calls", None)
+        if calls:
+            # Response validation only: the shaping tool is never executed, but
+            # a call to any other tool name must not be accepted as shaped output.
+            if calls[0].get("name") != tool_name:
+                raise ValueError("shaping response called an unexpected tool")
+            return tool_parser.invoke(message)
+        content = getattr(message, "content", message)
+        if not isinstance(content, str):
+            raise ValueError("shaping response is not a tool call or JSON text")
+        return json.loads(content)
+
+    parsed = RunnablePassthrough.assign(
+        parsed=itemgetter("raw") | RunnableLambda(parse),
+        parsing_error=lambda _: None,
+    ).with_fallbacks(
+        [RunnablePassthrough.assign(parsed=lambda _: None)], exception_key="parsing_error"
+    )
+    return RunnableMap(raw=model.bind_tools([tool], tool_choice=None)) | parsed
 
 
 def create_vertex_model(
