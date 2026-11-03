@@ -24,23 +24,28 @@ def _tls_model_class(
     **client_kwargs: Any,
 ) -> type[BaseChatModel]:
     """Wrap lazy native clients with shared TLS-configured HTTP clients."""
+    from lightspeed_agentic.providers.audit_support import instrument_httpx_client
     from lightspeed_agentic.tls import create_async_http_client, create_http_client
 
     class TLSChatModel(model_class):  # type: ignore[misc]  # Dynamic optional SDK base class.
         @cached_property
         def _client(self) -> Any:
+            http_client = create_http_client()
+            instrument_httpx_client(http_client)
             return client_class(
                 **self._client_params,
                 **client_kwargs,
-                http_client=create_http_client(),
+                http_client=http_client,
             )
 
         @cached_property
         def _async_client(self) -> Any:
+            http_client = create_async_http_client()
+            instrument_httpx_client(http_client)
             return async_client_class(
                 **self._client_params,
                 **client_kwargs,
-                http_client=create_async_http_client(),
+                http_client=http_client,
             )
 
     return cast("type[BaseChatModel]", TLSChatModel)
@@ -55,8 +60,11 @@ def create_direct_model(
     from langchain_anthropic import ChatAnthropic
 
     from lightspeed_agentic.config import AnthropicCredentialSource
+    from lightspeed_agentic.providers.audit_support import audited_model_class
 
-    model_class = _tls_model_class(ChatAnthropic, Anthropic, AsyncAnthropic)
+    model_class = audited_model_class(
+        _tls_model_class(ChatAnthropic, Anthropic, AsyncAnthropic),
+    )
     credential_source = cast(AnthropicCredentialSource, parameters.credentials)
     kwargs: dict[str, Any] = {
         "model": parameters.model,
@@ -100,11 +108,10 @@ def create_bedrock_model(
 
     # The integration has no stable HTTPX injection point; keep the native-client
     # override aligned with the installed Anthropic SDK.
-    model_class = _tls_model_class(
-        ChatAnthropicBedrock,
-        client_class,
-        async_client_class,
-        **client_kwargs,
+    from lightspeed_agentic.providers.audit_support import audited_model_class
+
+    model_class = audited_model_class(
+        _tls_model_class(ChatAnthropicBedrock, client_class, async_client_class, **client_kwargs),
     )
     kwargs: dict[str, Any] = {
         "model": parameters.model,
@@ -194,6 +201,10 @@ def create_vertex_model(
         VertexCredentialSource,
         VertexProviderParameters,
     )
+    from lightspeed_agentic.providers.audit_support import (
+        audited_model_class,
+        instrument_model_http_clients,
+    )
     from lightspeed_agentic.providers.cloud_credentials import create_vertex_credentials
     from lightspeed_agentic.tls import create_async_http_client, create_http_client
 
@@ -219,4 +230,7 @@ def create_vertex_model(
     thinking = reasoning_config.get("thinking") if reasoning_config else None
     if thinking:
         kwargs["thinking"] = thinking
-    return ChatAnthropicVertex(**kwargs)
+    model_class = audited_model_class(ChatAnthropicVertex)
+    model = model_class(**kwargs)
+    instrument_model_http_clients(model)
+    return model

@@ -5,7 +5,7 @@
 #   - Namespace
 #   - Agentic Result CRDs (from lightspeed-agentic-operator)
 #   - Sandbox batch ServiceAccount + RBAC (Result CR create + status update)
-#   - OTEL collector (TLS OTLP gRPC + debug exporter for trace/log verification)
+#   - OTEL collector (TLS OTLP gRPC + structured OTLP/HTTP test evidence)
 #   - OTEL CA secret for sandbox batch Jobs
 #
 # Does NOT deploy the agentic operator controller.
@@ -132,8 +132,10 @@ data:
               cert_file: /var/run/secrets/serving-cert/tls.crt
               key_file: /var/run/secrets/serving-cert/tls.key
     exporters:
-      debug:
-        verbosity: detailed
+      otlphttp/e2e:
+        endpoint: "http://lightspeed-mock-mcp.${E2E_NAMESPACE}.svc:${MOCK_MCP_PORT:-19090}"
+        encoding: json
+        compression: none
     extensions:
       health_check:
         endpoint: "0.0.0.0:13133"
@@ -142,10 +144,10 @@ data:
       pipelines:
         traces:
           receivers: [otlp]
-          exporters: [debug]
+          exporters: [otlphttp/e2e]
         logs:
           receivers: [otlp]
-          exporters: [debug]
+          exporters: [otlphttp/e2e]
 ---
 apiVersion: v1
 kind: Service
@@ -278,6 +280,8 @@ spec:
 EOF
 
 echo "Waiting for OTEL collector rollout..."
+# Existing pods do not automatically reload the mounted Collector configuration.
+oc rollout restart deployment/lightspeed-otel-collector -n "${E2E_NAMESPACE}"
 oc rollout status deployment/lightspeed-otel-collector -n "${E2E_NAMESPACE}" --timeout=180s
 
 MOCK_MCP_IMAGE="${MOCK_MCP_IMAGE:-quay.io/redhat-user-workloads/crt-nshift-lightspeed-tenant/lightspeed-agentic-sandbox:main}"
@@ -371,6 +375,8 @@ spec:
 EOF
 
 echo "Waiting for mock MCP server rollout..."
+# Reload mounted fixture code even when the image/pod template has not changed.
+oc rollout restart deployment/lightspeed-mock-mcp -n "${E2E_NAMESPACE}"
 oc rollout status deployment/lightspeed-mock-mcp -n "${E2E_NAMESPACE}" --timeout=180s
 
 MCP_URL="http://lightspeed-mock-mcp.${E2E_NAMESPACE}.svc:${MOCK_MCP_PORT}/mcp"

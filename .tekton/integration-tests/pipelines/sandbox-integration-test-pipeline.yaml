@@ -239,6 +239,9 @@ spec:
                   --all-containers=true --prefix --timestamps --tail=-1 \
                   >> otel-collector-logs.txt 2>/dev/null || true
               done
+              oc get --raw \
+                "/api/v1/namespaces/${NAMESPACE}/services/http:lightspeed-mock-mcp:mcp/proxy/otel" \
+                > otel-evidence.jsonl 2>/dev/null || true
               echo "Artifacts gathered:"
               ls -la "${ARTIFACT_DIR}" || true
           - name: list-artifacts

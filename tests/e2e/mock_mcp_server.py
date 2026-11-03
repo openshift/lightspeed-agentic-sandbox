@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import json
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -22,6 +24,7 @@ from mcp.server import Server
 from mcp.server.streamable_http import StreamableHTTPServerTransport
 from starlette.applications import Starlette
 from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 logger = logging.getLogger("mock_mcp_server")
@@ -156,6 +159,59 @@ class _MCPEndpoint:
         await state.transport.handle_request(scope, receive, send)
 
 
+MAX_REQUEST_BYTES = 8 * 1024 * 1024
+MAX_EVIDENCE_BYTES = 64 * 1024 * 1024
+MAX_EXPORTS = 4096
+
+
+def _evidence_routes() -> list[Route]:
+    """Each app owns bounded OTLP JSON evidence; overflow fails instead of evicting."""
+    exports: dict[bytes, bytes] = {}
+    size = 0
+    overflow = False
+    receiver_id = uuid.uuid4().hex
+
+    async def receive(request: Request) -> Response:
+        nonlocal size, overflow
+        if overflow:
+            return Response(status_code=507)
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > MAX_REQUEST_BYTES:
+                overflow = True
+                return Response(status_code=413)
+        try:
+            payload = json.loads(body)
+            key = "resourceLogs" if request.url.path.endswith("/logs") else "resourceSpans"
+            if not isinstance(payload, dict) or not isinstance(payload.get(key), list):
+                return Response(status_code=400)
+            encoded = json.dumps(payload, allow_nan=False, separators=(",", ":")).encode()
+        except (ValueError, TypeError):
+            return Response(status_code=400)
+        digest = hashlib.sha256(encoded).digest()
+        if digest not in exports:
+            if size + len(encoded) > MAX_EVIDENCE_BYTES or len(exports) >= MAX_EXPORTS:
+                overflow = True
+                return Response(status_code=507)
+            exports[digest] = encoded
+            size += len(encoded)
+        return JSONResponse({})
+
+    async def snapshot(_request: Request) -> Response:
+        if overflow:
+            return Response(status_code=507)
+        # NDJSON frames whole exports. Newlines within strings are JSON-escaped.
+        header = json.dumps({"receiverId": receiver_id}).encode()
+        return Response(b"\n".join((header, *exports.values())), media_type="application/x-ndjson")
+
+    return [
+        Route("/v1/traces", receive, methods=["POST"]),
+        Route("/v1/logs", receive, methods=["POST"]),
+        Route("/otel", snapshot, methods=["GET"]),
+    ]
+
+
 def create_app() -> Starlette:
     @asynccontextmanager
     async def lifespan(_app):
@@ -166,7 +222,10 @@ def create_app() -> Starlette:
         _sessions.clear()
 
     app = Starlette(
-        routes=[Route("/mcp", _MCPEndpoint(), methods=["GET", "POST", "DELETE"])],
+        routes=[
+            Route("/mcp", _MCPEndpoint(), methods=["GET", "POST", "DELETE"]),
+            *_evidence_routes(),
+        ],
         lifespan=lifespan,
     )
     return app

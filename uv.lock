@@ -1887,7 +1887,7 @@ openai = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp", marker = "extra == 'openai'", specifier = "<4" },
+    { name = "aiohttp", marker = "extra == 'openai'", specifier = ">=3.12,<4" },
     { name = "anthropic", marker = "extra == 'deepagents'", specifier = "<1" },
     { name = "azure-core", marker = "extra == 'openai'", specifier = ">=1.31.0" },
     { name = "azure-identity", marker = "extra == 'openai'", specifier = ">=1.21.0" },
@@ -1932,7 +1932,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.12" },
     { name = "starlette", marker = "extra == 'e2e'", specifier = ">=0.27.0" },
     { name = "tomlkit", marker = "extra == 'dev'", specifier = ">=0.14.0" },
-    { name = "urllib3", specifier = ">=1.24.2,<3" },
+    { name = "urllib3", specifier = ">=2,<3" },
     { name = "uvicorn", marker = "extra == 'e2e'", specifier = ">=0.31.1" },
 ]
 provides-extras = ["deepagents", "openai", "all", "dev", "e2e"]

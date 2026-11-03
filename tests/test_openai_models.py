@@ -696,12 +696,14 @@ def _openai_response_stream(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("inspection_mode", ["disabled", "benign", "malicious"])
+@pytest.mark.usefixtures("connection_audit_enabled")
 async def test_native_openai_deepagent_reads_file_and_shapes_structured_result(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     span_exporter: Any,
     caplog: pytest.LogCaptureFixture,
     inspection_mode: str,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     from lightspeed_agentic.config import ResolvedModelFamily
     from lightspeed_agentic.inspection.errors import ToolResultSafetyInspectionFailed
@@ -885,6 +887,26 @@ async def test_native_openai_deepagent_reads_file_and_shapes_structured_result(
         for async_client in async_clients:
             await async_client.aclose()
 
+    connection_records = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith('{"schema_version":1,')
+    ]
+    starts = connection_records[::2]
+    ends = connection_records[1::2]
+    expected_attempts = (
+        2 if inspection_mode == "malicious" else 4 if inspection_mode == "benign" else 3
+    )
+    assert len(starts) == expected_attempts
+    assert all(row["request.kind"] == "llm" for row in connection_records)
+    assert all("gen_ai.tool.name" not in row for row in connection_records)
+    assert len(ends) == len(starts)
+    assert all(end["outcome"] == "success" for end in ends)
+    assert all(
+        start["attempt_id"] == end["attempt_id"] for start, end in zip(starts, ends, strict=True)
+    )
+    assert "native-openai-file-sentinel" not in json.dumps(connection_records)
+    assert "resolved-openai-key" not in json.dumps(connection_records)
     assert len(classifier_requests) == (0 if inspection_mode == "disabled" else 1)
     inspections = [
         span for span in span_exporter.get_finished_spans() if span.name == "tool_result.inspection"
@@ -898,6 +920,9 @@ async def test_native_openai_deepagent_reads_file_and_shapes_structured_result(
         assert inspections[0].attributes["llm.provider"] == "openai"
         assert inspections[0].attributes["gen_ai.tool.call.id"] == "call_read-file"
         assert "native-openai-file-sentinel" not in repr(inspections[0].attributes)
+        assert any(
+            int(row.get("span_id", "0"), 16) == inspections[0].context.span_id for row in starts
+        )
     assert not any("injectionDetected" in getattr(event, "text", "") for event in events)
     assert "native-openai-file-sentinel" not in caplog.text
     if inspection_mode == "malicious":

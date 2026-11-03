@@ -28,6 +28,7 @@ from lightspeed_agentic.mcp import (
     render_mcp_policy_context,
     split_admitted_mcp_servers,
 )
+from tests.helpers import otlp_requests as otlp_requests
 
 
 class TestParseMCPServers:
@@ -826,3 +827,255 @@ class TestDiscoverAndAdmitMCPServer:
         assert "reason=missing_rbac_metadata" in caplog.text
         assert "reason=no_admitted_tools" in caplog.text
         assert "Delete a namespace" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["success", "filtered", "http403", "timeout", "tls"])
+@pytest.mark.usefixtures("connection_audit_enabled")
+async def test_real_mcp_admission_audits_http_not_admission_outcome(
+    scenario,
+    monkeypatch,
+    capsys,
+):
+    import ssl
+
+    import httpx
+
+    from lightspeed_agentic.connection_audit import invocation_context
+
+    requests = []
+    clients = []
+
+    def network(request):
+        assert request.headers["authorization"] == "Bearer PRIVATE-credential"
+        method = json.loads(request.content)["method"]
+        requests.append(method)
+        if scenario == "timeout":
+            raise httpx.ReadTimeout("PRIVATE-error")
+        if scenario == "tls":
+            raise httpx.ConnectError("PRIVATE-error") from ssl.SSLCertVerificationError(
+                "PRIVATE-cert"
+            )
+        if scenario == "http403":
+            return httpx.Response(403, text="PRIVATE-error")
+        body = json.loads(request.content)
+        if method == "initialize":
+            result = {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "PRIVATE-description", "version": "1"},
+            }
+        elif method == "notifications/initialized":
+            return httpx.Response(202)
+        else:
+            assert method == "tools/list"
+            result = {
+                "tools": [
+                    {
+                        "name": "execute" if scenario == "filtered" else "lookup",
+                        "description": "PRIVATE-description",
+                        "inputSchema": {"type": "object", "properties": {}},
+                        "annotations": {"readOnlyHint": True},
+                    }
+                ]
+            }
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    def create_client(**kwargs):
+        client = httpx.AsyncClient(transport=httpx.MockTransport(network), **kwargs)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr("lightspeed_agentic.tls.create_async_http_client", create_client)
+    with invocation_context("11111111-1111-4111-8111-111111111111", "analysis"):
+        admitted = await discover_and_admit_mcp_server(
+            ResolvedMCPServer(
+                name="catalog",
+                url="https://mcp.example/PRIVATE?token=PRIVATE",
+                headers=[ResolvedMCPHeader("Authorization", "Bearer PRIVATE-credential")],
+            )
+        )
+    assert (admitted is not None) is (scenario == "success")
+    assert requests == (
+        ["initialize", "notifications/initialized", "tools/list"]
+        if scenario in {"success", "filtered"}
+        else ["initialize"]
+    )
+    observed = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith('{"schema_version":1,')
+    ]
+    starts = [row for row in observed if row["event"] == "outbound.request.started"]
+    ends = [row for row in observed if row["event"] == "outbound.request.finished"]
+    assert len(starts) == len(ends) == len(requests)
+    assert {row["attempt_id"] for row in starts} == {row["attempt_id"] for row in ends}
+    assert len({row["attempt_id"] for row in observed}) == len(requests)
+    assert all(
+        row["request.kind"] == "mcp"
+        and row["server.address"] == "mcp.example"
+        and row["server.port"] == 443
+        and row["agenticrun.uid"] == "11111111-1111-4111-8111-111111111111"
+        and row["agenticrun.phase"] == "analysis"
+        and "gen_ai.tool.name" not in row
+        for row in observed
+    )
+    category = {"http403": "http_error", "timeout": "timeout", "tls": "tls_error"}.get(scenario)
+    assert all(row.get("error.type") == category for row in ends)
+    outcome = (
+        "http_error" if scenario == "http403" else "transport_error" if category else "success"
+    )
+    assert all(row["outcome"] == outcome for row in ends)
+    assert all("decision" not in row for row in ends)
+    assert "PRIVATE" not in json.dumps(observed)
+    assert clients
+    assert all(client.is_closed for client in clients)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("connection_audit_enabled")
+async def test_real_mcp_stateful_stream_reconnect_and_termination_are_audited(
+    monkeypatch,
+    capsys,
+    otlp_requests,
+):
+    import httpx
+    from opentelemetry import trace
+    from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
+
+    from lightspeed_agentic import tracing
+
+    clients = []
+    wire_requests = []
+    get_count = 0
+    reconnected = asyncio.Event()
+
+    class Events(httpx.AsyncByteStream):
+        def __init__(self, reconnect):
+            self.reconnect = reconnect
+
+        async def __aiter__(self):
+            if self.reconnect:
+                yield b"id: PRIVATE-event\nretry: 0\n\n"
+            else:
+                yield b": keepalive\n\n"
+                await asyncio.Future()  # Native session teardown must cancel this read.
+
+    async def network(request):
+        nonlocal get_count
+        wire_requests.append(request.method)
+        assert request.headers["authorization"] == "Bearer PRIVATE-credential"
+        if request.method == "GET":
+            get_count += 1
+            assert get_count <= 2
+            if get_count == 2:
+                assert request.headers["last-event-id"] == "PRIVATE-event"
+                reconnected.set()
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/event-stream"},
+                stream=Events(reconnect=get_count == 1),
+            )
+        if request.method == "DELETE":
+            assert request.headers["mcp-session-id"] == "PRIVATE-session"
+            return httpx.Response(204)
+        assert request.method == "POST"
+        body = json.loads(request.content)
+        if body["method"] == "initialize":
+            result = {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "test-server", "version": "1"},
+            }
+        elif body["method"] == "notifications/initialized":
+            return httpx.Response(202)
+        else:
+            assert body["method"] == "tools/list"
+            await asyncio.wait_for(reconnected.wait(), 5)
+            result = {
+                "tools": [
+                    {
+                        "name": "lookup",
+                        "description": "PRIVATE-description",
+                        "inputSchema": {"type": "object", "properties": {}},
+                    }
+                ]
+            }
+        return httpx.Response(
+            200,
+            headers={"Mcp-Session-Id": "PRIVATE-session"},
+            json={"jsonrpc": "2.0", "id": body["id"], "result": result},
+        )
+
+    def create_client(**kwargs):
+        client = httpx.AsyncClient(transport=httpx.MockTransport(network), **kwargs)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr("lightspeed_agentic.tls.create_async_http_client", create_client)
+    monkeypatch.setenv("LIGHTSPEED_AUDIT_ENABLED", "true")
+    monkeypatch.setenv("LIGHTSPEED_CAPTURE_CONTENT", "false")
+    tracing.init_tracer(
+        agenticrun_uid="11111111-1111-4111-8111-111111111111", agenticrun_phase="analysis"
+    )
+    try:
+        with trace.get_tracer("mcp-test").start_as_current_span("admission") as parent:
+            span_context = parent.get_span_context()
+            admitted = await discover_and_admit_mcp_server(
+                ResolvedMCPServer(
+                    name="catalog",
+                    url="https://mcp.example/PRIVATE?token=PRIVATE",
+                    headers=[ResolvedMCPHeader("Authorization", "Bearer PRIVATE-credential")],
+                )
+            )
+    finally:
+        tracing.shutdown_tracer()
+    assert admitted is not None
+    assert [tool.name for tool in admitted.tools] == ["lookup"]
+    assert wire_requests.count("POST") == 3
+    assert wire_requests.count("GET") == 2
+    assert wire_requests.count("DELETE") == 1
+    observed = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith('{"schema_version":1,')
+    ]
+    starts = [row for row in observed if row["event"] == "outbound.request.started"]
+    ends = [row for row in observed if row["event"] == "outbound.request.finished"]
+    assert len(starts) == len(ends) == 6
+    assert len({row["attempt_id"] for row in starts}) == 6
+    assert {row["attempt_id"] for row in starts} == {row["attempt_id"] for row in ends}
+    assert all(row["request.kind"] == "mcp" for row in observed)
+    assert all("gen_ai.tool.name" not in row for row in observed)
+    assert sorted(row["http.request.method"] for row in starts) == [
+        "DELETE",
+        "GET",
+        "GET",
+        "POST",
+        "POST",
+        "POST",
+    ]
+    assert sorted(row["outcome"] for row in ends) == ["cancelled", *(["success"] * 5)]
+    cancelled = next(row for row in ends if row["outcome"] == "cancelled")
+    assert cancelled["error.type"] == "cancelled"
+    assert all("decision" not in row for row in ends)
+    assert "PRIVATE" not in json.dumps(observed)
+    assert all(client.is_closed for client in clients)
+    wire = []
+    while not otlp_requests.logs.empty():
+        payload = ExportLogsServiceRequest.FromString(otlp_requests.logs.get_nowait())
+        wire.extend(
+            record
+            for resource in payload.resource_logs
+            for scope in resource.scope_logs
+            for record in scope.log_records
+            if record.body.string_value.startswith('{"schema_version":1,')
+        )
+    assert [json.loads(record.body.string_value) for record in wire] == observed
+    assert all(int.from_bytes(record.trace_id, "big") == span_context.trace_id for record in wire)
+    assert all(int.from_bytes(record.span_id, "big") == span_context.span_id for record in wire)
+    assert all(
+        row["agenticrun.uid"] == "11111111-1111-4111-8111-111111111111"
+        and row["agenticrun.phase"] == "analysis"
+        for row in observed
+    )

@@ -14,6 +14,7 @@ from opentelemetry import trace
 from opentelemetry.trace import SpanKind, StatusCode
 
 from lightspeed_agentic.audit import AuditLogger
+from lightspeed_agentic.connection_audit import invocation_context
 from lightspeed_agentic.inspection.errors import ToolResultSafetyInspectionFailed
 from lightspeed_agentic.logging import EventLogger
 from lightspeed_agentic.mcp import AdmittedMCPProviderServer
@@ -291,7 +292,8 @@ async def run_agent_query(
             finally:
                 otel_context.detach(token)
 
-        await asyncio.wait_for(run(), timeout=timeout_seconds)
+        with invocation_context(agenticrun_uid, step):
+            await asyncio.wait_for(run(), timeout=timeout_seconds)
 
     except TimeoutError:
         event_logger.flush()

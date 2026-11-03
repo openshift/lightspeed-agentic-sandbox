@@ -1,4 +1,4 @@
-"""MCP server configuration parsing and header resolution.
+"""MCP configuration, admission, and metadata-only HTTP auditing.
 
 Reads LIGHTSPEED_MCP_SERVERS env var (JSON array) and resolves header values
 from Kubernetes-mounted secrets and projected service account tokens.
@@ -13,9 +13,13 @@ import os
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
+from lightspeed_agentic.connection_audit import mcp_request
 from lightspeed_agentic.readiness import read_mounted_secret
+
+if TYPE_CHECKING:
+    import httpx
 
 logger = logging.getLogger("lightspeed_agentic")
 
@@ -356,6 +360,22 @@ def _admit_discovered_tools(
     return admitted_tools
 
 
+def create_mcp_http_client(**kwargs: Any) -> httpx.AsyncClient:
+    """Retain shared TLS/client options and reuse the HTTP attempt observer."""
+    from lightspeed_agentic.providers.audit_support import instrument_httpx_client
+    from lightspeed_agentic.tls import create_async_http_client
+
+    client = create_async_http_client(**kwargs)
+    instrument_httpx_client(client)
+    return client
+
+
+async def audit_mcp_tool_call(request: Any, handler: Any) -> Any:
+    """Add safe identity around the adapter's native tool/session lifecycle."""
+    with mcp_request(request.name):
+        return await handler(request)
+
+
 async def discover_and_admit_mcp_server(
     server: ResolvedMCPServer,
 ) -> AdmittedMCPServer | None:
@@ -367,18 +387,17 @@ async def discover_and_admit_mcp_server(
     """
     from langchain_mcp_adapters.client import MultiServerMCPClient
 
-    from lightspeed_agentic.tls import create_async_http_client
-
     connection = {
         "transport": "http",
         "url": server.url,
         "headers": _headers_dict(server),
         "timeout": server.timeout,
-        "httpx_client_factory": create_async_http_client,
+        "httpx_client_factory": create_mcp_http_client,
     }
     try:
         client = cast(Any, MultiServerMCPClient)({server.name: connection})
-        tools = await client.get_tools(server_name=server.name)
+        with mcp_request():
+            tools = await client.get_tools(server_name=server.name)
         admitted_tools = _admit_discovered_tools(server, tools)
     except Exception as exc:
         logger.warning(

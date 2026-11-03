@@ -13,6 +13,8 @@ import pytest
 
 from .helpers import make_model_route
 
+pytestmark = pytest.mark.usefixtures("connection_audit_enabled")
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("inspection_enabled", [False, True])
@@ -20,6 +22,7 @@ from .helpers import make_model_route
     "failure", ["client-construction", "initialize", "tools/list", "invalid-tool-schema"]
 )
 async def test_admitted_mcp_failure_has_safe_logs_and_result(
+    capsys: pytest.CaptureFixture[str],
     failure: str,
     inspection_enabled: bool,
     tmp_path: Path,
@@ -163,10 +166,23 @@ async def test_admitted_mcp_failure_has_safe_logs_and_result(
     assert "gen_ai.output.messages" not in invocation.attributes
     assert not invocation.events
     assert not any(s.name == "tool_result.inspection" for s in spans)
+    observed = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith('{"schema_version":1,')
+    ]
+    starts = [row for row in observed if row["event"] == "outbound.request.started"]
+    ends = [row for row in observed if row["event"] == "outbound.request.finished"]
+    assert len(starts) == len(ends) == len(requests)
+    assert all(row["request.kind"] == "mcp" for row in observed)
+    assert all("gen_ai.tool.name" not in row for row in observed)
+    assert all(row["outcome"] == "success" for row in ends)
+    assert "PRIVATE" not in json.dumps(observed)
 
 
 @pytest.mark.asyncio
 async def test_mcp_initialization_cancellation_is_not_an_operational_failure(
+    capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -229,3 +245,15 @@ async def test_mcp_initialization_cancellation_is_not_an_operational_failure(
     assert invocation.attributes["error.type"] == "CancelledError"
     assert invocation.status.status_code.name == "ERROR"
     assert not any(record.levelname == "ERROR" for record in caplog.records)
+    observed = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith('{"schema_version":1,')
+    ]
+    start, end = observed
+    assert start["event"] == "outbound.request.started"
+    assert end["event"] == "outbound.request.finished"
+    assert start["attempt_id"] == end["attempt_id"]
+    assert end["server.address"] == "cancelled-mcp.example"
+    assert end["outcome"] == "cancelled"
+    assert end["error.type"] == "cancelled"

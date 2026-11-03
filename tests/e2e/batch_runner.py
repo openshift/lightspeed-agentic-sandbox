@@ -272,12 +272,7 @@ def run_batch_query(
         wait_timeout_seconds,
     )
     result.job_succeeded = job_ok
-    inspection_enabled = {**config.job_env, **(job_env_overrides or {})}.get(
-        "LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED"
-    ) == "true"
-    result.pod_logs = fetch_job_pod_logs(
-        core_api, config.namespace, job_name, tail_lines=None if inspection_enabled else 200
-    )
+    result.pod_logs = fetch_job_pod_logs(core_api, config.namespace, job_name, tail_lines=None)
     agent_status = fetch_agent_container_status(core_api, config.namespace, job_name)
     if agent_status is not None:
         result.image_id = agent_status.image_id
@@ -629,7 +624,7 @@ def fetch_job_pod_logs(
     namespace: str,
     job_name: str,
     *,
-    tail_lines: int | None = 200,
+    tail_lines: int | None = None,
     request_timeout: tuple[float, float] | None = None,
 ) -> str:
     pods = core_api.list_namespaced_pod(
@@ -641,6 +636,7 @@ def fetch_job_pod_logs(
         return ""
     pod_name = pods.items[0].metadata.name  # pyright: ignore[reportAttributeAccessIssue, reportOptionalMemberAccess, reportIndexIssue]
     try:
+        # Early auth audit records are the reference for OTLP delivery checks.
         return read_pod_logs(
             core_api,
             name=pod_name,

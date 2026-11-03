@@ -12,7 +12,7 @@ import logging
 import os
 import time
 import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 from uuid import UUID
 
@@ -651,6 +651,18 @@ class DeepAgentsProvider(AgentProvider):
         return "deepagents"
 
     async def query(self, options: ProviderQueryOptions) -> AsyncIterator[ProviderEvent]:
+        iterator = self._query(options)
+        try:
+            while True:
+                try:
+                    event = await anext(iterator)
+                except StopAsyncIteration:
+                    return
+                yield event
+        finally:
+            await iterator.aclose()
+
+    async def _query(self, options: ProviderQueryOptions) -> AsyncGenerator[ProviderEvent, None]:
         parent_context = otel_context.get_current()
 
         from deepagents import create_deep_agent
@@ -831,7 +843,8 @@ class DeepAgentsProvider(AgentProvider):
             if options.mcp_servers:
                 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-                from lightspeed_agentic.tls import create_async_http_client
+                from lightspeed_agentic.connection_audit import mcp_request
+                from lightspeed_agentic.mcp import audit_mcp_tool_call, create_mcp_http_client
 
                 try:
                     client = MultiServerMCPClient(
@@ -841,10 +854,11 @@ class DeepAgentsProvider(AgentProvider):
                                 "url": server.url,
                                 "headers": {h.name: h.value for h in server.headers},
                                 "timeout": server.timeout,
-                                "httpx_client_factory": create_async_http_client,
+                                "httpx_client_factory": create_mcp_http_client,
                             }
                             for server in options.mcp_servers
-                        }
+                        },
+                        tool_interceptors=[audit_mcp_tool_call],
                     )
                 except Exception as exc:
                     raise MCPInitializationError(
@@ -855,7 +869,8 @@ class DeepAgentsProvider(AgentProvider):
                 for server in options.mcp_servers:
                     allowed_tool_names = set(server.allowed_tool_names)
                     try:
-                        server_tools = await client.get_tools(server_name=server.name)
+                        with mcp_request():
+                            server_tools = await client.get_tools(server_name=server.name)
                     except Exception as exc:
                         raise MCPInitializationError(
                             server_names=(server.name,), error_type=type(exc).__name__

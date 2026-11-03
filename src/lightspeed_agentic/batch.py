@@ -141,6 +141,9 @@ def main() -> None:
     and exits non-zero. Agent failure still publishes a Result CR and exits 0.
     """
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    from lightspeed_agentic.connection_audit import configure_connection_audit
+
+    configure_connection_audit()
     build_version = os.environ.get("LIGHTSPEED_BUILD_VERSION", "unknown").strip() or "unknown"
     logger.info("batch sandbox starting build=%s", build_version)
 

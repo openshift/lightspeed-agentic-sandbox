@@ -295,7 +295,8 @@ def verify_batch_cluster(
         else:
             raise
 
-    if "LIGHTSPEED_MCP_SERVERS" in config.job_env:
+    # The same HTTP fixture now receives structured Collector evidence as well.
+    if config.otel_endpoint or "LIGHTSPEED_MCP_SERVERS" in config.job_env:
         try:
             apps_api.read_namespaced_deployment(
                 DEFAULT_MOCK_MCP_DEPLOYMENT,

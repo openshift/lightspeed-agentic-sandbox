@@ -202,6 +202,10 @@ def create_azure_model(
     from langchain_openai import AzureChatOpenAI
 
     from lightspeed_agentic.config import azure_api_version_supports_responses
+    from lightspeed_agentic.providers.audit_support import (
+        audited_model_class,
+        instrument_model_http_clients,
+    )
     from lightspeed_agentic.providers.cloud_credentials import create_azure_credentials
     from lightspeed_agentic.tls import create_async_http_client, create_http_client
 
@@ -232,7 +236,9 @@ def create_azure_model(
         if responses
         else _chat_completions_reasoning_kwargs(reasoning_config)
     )
-    model = _chat_model_with_observed_metadata(AzureChatOpenAI)(**kwargs, **reasoning)
+    model_type = audited_model_class(_chat_model_with_observed_metadata(AzureChatOpenAI))
+    model = model_type(**kwargs, **reasoning)
+    instrument_model_http_clients(model)
     # Kept out of LangChain metadata/serialization; shared cleanup owns this resource.
     model.__dict__["_lightspeed_owned_resources"] = (auth,)
     return model
@@ -299,6 +305,10 @@ def _create_openai_model(
     model_options: dict[str, Any],
 ) -> BaseChatModel:
     """Construct from prepared SDK options using resolved credentials and shared TLS."""
+    from lightspeed_agentic.providers.audit_support import (
+        audited_model_class,
+        instrument_model_http_clients,
+    )
     from lightspeed_agentic.tls import create_async_http_client, create_http_client
 
     kwargs: dict[str, Any] = {
@@ -317,4 +327,7 @@ def _create_openai_model(
         # Custom clients disable LangChain's default streaming-usage request.
         kwargs["stream_usage"] = True
 
-    return model_type(**kwargs, **model_options)
+    audited_type = audited_model_class(model_type)
+    model = audited_type(**kwargs, **model_options)
+    instrument_model_http_clients(model)
+    return model
