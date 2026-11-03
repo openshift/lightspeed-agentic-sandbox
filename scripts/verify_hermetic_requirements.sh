@@ -125,7 +125,7 @@ if [[ $MISSING_COUNT -gt 0 ]]; then
     echo "ERROR: $MISSING_COUNT package(s) in uv.lock but NOT in any hash file or allowlist:"
     echo "$MISSING" | sed 's/^/  - /'
     echo ""
-    echo "Fix: run 'make konflux-requirements' or surgically add the missing packages."
+    echo "Fix: run 'make bump' or surgically add the missing packages."
     EXIT_CODE=1
 fi
 
@@ -156,7 +156,7 @@ if [[ $ORPHAN_COUNT -gt 0 ]]; then
     echo "ERROR: $ORPHAN_COUNT package(s) in hash files but NOT in uv.lock (orphans):"
     echo "$ORPHANS" | sed 's/^/  - /'
     echo ""
-    echo "Fix: re-run 'make konflux-requirements' to drop stale entries."
+    echo "Fix: re-run 'make bump' to drop stale entries."
     EXIT_CODE=1
 fi
 
