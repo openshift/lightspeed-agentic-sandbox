@@ -2,6 +2,9 @@ UV := uv
 
 export PATH := $(HOME)/.local/bin:$(PATH)
 
+ARTIFACT_DIR := $(if $(ARTIFACT_DIR),$(ARTIFACT_DIR),tests/test_results)
+export ARTIFACT_DIR
+
 CONTAINER_RUNTIME := $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
 IMAGE := lightspeed-agentic-sandbox:latest
 BUILD_VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -17,7 +20,7 @@ $(E2E_EXTRA_TARGETS):
 endif
 endif
 
-.PHONY: install install-all lock test lint format mypy verify verify-hermetic-requirements e2e image clean help \
+.PHONY: install install-all lock test test-unit lint format mypy verify verify-hermetic-requirements e2e image clean help \
        bump install-uv rpm-lockfile konflux-requirements check-unused-deps
 
 help: ## Show this help
@@ -33,8 +36,17 @@ install-all: ## Install all provider, dev, and e2e dependencies via uv
 lock: ## Refresh uv.lock from pyproject.toml
 	$(UV) lock
 
-test: ## Run unit tests
-	$(UV) run pytest tests/ -v --ignore=tests/e2e
+test: test-unit ## Run unit tests
+
+test-unit: ## Run unit tests and upload the coverage report to codecov.io
+	@echo "Running unit tests..."
+	@echo "Reports will be written to ${ARTIFACT_DIR}"
+	$(UV) run pytest tests/ -v --ignore=tests/e2e \
+		--cov=lightspeed_agentic \
+		--cov-report term-missing \
+		--cov-report "xml:${ARTIFACT_DIR}/coverage_unit.xml" \
+		--junit-xml="${ARTIFACT_DIR}/junit_unit.xml"
+	scripts/codecov.sh "${ARTIFACT_DIR}/coverage_unit.xml" unit
 
 check-unused-deps: ## Detect potentially unused Python dependencies (no changes)
 	$(UV) tool run deptry==0.24.0 .
