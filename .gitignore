@@ -17,3 +17,4 @@ htmlcov/
 .idea/
 *.log
 .e2e/
+tests/test_results/*
