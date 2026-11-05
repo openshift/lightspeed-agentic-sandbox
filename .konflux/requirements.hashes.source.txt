@@ -59,27 +59,27 @@ bracex==3.2 \
 deepagents==0.7.32 \
     --hash=sha256:366bd66c786a66c8d639e40f99614d9e5d37236adf4c5b158f0b2cb27956e28b \
     --hash=sha256:f4154281b04a499015e48c24edf11f59f833fbabd3d87e0898832e8db954aac4
-google-cloud-aiplatform==2.6.0 \
-    --hash=sha256:b54a0a2881b6a4311e86f39cc5e2f652c2242c117a2d03fad839810bb2882e1e \
-    --hash=sha256:dbb3441a9b850d0cc310e25f17323d9bb5a6c38bc68faa1062abc5d033f50cfd
-google-cloud-bigquery==3.46.2 \
-    --hash=sha256:5e9a4e15f778cc00ee88167de9934a4c1bbb7fc20058e8f573f2bfdaf0d99052 \
-    --hash=sha256:a87e2e8026133e709deab9ebf537a6a2eee3fbcf4befa334a2f9f6164435b331
+google-cloud-aiplatform==2.7.0 \
+    --hash=sha256:156ede4a6c304119195dbdaedaba8c33872f6d80b6525482dccb95f76405bd31 \
+    --hash=sha256:af89c8b7ff8bfaa3361a4d88224a886e8d2a9f22853d4e3c5d047e46367b6008
+google-cloud-bigquery==3.47.0 \
+    --hash=sha256:4e42781c3aa7acfc1d3a91ac4052aafcbc05288a4cc1796550f4f94cb9ee3aba \
+    --hash=sha256:bca7a5ff52326172dc8c292e4592a5b46b491b6872010d242d7663d8ea89b12f
 google-cloud-resource-manager==1.19.0 \
     --hash=sha256:68e5d28ed9091ab1adf04a77876b09d553e97a440fba78163f6ce2b5fe5f2558 \
     --hash=sha256:74f94950288ff3d04082b4bd514af0632c74b507601e68d0399f35ae2cc8cc2e
 google-cloud-vectorsearch==0.11.5 \
     --hash=sha256:4546173f37df82254d1a22ed666d549aa6d0692936c78450e66b8893dc066234 \
     --hash=sha256:f85e120847010dcfd66f54e10689e645e2422e48d5c21a3ac5b8b86348fe55f4
-google-genai==2.33.0 \
-    --hash=sha256:f3f8ab696b35caf95c222e05268740c1ccd6934257890506be73b126150d3b14 \
-    --hash=sha256:fced7f746da45264b34bcf6044a6fcdb91ebad1825e95c324ee48addb6e557ae
-langchain-anthropic==1.7.6 \
-    --hash=sha256:06bee97006d99e9a04abc4bd56599fc356c0c7f7f2a97629645cb603d9785c73 \
-    --hash=sha256:e5b41959a39810e69bc608fd6622b7d5d017bde93f858b09332fbb6ac764c393
-langchain-aws==1.7.0 \
-    --hash=sha256:25ccaebeec0bd718df4a1dce44c725591e177690bc19df7caa0cd2d601df27a0 \
-    --hash=sha256:e4e8d578b4be8fd3ad970373fc72c3e321fea7f955cb6c075464e30636ec583d
+google-genai==2.34.0 \
+    --hash=sha256:8e182cf3f73384167b96861cf0aef5102b5070f2db1ea11002879e913806ef37 \
+    --hash=sha256:a4cb02aebc4c357f863d2938132f0e3f7967fc5e00b8a4078673f68aad340665
+langchain-anthropic==1.7.7 \
+    --hash=sha256:4d912c2eb6f20ede3fd38c956738b82ce30cabf5421ebb57639660031868b952 \
+    --hash=sha256:ad6a82f53bd77f09e83bdb87f41d0b57843a41c995c735a7ab34626c1124ab63
+langchain-aws==1.9.1 \
+    --hash=sha256:9a86311e0fc9edc1a6cbef534d0c597a62d40c9cc14e09adf2994cbed7748336 \
+    --hash=sha256:e594476409f7fd41ae0989179866758338f7e5a9abbee93c0b2cff528aee2bb8
 langchain-google-genai==4.4.2 \
     --hash=sha256:0872df6de1ebf031c4dad59aead504f168ff31a4d73ea74e52bb1fcdb8f4ab91 \
     --hash=sha256:db68bd24e5372b2688f6902e47521a6802bfecc36e2d5bbff14076f8cbb26c83
@@ -89,6 +89,12 @@ langchain-google-vertexai==3.2.5 \
 langchain-mcp-adapters==0.3.2 \
     --hash=sha256:094e6b3096dbcc408417d5722f6915f164772e50c502ae3d8989405bf12c3c84 \
     --hash=sha256:61cd1a09597adb619a9bafb0642938ffc2a9463d699a753f7af0420ea46c381a
+oauthlib==4.0.1 \
+    --hash=sha256:3d73febdb6faa00f277c81fb04be7b7586fb96fc3b7f0b9c772dada69a25ede7 \
+    --hash=sha256:498a298876e996301950a5b053d12c31628bb7b895db03666430c69ce182eb61
+pyasn1==0.6.5 \
+    --hash=sha256:4017b0fce125096b8573b39c989fdb1a4b19cf761e683398184550fea0e66587 \
+    --hash=sha256:6b11616a6bcf3a40e635f082bb232fa57b5e0dd7f517bd7ddd69ec3794508a47
 validators==0.36.0 \
     --hash=sha256:92ad9ed00bbed320b784cec0ea90b213cf08904cf605b3d0852cfa4108e32a2c \
     --hash=sha256:c52ad00435e385b95fa4d6dd3081cb20c0660e7fd07b214523c8584dd2edba34
