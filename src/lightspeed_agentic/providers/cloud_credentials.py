@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -56,15 +56,38 @@ def create_azure_credentials(source: AzureCredentialSource) -> AzureModelCredent
     if isinstance(source, AzureApiKeyCredentialSource):
         return AzureModelCredentials(api_key=source.api_key)
 
+    from azure.core.pipeline.transport import AioHttpTransport
     from azure.identity.aio import ClientSecretCredential, get_bearer_token_provider
     from openai.lib.azure import API_KEY_SENTINEL
 
+    from lightspeed_agentic.connection_audit import auth_request
+    from lightspeed_agentic.providers.audit_support import instrument_aiohttp_session
+
+    transport = AioHttpTransport()
+    original_open = transport.open
+
+    async def open_transport() -> None:
+        await original_open()
+        instrument_aiohttp_session(transport.session)
+
+    cast(Any, transport).open = open_transport
     credential = ClientSecretCredential(
         source.tenant_id,
         source.client_id,
         source.client_secret,
         raw_request_hook=_configure_azure_identity_tls,
+        transport=transport,
     )
+
+    def scoped_token_method(method: Any) -> Any:
+        async def get_token(*args: Any, **kwargs: Any) -> Any:
+            with auth_request("azure"):
+                return await method(*args, **kwargs)
+
+        return get_token
+
+    for name in ("get_token", "get_token_info"):
+        setattr(credential, name, scoped_token_method(getattr(credential, name)))
     return AzureModelCredentials(
         api_key=API_KEY_SENTINEL,
         token_provider=get_bearer_token_provider(
@@ -117,14 +140,37 @@ def create_bedrock_credentials(
     )
     source_credentials = cast(Any, session.get_credentials())
 
+    from lightspeed_agentic.connection_audit import auth_request
+    from lightspeed_agentic.providers.audit_support import instrument_urllib3_manager
+
+    def create_client(*args: Any, **kwargs: Any) -> Any:
+        client = session.create_client(*args, region_name=region, **kwargs)
+        endpoint = getattr(client, "_endpoint", None)
+        if endpoint is not None:
+            http_session = endpoint.http_session
+            original = http_session._get_connection_manager
+
+            def connection_manager(*args: Any, **kwargs: Any) -> Any:
+                manager = original(*args, **kwargs)
+                instrument_urllib3_manager(manager)
+                return manager
+
+            http_session._get_connection_manager = connection_manager
+        return client
+
     fetcher = botocore.credentials.AssumeRoleCredentialFetcher(
-        client_creator=partial(session.create_client, region_name=region),
+        client_creator=create_client,
         source_credentials=source_credentials,
         role_arn=source.role_arn,
         extra_args={"RoleSessionName": "lightspeed-agentic"},
     )
+
+    def refresh() -> Any:
+        with auth_request("aws"):
+            return fetcher.fetch_credentials()
+
     return botocore.credentials.DeferredRefreshableCredentials(
-        refresh_using=fetcher.fetch_credentials,
+        refresh_using=refresh,
         method="assume-role",
     )
 
@@ -213,6 +259,54 @@ def configure_bedrock_credentials(
     return sync_class, async_class, configured_client_kwargs, model_kwargs
 
 
+def _load_vertex_credentials(source: VertexCredentialSource) -> Any:
+    """Include native external-account discovery/exchange during ADC loading."""
+    import google.auth
+
+    from lightspeed_agentic.connection_audit import auth_request
+    from lightspeed_agentic.providers.audit_support import instrument_google_request
+
+    native_request: Any = None
+
+    def request(*args: Any, **kwargs: Any) -> Any:
+        nonlocal native_request
+        if native_request is None:
+            from google.auth.transport.requests import Request
+
+            native_request = Request()
+            instrument_google_request(native_request)
+        return native_request(*args, **kwargs)
+
+    try:
+        with auth_request("google"):
+            return google.auth.load_credentials_from_file(  # type: ignore[no-untyped-call]
+                str(source.credentials_file), scopes=[_CLOUD_PLATFORM_SCOPE], request=request
+            )
+    finally:
+        if native_request is not None:
+            primary = sys.exc_info()[1]
+            try:
+                native_request.session.close()
+            except BaseException:
+                if primary is None:
+                    raise
+
+
+def _audit_vertex_credentials(credentials: Any) -> Any:
+    from lightspeed_agentic.connection_audit import auth_request
+    from lightspeed_agentic.providers.audit_support import instrument_google_request
+
+    original = credentials.refresh
+
+    def refresh(request: Any) -> Any:
+        with auth_request("google"):
+            instrument_google_request(request)
+            return original(request)
+
+    credentials.refresh = refresh
+    return credentials
+
+
 def create_vertex_credentials(source: VertexCredentialSource) -> Credentials:
     """Load mounted Vertex credentials and optionally wrap them for impersonation.
 
@@ -220,21 +314,19 @@ def create_vertex_credentials(source: VertexCredentialSource) -> Credentials:
     constructed. Google's auth library owns token refresh for both source and
     impersonated credentials.
     """
-    import google.auth
     from google.auth.credentials import Credentials
 
-    source_credentials, _project_id = google.auth.load_credentials_from_file(
-        str(source.credentials_file), scopes=[_CLOUD_PLATFORM_SCOPE]
-    )  # type: ignore[no-untyped-call]
+    source_credentials, _project_id = _load_vertex_credentials(source)
     source_credentials = cast(Credentials, source_credentials)
     target_service_account = _read_target_service_account(source.credentials_file)
     if target_service_account is None:
-        return source_credentials
+        return cast(Credentials, _audit_vertex_credentials(source_credentials))
 
     from google.auth import impersonated_credentials
 
-    return impersonated_credentials.Credentials(  # type: ignore[no-untyped-call]
+    credentials = impersonated_credentials.Credentials(  # type: ignore[no-untyped-call]
         source_credentials=source_credentials,
         target_principal=target_service_account,
         target_scopes=[_CLOUD_PLATFORM_SCOPE],
     )
+    return cast(Credentials, _audit_vertex_credentials(credentials))

@@ -30,6 +30,21 @@ Anthropic routes and the Vertex/Google Gemini route use the shared DeepAgents ha
 
     Credentials are mounted via `envFrom` (all secret keys as env vars) AND as files at `/var/run/secrets/llm-credentials/`.
 
+    LLM, MCP and configured cloud credential HTTP metadata auditing (OLS-4192) is
+    emitted as JSON to stdout only when `LIGHTSPEED_AUDIT_ENABLED` is `"true"`
+    after stripping whitespace and lowercasing, independently of content capture.
+    The same gate applies to its existing OTLP log channel when an endpoint is
+    configured. The operator continues setting audit to `true`; cluster-wide
+    configuration plumbing is deferred. No new flag or operator change is required.
+    Shared `outbound.request.*` records use `request.kind` for LLM, MCP or
+    credential traffic and the existing `agenticrun.uid`/`agenticrun.phase`
+    correlation. Kubernetes logging supplies source workload enrichment; no
+    application pod lookup is needed. Unavailable optional fields are omitted,
+    not null. Trace/span IDs are included together only when valid existing
+    context is captured; no fallback IDs or audit-only spans are generated.
+    See [outbound-request-audit.md](outbound-request-audit.md) for implemented
+    coverage and [audit-logging.md](audit-logging.md) for schema and privacy limits.
+
     The operator also sets audit, observability, and MCP env vars:
 
     | Env var | Required | Description |
@@ -216,7 +231,7 @@ OPENAI_API_KEY: <token-or-placeholder>
 | `AWS_REGION` | Legacy Bedrock region fallback when `LIGHTSPEED_PROVIDER_REGION` is unset; the resolved region is passed explicitly to the model (rule 2). |
 | `/var/run/secrets/llm-credentials/{aws_access_key_id,aws_secret_access_key,aws_session_token,role_arn}` | Bedrock credential files; session token and `role_arn` are optional, and `role_arn` selects STS assume-role with botocore-managed refresh (rule 9b). Mounted by operator. |
 | `OPENAI_BASE_URL` | Legacy endpoint fallback after `LIGHTSPEED_PROVIDER_URL`; native/custom OpenAI captures it in typed parameters without SDK environment mutation. |
-| `LIGHTSPEED_AUDIT_ENABLED` | Audit event logging toggle. Set by operator from `AgenticOLSConfig`. |
+| `LIGHTSPEED_AUDIT_ENABLED` | Audit event and outbound metadata logging toggle. Currently set to `true` by the operator; cluster-wide configuration plumbing is deferred. |
 | `LIGHTSPEED_CAPTURE_CONTENT` | Content capture for `gen_ai.completion`/`gen_ai.reasoning_content` on choice events. When unset, defaults to audit enabled; `"false"` opts out. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Shared OTLP endpoint for span and log export. Set by operator from `AgenticOLSConfig`. |
 | `LIGHTSPEED_AGENTICRUN_UID` | AgenticRun UID on bridged OTLP log record attrs (templog). Set by operator with OTEL endpoint. |

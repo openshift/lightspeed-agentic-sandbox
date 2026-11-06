@@ -8,6 +8,48 @@ Cross-references: batch agent invocation → `run-api.md`. Env and build → `co
 
 Anthropic, Vertex/Google, and native/custom OpenAI use DeepAgents. Native OpenAI means hosting `openai` with the default endpoint or an HTTPS `api.openai.com` hostname; [configuration rule 3a](configuration.md) defines URL precedence, normalization, and rejection of non-HTTPS native URLs. Custom/vLLM selects the `openai-compatible` DeepAgents route on Chat Completions. Azure also uses the shared DeepAgents harness through `AzureChatOpenAI`; Vertex supports only Anthropic and Google models; the legacy OpenAI adapter and factory entry are removed. Azure routing/workflows are offline-tested, not live-authentication acceptance. Shared DeepAgents rules below apply to native/custom OpenAI and Azure as well; Agents SDK-specific requirements below (`SandboxAgent`, `Runner`, `ModelResponse`, and its hooks) document the retired harness only; they no longer apply to runtime routes. Shared DeepAgents rules govern every implemented route. This implementation split does not complete the broader consolidation or waive live evidence and telemetry compatibility review.
 
+## LLM Request Audit [OLS-4192]
+
+All model constructors retain their native SDK class behavior while scoping actual
+execution with immutable model/operation metadata. Main-agent and subagent calls
+use operation `agent`; isolated classifier and shaping constructors receive
+immutable parameter copies with `tool_result_classifier` and `structured_output`.
+No `ModelCreator` signature change, alternate transport selection, process-wide
+instrumentation, auth/retry implementation, or additional network control is added.
+Native model callbacks, including explicit run-manager delivery, remain intact.
+Observe actual model-owned HTTP attempts and consumed byte streams, not just
+LangChain callbacks. Classifier retry context carries the real source tool-call,
+chunk and one-based attempt identity; known invocation deadlines are inherited
+without changing enforcement. Constructors and non-model HTTP are not LLM calls.
+See [audit-logging.md](audit-logging.md#llm-request-metadata-audit-ols-4192) for the
+metadata-only schema, pairing/outcome/privacy rules and offline verification.
+The implemented route/transport inventory is in [outbound-request-audit.md](outbound-request-audit.md).
+
+## MCP Request Audit [OLS-4192]
+
+Canonical admission and runtime MCP discovery/tool sessions reuse the shared HTTP
+attempt observer and JSON/OTLP metadata channel. The MCP client factory retains
+shared TLS and native options; the adapter's supported tool interceptor supplies
+server/tool/call identity without reading arguments or results. Native background
+streams, reconnections and session cleanup remain SDK-owned. Audit regardless of
+the tool-result-inspection switch; never equate tool errors/admission filtering
+with HTTP failure or network-policy denial. No new MCP spans or session IDs are
+introduced. See [audit-logging.md](audit-logging.md#mcp-request-metadata-audit-ols-4192).
+
+## Credential HTTP Audit [OLS-4192]
+
+Configured Azure Entra, Google/Vertex and AWS STS credential HTTP attempts reuse
+the shared `outbound.request.started` / `outbound.request.finished` lifecycle and
+delivery with `request.kind="credential"`. The `auth.request.*` names are private
+adapter bookkeeping, not public audit events.
+Native SDKs still own rule 38's caching/expiry/refresh/signing. Native credential
+loading can itself perform discovery/exchanges before model dispatch; audit those
+HTTP attempts too, but never emit requests for cache hits, static credentials,
+local signing or token-file reads. No credential values or auth identities enter
+this channel; preserve run/trace context without inheriting model/classifier
+labels. See [audit-logging.md](audit-logging.md#credential-request-metadata-audit-ols-4192)
+for exact scope, privacy, HTTP-versus-token outcome distinctions and offline limits.
+
 ## Behavioral Rules
 
 1. **AgentProvider.** Each backend implements a `name` property and a `query` method accepting `ProviderQueryOptions` and returning an async iterator of `ProviderEvent`.

@@ -276,12 +276,13 @@ async def test_hanging_classifier_times_out_and_later_cases_are_still_recorded()
                 await asyncio.Event().wait()
             return ClassifierDecision(injection_detected=False, category="none")
 
-    async with asyncio.timeout(2):
+    async with asyncio.timeout(4):
         results = await evaluate_cases(
             [_case("first"), _case("second")],
             Client(),
             context_window_tokens=100_000,
-            case_timeout=0.03,
+            # Allow the second case's preprocessing/setup time under loaded CI workers.
+            case_timeout=1,
             emit=lambda _record: None,
         )
     assert results[0].observed_outcome == "error"

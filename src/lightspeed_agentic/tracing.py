@@ -200,6 +200,10 @@ class _AgenticRunFilter(logging.Filter):
         self._phase = agenticrun_phase
 
     def filter(self, record: logging.LogRecord) -> bool:
+        # Outbound audit records already carry their validated attempt snapshot.
+        # Do not reintroduce raw runtime identity or overwrite a concurrent run.
+        if record.name == "lightspeed_agentic.connection_audit":
+            return True
         if self._uid:
             setattr(record, _ATTR_AGENTICRUN_UID, self._uid)
         if self._phase:
@@ -262,6 +266,9 @@ def init_tracer(
     if agenticrun_phase is None:
         agenticrun_phase = os.environ.get("LIGHTSPEED_AGENTICRUN_STEP", "").strip()
     audit = os.environ.get("LIGHTSPEED_AUDIT_ENABLED", "").strip().lower() == "true"
+    from lightspeed_agentic.connection_audit import set_run_identity
+
+    set_run_identity(agenticrun_uid, agenticrun_phase)
 
     if endpoint and audit:
         missing = [
@@ -292,6 +299,9 @@ def init_tracer(
         _state.logging_handler.addFilter(stamp)
         root = logging.getLogger()
         root.addHandler(_state.logging_handler)
+        from lightspeed_agentic.connection_audit import attach_otlp_handler
+
+        attach_otlp_handler(_state.logging_handler)
         # LoggingHandler only sees records that pass the root effective level.
         # App startup uses INFO; pytest often leaves root at WARNING.
         if root.getEffectiveLevel() > logging.INFO:
@@ -353,7 +363,13 @@ def _configure_log_exporter(provider: LoggerProvider, *, endpoint: str, protocol
 
 def shutdown_tracer() -> None:
     """Shutdown tracer and logger providers, flushing pending exports."""
+    from lightspeed_agentic.connection_audit import set_run_identity
+
+    set_run_identity(None, None)
     if _state.logging_handler is not None:
+        from lightspeed_agentic.connection_audit import detach_otlp_handler
+
+        detach_otlp_handler(_state.logging_handler)
         logging.getLogger().removeHandler(_state.logging_handler)
         _state.logging_handler = None
     if _state.tracer_provider:

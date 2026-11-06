@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -11,11 +12,21 @@ import pytest
 
 from .helpers import make_model_route
 
+pytestmark = pytest.mark.usefixtures("connection_audit_enabled")
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("inspection_enabled", [False, True])
 @pytest.mark.parametrize(
-    "scenario", ["within-server", "across-servers", "unique", "unadmitted-duplicates"]
+    "scenario",
+    [
+        "within-server",
+        "across-servers",
+        "unique",
+        "unadmitted-duplicates",
+        "tool-error",
+        "streamed-tool-error",
+    ],
 )
 async def test_admitted_mcp_tool_namespace_is_unambiguous(
     scenario: str,
@@ -23,6 +34,7 @@ async def test_admitted_mcp_tool_namespace_is_unambiguous(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
     span_exporter: Any,
 ) -> None:
     from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
@@ -48,6 +60,14 @@ async def test_admitted_mcp_tool_namespace_is_unambiguous(
     catalog_reads = {name: 0 for name in catalogs}
     executed: list[tuple[str, str]] = []
     clients: list[httpx.AsyncClient] = []
+
+    class ToolStream(httpx.AsyncByteStream):
+        def __init__(self, payload: bytes):
+            self.payload = payload
+
+        async def __aiter__(self):
+            yield self.payload
+            await asyncio.Future()  # SDK closes HTTP early once it receives the MCP result.
 
     def respond(request: httpx.Request) -> httpx.Response:
         server = request.url.host.split(".")[0]
@@ -87,7 +107,17 @@ async def test_admitted_mcp_tool_namespace_is_unambiguous(
             assert method == "tools/call"
             name = body["params"]["name"]
             executed.append((server, name))
-            result = {"content": [{"type": "text", "text": f"findings from {server}"}]}
+            result = {
+                "content": [{"type": "text", "text": f"findings from {server}"}],
+                "isError": scenario in {"tool-error", "streamed-tool-error"},
+            }
+            if scenario == "streamed-tool-error":
+                payload = json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": result})
+                return httpx.Response(
+                    200,
+                    headers={"Content-Type": "text/event-stream"},
+                    stream=ToolStream(f"event: message\ndata: {payload}\n\n".encode()),
+                )
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
 
     def create_client(**kwargs: Any) -> httpx.AsyncClient:
@@ -146,6 +176,8 @@ async def test_admitted_mcp_tool_namespace_is_unambiguous(
         timeout_seconds=30,
         mcp_servers=servers,
         tool_output_inspection_enabled=inspection_enabled,
+        agenticrun_uid="11111111-1111-4111-8111-111111111111",
+        step="verification",
     )
     if collisions:
         assert result.output == {
@@ -178,3 +210,38 @@ async def test_admitted_mcp_tool_namespace_is_unambiguous(
         assert marker not in repr([record.__dict__ for record in caplog.records])
         assert marker not in json.dumps(result.output)
     assert all(client.is_closed for client in clients)
+    observed = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith('{"schema_version":1,')
+    ]
+    assert all(row.get("request.kind") == "mcp" for row in observed)
+    assert {row["server.address"] for row in observed} <= {"server-a.example", "server-b.example"}
+    starts = [row for row in observed if row["event"] == "outbound.request.started"]
+    ends = [row for row in observed if row["event"] == "outbound.request.finished"]
+    assert len(starts) == len(ends)
+    assert {row["attempt_id"] for row in starts} == {row["attempt_id"] for row in ends}
+    incomplete = [row for row in ends if row["outcome"] == "transport_error"]
+    assert len(incomplete) == (2 if scenario == "streamed-tool-error" else 0)
+    for row in ends:
+        assert row["outcome"] == ("transport_error" if row in incomplete else "success")
+        assert row.get("error.type") == ("protocol_error" if row in incomplete else None)
+    discovery = [row for row in starts if "gen_ai.tool.name" not in row]
+    assert len(discovery) == 6 * len(catalogs)  # Admission plus runtime reload, three HTTPs each.
+    calls = [row for row in starts if "gen_ai.tool.name" in row]
+    if collisions:
+        assert calls == []
+    else:
+        # Successful results trigger an extra schema-cache tools/list in the native SDK.
+        assert len(calls) == (6 if scenario in {"tool-error", "streamed-tool-error"} else 8)
+        assert {(row["server.address"], row["gen_ai.tool.name"]) for row in calls} == {
+            ("server-a.example", "lookup_a"),
+            ("server-b.example", "lookup_b"),
+        }
+        assert all(
+            row["agenticrun.uid"] == "11111111-1111-4111-8111-111111111111"
+            and row["agenticrun.phase"] == "verification"
+            for row in calls
+        )
+        assert len({row["attempt_id"] for row in starts}) == len(starts)
+    assert "PRIVATE" not in json.dumps(observed)

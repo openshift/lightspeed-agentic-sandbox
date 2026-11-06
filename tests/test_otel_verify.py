@@ -12,13 +12,17 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
+from starlette.testclient import TestClient
 
 from tests.e2e import otel_verify
+from tests.e2e.mock_mcp_server import create_app
 from tests.e2e.otel_verify import (
     logs_contain_audit_logs_for_run,
     logs_contain_tool_result_inspection_for_run,
     logs_contain_traces_for_run,
 )
+from tests.helpers import json_attributes as attrs
+from tests.helpers import log_export, trace_export
 from tests.helpers import otlp_requests as otlp_requests
 from tests.helpers import wire_trace as wire_trace
 
@@ -28,7 +32,7 @@ ROOT_ID = "1" * 16
 
 
 def _debug_span(
-    index: int,
+    _index: int,
     span_id: str,
     name: str,
     attributes: dict[str, Any],
@@ -37,22 +41,18 @@ def _debug_span(
     parent_id: str = ROOT_ID,
     status: str = "Unset",
 ) -> str:
-    # Collector debugexporter/otlptext logAttr/logAttributes layout. Values are
-    # rendered separately from field names, just as the real debug exporter does.
-    lines = [
-        f"Span #{index}",
-        f"    Trace ID       : {trace_id}",
-        f"    Parent ID      : {parent_id}",
-        f"    ID             : {span_id}",
-        f"    Name           : {name}",
-        f"    Status code    : {status}",
-        "Attributes:",
-    ]
-    for key, value in attributes.items():
-        kind = "Bool" if type(value) is bool else "Int" if type(value) is int else "Str"
-        text = str(value).lower() if type(value) is bool else str(value)
-        lines.append(f"     -> {key}: {kind}({text})")
-    return "\n".join(lines) + "\n"
+    return trace_export(
+        [
+            {
+                "Trace ID": trace_id,
+                "Parent ID": parent_id,
+                "ID": span_id,
+                "Name": name,
+                "Status code": status,
+                "attrs": attributes,
+            }
+        ]
+    )
 
 
 def _evidence(outcome: str = "benign") -> tuple[str, str, str]:
@@ -90,27 +90,46 @@ def _evidence(outcome: str = "benign") -> tuple[str, str, str]:
 
 class TestOtelVerify:
     def test_traces_positive(self) -> None:
-        logs = f"ResourceSpans #0\nSpan #0\n     -> agenticrun.uid: Str({RUN_UID})"
+        logs = _debug_span(0, ROOT_ID, "invoke_agent", {"agenticrun.uid": RUN_UID})
         assert logs_contain_traces_for_run(logs, RUN_UID)
 
     def test_traces_negative_without_span_markers(self) -> None:
-        assert not logs_contain_traces_for_run(f"agenticrun.uid={RUN_UID}", RUN_UID)
+        with pytest.raises(AssertionError, match="Invalid structured OTLP"):
+            logs_contain_traces_for_run(f"agenticrun.uid={RUN_UID}", RUN_UID)
 
     def test_audit_logs_positive(self) -> None:
-        logs = (
-            "LogsExporter\nLogRecord #0\n"
-            f"     -> agenticrun.uid: Str({RUN_UID})\n"
-            "     -> agenticrun.phase: Str(analysis)\n"
-            "     -> event: Str(gen_ai.choice)"
+        logs = log_export(
+            [
+                {
+                    "body": "choice",
+                    "scope": "lightspeed_agentic.audit",
+                    "attrs": {
+                        "agenticrun.uid": RUN_UID,
+                        "agenticrun.phase": "analysis",
+                        "event": "gen_ai.choice",
+                    },
+                    "trace_id": TRACE_ID,
+                    "span_id": ROOT_ID,
+                }
+            ]
         )
         assert logs_contain_audit_logs_for_run(logs, RUN_UID, phase="analysis")
 
     def test_audit_logs_negative_wrong_phase(self) -> None:
-        logs = (
-            "LogsExporter\nLogRecord #0\n"
-            f"     -> agenticrun.uid: Str({RUN_UID})\n"
-            "     -> agenticrun.phase: Str(execution)\n"
-            "     -> event: Str(gen_ai.choice)"
+        logs = log_export(
+            [
+                {
+                    "body": "choice",
+                    "scope": "lightspeed_agentic.audit",
+                    "attrs": {
+                        "agenticrun.uid": RUN_UID,
+                        "agenticrun.phase": "execution",
+                        "event": "gen_ai.choice",
+                    },
+                    "trace_id": TRACE_ID,
+                    "span_id": ROOT_ID,
+                }
+            ]
         )
         assert not logs_contain_audit_logs_for_run(logs, RUN_UID, phase="analysis")
 
@@ -128,7 +147,19 @@ def test_inspection_joins_actual_mcp_execution_with_collector_log_prefixes(
     outcome: str, prefix: str
 ) -> None:
     logs = "".join(_evidence(outcome))
-    logs = "\r\n".join(prefix + line for line in logs.split("\n"))
+    # A diagnostic prefix is data, never a transport delimiter.
+    if prefix:
+        logs += log_export(
+            [
+                {
+                    "body": prefix + "Span #999",
+                    "scope": "unrelated.sdk",
+                    "attrs": {},
+                    "trace_id": "",
+                    "span_id": "",
+                }
+            ]
+        )
     assert logs_contain_tool_result_inspection_for_run(
         logs,
         RUN_UID,
@@ -166,68 +197,84 @@ def test_inspection_joins_actual_mcp_execution_with_collector_log_prefixes(
     ],
 )
 def test_inspection_cannot_be_proven_by_unrelated_or_payload_evidence(fault: str) -> None:
-    root, native, inspection = _evidence()
+    root, native, inspection = [
+        json.loads(export)["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+        for export in _evidence()
+    ]
+    spans = [root, native, inspection]
+
+    def set_attr(span: dict[str, Any], key: str, data: Any) -> None:
+        span["attributes"] = [item for item in span["attributes"] if item["key"] != key] + attrs(
+            {key: data}
+        )
+
     if fault == "payload-markers":
-        inspection = ""
-        native += (
-            "     -> gen_ai.tool.call.result: Str(tool_result.inspection "
-            "inspection.outcome: Str(benign))\n"
+        spans.remove(inspection)
+        set_attr(
+            native,
+            "gen_ai.tool.call.result",
+            "tool_result.inspection\ninspection.outcome: Str(benign)",
         )
     elif fault == "wrong-tool":
-        native = native.replace("list_namespaces", "read_file")
-        inspection = inspection.replace("list_namespaces", "read_file")
+        native["name"] = "execute_tool read_file"
+        set_attr(native, "gen_ai.tool.name", "read_file")
+        set_attr(inspection, "tool.name", "read_file")
     elif fault == "wrong-call-id":
-        inspection = inspection.replace("Str(mcp-call)", "Str(other-call)")
+        set_attr(inspection, "gen_ai.tool.call.id", "other-call")
     elif fault == "missing-call-id":
-        inspection = inspection.replace("     -> gen_ai.tool.call.id: Str(mcp-call)\n", "")
+        inspection["attributes"] = [
+            item for item in inspection["attributes"] if item["key"] != "gen_ai.tool.call.id"
+        ]
     elif fault == "missing-native":
-        native = ""
+        spans.remove(native)
     elif fault == "ambiguous-execution":
-        native += native.replace("ID             : " + "2" * 16, "ID             : " + "5" * 16)
+        spans.append({**native, "spanId": "5" * 16})
     elif fault == "native-error":
-        native = native.replace("Status code    : Unset", "Status code    : Error")
+        native["status"] = {"code": 2}
     elif fault == "native-wrong-parent":
-        native = native.replace(f"Parent ID      : {ROOT_ID}", "Parent ID      : " + "9" * 16)
+        native["parentSpanId"] = "9" * 16
     elif fault == "inspection-wrong-parent":
-        inspection = inspection.replace(
-            f"Parent ID      : {ROOT_ID}", "Parent ID      : " + "9" * 16
-        )
+        inspection["parentSpanId"] = "9" * 16
     elif fault == "other-trace":
-        inspection = inspection.replace(TRACE_ID, "c" * 32)
+        inspection["traceId"] = "c" * 32
     elif fault == "uid-in-payload":
-        root = root.replace("agenticrun.uid", "payload")
-        native = native.replace("agenticrun.uid", "payload")
-        native += f"     -> gen_ai.tool.call.result: Str(agenticrun.uid: Str({RUN_UID}))\n"
+        for span in (root, native):
+            span["attributes"] = [
+                item for item in span["attributes"] if item["key"] != "agenticrun.uid"
+            ]
+        set_attr(native, "gen_ai.tool.call.result", f"agenticrun.uid: Str({RUN_UID})")
     elif fault in {"event-outcome", "link-outcome"}:
-        inspection = inspection.replace("     -> inspection.outcome: Str(benign)\n", "")
-        inspection += (
-            "Events:\nSpanEvent #0\n" if fault == "event-outcome" else "Links:\nSpanLink #0\n"
-        )
-        inspection += "     -> Attributes::\n          -> inspection.outcome: Str(benign)\n"
-    elif fault == "disabled":
-        inspection = inspection.replace("Bool(true)", "Bool(false)")
-    elif fault == "string-enabled":
-        inspection = inspection.replace("Bool(true)", "Str(true)")
+        inspection["attributes"] = [
+            item for item in inspection["attributes"] if item["key"] != "inspection.outcome"
+        ]
+        inspection["events" if fault == "event-outcome" else "links"] = [
+            {"attributes": attrs({"inspection.outcome": "benign"})}
+        ]
+    elif fault in {"disabled", "string-enabled"}:
+        set_attr(inspection, "inspection.enabled", False if fault == "disabled" else "true")
     elif fault == "wrong-result-type":
-        inspection = inspection.replace("result_type: Str(result)", "result_type: Str(error)")
-    elif fault == "classifier-error":
-        inspection = inspection.replace("outcome: Str(benign)", "outcome: Str(classifier_error)")
-    elif fault == "wrong-outcome":
-        inspection = inspection.replace("outcome: Str(benign)", "outcome: Str(malicious)")
+        set_attr(inspection, "inspection.result_type", "error")
+    elif fault in {"classifier-error", "wrong-outcome"}:
+        set_attr(
+            inspection,
+            "inspection.outcome",
+            "classifier_error" if fault == "classifier-error" else "malicious",
+        )
     elif fault == "duplicate-outcome":
-        inspection += "     -> inspection.outcome: Str(classifier_error)\n"
+        inspection["attributes"] += attrs({"inspection.outcome": "classifier_error"})
     elif fault == "partial-benign-chunks":
-        inspection = inspection.replace("chunk_count: Int(1)", "chunk_count: Int(2)")
+        set_attr(inspection, "inspection.chunk_count", 2)
     elif fault == "invalid-chunk-index":
-        inspection = inspection.replace("chunk_index: Int(0)", "chunk_index: Int(2)")
+        set_attr(inspection, "inspection.chunk_index", 2)
     elif fault == "conflicting-span":
-        inspection += inspection.replace("outcome: Str(benign)", "outcome: Str(classifier_error)")
+        conflict = deepcopy(inspection)
+        set_attr(conflict, "inspection.outcome", "classifier_error")
+        spans.append(conflict)
     elif fault == "missing-root":
-        root = ""
+        spans.remove(root)
+    evidence = json.dumps({"resourceSpans": [{"scopeSpans": [{"spans": spans}]}]})
     assert not logs_contain_tool_result_inspection_for_run(
-        root + native + inspection,
-        RUN_UID,
-        expected_tool="list_namespaces",
+        evidence, RUN_UID, expected_tool="list_namespaces"
     )
 
 
@@ -243,11 +290,12 @@ def test_inspection_cannot_be_proven_by_unrelated_or_payload_evidence(fault: str
 )
 def test_json_payload_text_does_not_hide_genuine_inspection(payload: str) -> None:
     root, native, inspection = _evidence()
-    native += (
-        "     -> gen_ai.tool.call.result: Str("
-        + json.dumps({"content": payload}, ensure_ascii=False)
-        + ")\n"
+    document = json.loads(native)
+    span = document["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    span["attributes"] += attrs(
+        {"gen_ai.tool.call.result": json.dumps({"content": payload}, ensure_ascii=False)}
     )
+    native = json.dumps(document) + "\n"
     assert logs_contain_tool_result_inspection_for_run(
         root + native + inspection,
         RUN_UID,
@@ -257,9 +305,9 @@ def test_json_payload_text_does_not_hide_genuine_inspection(payload: str) -> Non
 
 def test_complete_benign_chunks_survive_duplicate_collector_exports() -> None:
     root, native, first = _evidence()
-    first = first.replace("chunk_count: Int(1)", "chunk_count: Int(2)")
-    second = first.replace("ID             : " + "3" * 16, "ID             : " + "4" * 16).replace(
-        "chunk_index: Int(0)", "chunk_index: Int(1)"
+    first = first.replace('"intValue": "1"', '"intValue": "2"')
+    second = first.replace('"spanId": "' + "3" * 16, '"spanId": "' + "4" * 16).replace(
+        '"intValue": "0"', '"intValue": "1"'
     )
     assert logs_contain_tool_result_inspection_for_run(
         root + native + first + second + root + native + first + second,
@@ -273,10 +321,12 @@ def test_benign_prefix_within_one_rejected_call_is_not_a_completed_benign_result
     chunk_count: int,
 ) -> None:
     root, native, rejection = _evidence("malicious")
-    rejection = rejection.replace("chunk_count: Int(1)", f"chunk_count: Int({chunk_count})")
+    rejection = rejection.replace('"intValue": "1"', f'"intValue": "{chunk_count}"')
     prefix = rejection.replace("3" * 16, "4" * 16)
-    prefix = prefix.replace("Str(malicious)", "Str(benign)").replace("Error", "Unset")
-    rejection = rejection.replace("chunk_index: Int(0)", "chunk_index: Int(1)")
+    prefix = prefix.replace('"stringValue": "malicious"', '"stringValue": "benign"').replace(
+        '"code": 2', '"code": 0'
+    )
+    rejection = rejection.replace('"intValue": "0"', '"intValue": "1"')
     assert logs_contain_tool_result_inspection_for_run(
         root + native + prefix + rejection,
         RUN_UID,
@@ -295,13 +345,15 @@ def test_controlled_attack_cannot_be_verified_after_a_completed_benign_inspectio
     root, rejected_native, rejection = _evidence("malicious")
     earlier_native = rejected_native.replace("2" * 16, "4" * 16).replace("mcp-call", "earlier-call")
     first = rejection.replace("3" * 16, "5" * 16).replace("mcp-call", "earlier-call")
-    first = first.replace("Str(malicious)", "Str(benign)").replace("Error", "Unset")
+    first = first.replace('"stringValue": "malicious"', '"stringValue": "benign"').replace(
+        '"code": 2', '"code": 0'
+    )
     if earlier in {"two-benign-chunks", "incomplete"}:
-        first = first.replace("chunk_count: Int(1)", "chunk_count: Int(2)")
+        first = first.replace('"intValue": "1"', '"intValue": "2"')
     earlier_inspections = first
     if earlier == "two-benign-chunks":
         earlier_inspections += first.replace("5" * 16, "6" * 16).replace(
-            "chunk_index: Int(0)", "chunk_index: Int(1)"
+            '"intValue": "0"', '"intValue": "1"'
         )
     if earlier == "other-tool":
         earlier_native = earlier_native.replace("malicious_probe", "read_file")
@@ -398,8 +450,8 @@ async def test_actual_native_callback_and_inspector_spans_satisfy_mcp_evidence(
     ) is (not miss_first)
 
 
-def _trace_spans(*, rejected: bool = False) -> list[dict[str, Any]]:
-    """Known execution, rendered in the Collector's detailed OTLP text format."""
+def _trace_spans(*, rejected: bool = False, tool_name: str = "lookup") -> list[dict[str, Any]]:
+    """Known execution, encoded independently as OTLP JSON by trace_export."""
     correlation = {"agenticrun.uid": "selected-run", "agenticrun.phase": "analysis"}
 
     def span(name: str, number: int, start: int, end: int, attrs: dict[str, Any]) -> dict[str, Any]:
@@ -460,7 +512,7 @@ def _trace_spans(*, rejected: bool = False) -> list[dict[str, Any]]:
                     {
                         "type": "tool_call",
                         "id": "actual-call",
-                        "name": "lookup",
+                        "name": tool_name,
                         "arguments": {"key": "café"},
                     },
                 ]
@@ -468,14 +520,14 @@ def _trace_spans(*, rejected: bool = False) -> list[dict[str, Any]]:
         },
     )
     tool = span(
-        "execute_tool lookup",
+        f"execute_tool {tool_name}",
         3,
         21,
         25,
         {
             **correlation,
             "gen_ai.operation.name": "execute_tool",
-            "gen_ai.tool.name": "lookup",
+            "gen_ai.tool.name": tool_name,
             "gen_ai.tool.call.id": "actual-call",
             "gen_ai.tool.call.arguments": json.dumps({"key": "café"}),
             "gen_ai.tool.call.result": json.dumps(
@@ -493,7 +545,7 @@ def _trace_spans(*, rejected: bool = False) -> list[dict[str, Any]]:
             "inspection.outcome": "malicious" if rejected else "benign",
             "inspection.category": "prompt_extraction" if rejected else "none",
             "inspection.attempt_count": 1,
-            "tool.name": "lookup",
+            "tool.name": tool_name,
             "inspection.enabled": True,
             "inspection.result_type": "result",
             "inspection.chunk_count": 1,
@@ -548,33 +600,16 @@ def _trace_spans(*, rejected: bool = False) -> list[dict[str, Any]]:
 
 
 def _debug_logs(spans: list[dict[str, Any]], *, prefixed: bool = True) -> str:
-    # debugexporter adds its console prefix only to the first resource line.
-    lines = [
-        "2026-10-29T10:00:01.000Z\tinfo\tResourceSpans #0",
-        "Resource attributes:",
-        "     -> service.name: Str(lightspeed-agentic-sandbox)",
-        "ScopeSpans #0",
-        "InstrumentationScope lightspeed_agentic",
-    ]
-    for index, span in enumerate(spans):
-        lines.append(f"Span #{index}")
-        lines.extend(f"    {key:<15}: {value}" for key, value in span.items() if key != "attrs")
-        lines.append("Attributes:")
-        for key, value in span["attrs"].items():
-            kind = "Bool" if type(value) is bool else "Int" if type(value) is int else "Str"
-            text = str(value).lower() if type(value) is bool else str(value)
-            lines.append(f"     -> {key}: {kind}({text})")
-    if prefixed:
-        lines = [
-            f"[pod/collector/otel-collector] 2026-10-29T10:00:01.000000000Z {line}"
-            for line in lines
-        ]
-    return "\n".join(lines)
+    return (
+        json.dumps({"receiverId": "fixture-receiver"})
+        + "\n"
+        + trace_export(spans, resource_attrs=prefixed)
+    )
 
 
 def _poll_once(monkeypatch: pytest.MonkeyPatch, logs: str) -> Mock:
     fetch = Mock(return_value=logs)
-    monkeypatch.setattr(otel_verify, "fetch_otel_collector_logs", fetch)
+    monkeypatch.setattr(otel_verify, "fetch_otel_evidence", fetch)
     monkeypatch.setattr(otel_verify.time, "monotonic", Mock(side_effect=[0, 0, 2]))
     monkeypatch.setattr(otel_verify.time, "sleep", Mock())
     return fetch
@@ -627,7 +662,7 @@ def test_polling_requires_reconstructable_run_evidence(
     inspection: str | None,
 ) -> None:
     logs = _debug_logs(_trace_spans(rejected=inspection == "malicious"), prefixed=prefixed)
-    fetch = _poll_once(monkeypatch, logs)
+    _poll_once(monkeypatch, logs)
     if inspection:
         result = otel_verify.wait_for_otel_tool_result_inspection(
             Mock(),
@@ -643,7 +678,6 @@ def test_polling_requires_reconstructable_run_evidence(
             Mock(), "namespace", "selected-run", expect_shaping=True, timeout_seconds=1
         )
     assert result == logs
-    assert fetch.call_args.kwargs["tail_lines"] is None
 
 
 @pytest.mark.parametrize(
@@ -759,20 +793,23 @@ def test_nested_events_and_log_resources_do_not_overwrite_span_fields(
     monkeypatch: pytest.MonkeyPatch,
     section: str,
 ) -> None:
-    logs = _debug_logs(_trace_spans(), prefixed=False)
+    spans = _trace_spans()
     if section == "event":
-        logs = logs.replace(
-            "Span #4",
-            "Events:\nSpanEvent #0\n     -> Name: gen_ai.choice\n"
-            "     -> Attributes::\n          -> agenticrun.uid: Str(other-run)\nSpan #4",
+        spans[0]["events"] = [
+            {"name": "gen_ai.choice", "attributes": attrs({"agenticrun.uid": "other-run"})}
+        ]
+    logs = _debug_logs(spans, prefixed=False)
+    if section != "event":
+        logs += json.dumps(
+            {
+                "resourceLogs": [
+                    {
+                        "resource": {"attributes": attrs({"agenticrun.uid": "other-run"})},
+                        "scopeLogs": [],
+                    }
+                ]
+            }
         )
-    else:
-        logs += (
-            "\nResourceLogs #0\nResource attributes:\n"
-            "     -> agenticrun.uid: Str(other-run)\nLogRecord #0\n"
-        )
-    if section == "log-resource-console-prefix":
-        logs = logs.replace("ResourceLogs #0", "2026-10-29T10:00:01.000Z\tinfo\tResourceLogs #0")
     _poll_once(monkeypatch, logs)
     assert (
         otel_verify.wait_for_otel_traces(
@@ -1096,6 +1133,9 @@ if "logs" in args and "pod/collector" in args:
     if tail >= 0:
         lines = lines[-tail:] if tail else []
     print("\\n".join(lines))
+elif "--raw" in args:
+    print('{"receiverId":"retained-receiver"}')
+    print('{"resourceSpans":[]}')
 elif "app=lightspeed-otel-collector" in args and "name" in args:
     print("pod/collector")
 """)
@@ -1110,6 +1150,11 @@ elif "app=lightspeed-otel-collector" in args and "name" in args:
     collected = (artifacts / "otel-collector-logs.txt").read_text()
     assert "EARLY-TRACE-EVIDENCE" in collected
     assert "later-line-11999" in collected
+    structured = (artifacts / "otel-evidence.jsonl").read_text()
+    assert [json.loads(line) for line in structured.splitlines()] == [
+        {"receiverId": "retained-receiver"},
+        {"resourceSpans": []},
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1203,7 +1248,11 @@ async def test_empty_batch_schema_exports_single_generation_accepted_by_bdd_veri
                 + f".{nanos:09d} +0000 UTC"
             )
         spans.append(fields)
-    context = {"run_uid": "wire-run", "run_step": "analysis", "run_expects_shaping": False}
+    context = {
+        "run_uid": "11111111-1111-4111-8111-111111111111",
+        "run_step": "analysis",
+        "run_expects_shaping": False,
+    }
     with monkeypatch.context() as polling:
         _poll_once(polling, _debug_logs(spans))
         polling.setattr(otel_verify.time, "monotonic", Mock(side_effect=[0, 0, 100]))
@@ -1276,4 +1325,270 @@ def test_rejection_requires_consistent_failure_and_successful_source_evidence(
             expected_tool="lookup",
             expected_outcome="malicious",
             timeout_seconds=1,
+        )
+
+
+def test_receiver_keeps_multiline_payload_as_one_record() -> None:
+    body = "ordinary (unbalanced\n)\nSpan #999\nInstrumentationScope invented\nLogRecord #0"
+    payload = {
+        "resourceLogs": [
+            {
+                "scopeLogs": [
+                    {
+                        "scope": {"name": "unrelated.sdk"},
+                        "logRecords": [
+                            {
+                                "body": {"stringValue": body},
+                                "attributes": [
+                                    {"key": "diagnostic", "value": {"stringValue": body}}
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            }
+        ]
+    }
+    with TestClient(create_app()) as client:
+        assert client.post("/v1/logs", json=payload).status_code == 200
+        snapshot = client.get("/otel")
+        assert snapshot.status_code == 200
+        exports = [json.loads(line) for line in snapshot.text.split("\n") if line]
+        assert payload in exports
+        assert otel_verify._collector_spans(snapshot.text) == []
+        records = otel_verify._collector_logs(snapshot.text)
+        assert len(records) == 1
+        assert records[0].fields["Body"] == body
+        assert records[0].attributes["diagnostic"] == body
+
+
+@pytest.mark.parametrize("signal", ["logs", "traces"])
+def test_receiver_validates_envelope_and_keeps_export_retries(signal: str) -> None:
+    key = "resourceLogs" if signal == "logs" else "resourceSpans"
+    with TestClient(create_app()) as client:
+        assert client.post(f"/v1/{signal}", json={"notOtlp": []}).status_code == 400
+        assert client.post(f"/v1/{signal}", content="invalid JSON").status_code == 400
+        payload = {key: []}
+        assert client.post(f"/v1/{signal}", json=payload).status_code == 200
+        assert client.post(f"/v1/{signal}", json=payload).status_code == 200
+        values = [json.loads(line) for line in client.get("/otel").text.split("\n") if line]
+        assert values.count(payload) == 1
+        assert len(values[0]["receiverId"]) > 0
+
+
+def test_receiver_overflow_is_visible_not_silent_eviction(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.e2e import mock_mcp_server
+
+    monkeypatch.setattr(mock_mcp_server, "MAX_EVIDENCE_BYTES", 8)
+    with TestClient(create_app()) as client:
+        assert client.post("/v1/logs", json={"resourceLogs": []}).status_code == 507
+        assert client.get("/otel").status_code == 507
+
+
+def test_structured_decoder_normalizes_numbers_and_preserves_ids_and_nanoseconds() -> None:
+    attributes = [
+        {"key": "integer", "value": {"intValue": "0"}},
+        {"key": "boolean", "value": {"boolValue": False}},
+        {"key": "string", "value": {"stringValue": "0"}},
+        {"key": "nonfinite", "value": {"doubleValue": "Infinity"}},
+        {"key": "double", "value": {"doubleValue": 1}},
+        {"key": "fraction", "value": {"doubleValue": 1.25}},
+        {"key": "large", "value": {"intValue": "9007199254740993"}},
+        {"key": "numeric-string", "value": {"stringValue": "9.0"}},
+        {"key": "array", "value": {"arrayValue": {"values": [{"doubleValue": 3.0}]}}},
+        {
+            "key": "map",
+            "value": {"kvlistValue": {"values": [{"key": "x", "value": {"doubleValue": -2.0}}]}},
+        },
+    ]
+    span = {
+        "traceId": "a" * 32,
+        "spanId": "b" * 16,
+        "parentSpanId": "c" * 16,
+        "name": "native",
+        "kind": 3,
+        "startTimeUnixNano": "1793268000000000001",
+        "endTimeUnixNano": "1793268000000000002",
+        "attributes": attributes,
+    }
+    payload = {
+        "resourceSpans": [{"scopeSpans": [{"scope": {"name": "native.sdk"}, "spans": [span]}]}]
+    }
+    decoded = otel_verify._collector_spans(json.dumps(payload))
+    assert len(decoded) == 1
+    assert decoded[0].scope == "native.sdk"
+    assert decoded[0].fields["ID"] == "b" * 16
+    assert decoded[0].fields["Parent ID"] == "c" * 16
+    assert decoded[0].fields["Kind"] == "Client"
+    assert (
+        otel_verify._timestamp(decoded[0].fields["End time"])
+        - otel_verify._timestamp(decoded[0].fields["Start time"])
+        == 1
+    )
+    assert decoded[0].attributes == {
+        "integer": 0,
+        "boolean": False,
+        "string": "0",
+        "nonfinite": float("inf"),
+        "double": 1,
+        "fraction": 1.25,
+        "large": 9007199254740993,
+        "numeric-string": "9.0",
+        "array": [3],
+        "map": {"x": -2},
+    }
+    assert type(decoded[0].attributes["integer"]) is int
+    assert type(decoded[0].attributes["double"]) is int
+    assert type(decoded[0].attributes["array"][0]) is int
+    assert type(decoded[0].attributes["map"]["x"]) is int
+    assert type(decoded[0].attributes["boolean"]) is bool
+    span["attributes"].append(attributes[0])
+    assert not otel_verify._collector_spans(json.dumps(payload))[0].valid
+
+
+def test_kubernetes_service_proxy_preserves_raw_json_and_closes_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from io import BytesIO
+
+    from kubernetes.client import ApiClient, Configuration, CoreV1Api
+    from urllib3.response import HTTPResponse
+
+    evidence = json.dumps({"receiverId": "native-proxy"}) + "\n" + json.dumps({"resourceLogs": []})
+    observed = []
+
+    class ObservedResponse(HTTPResponse):
+        closes = 0
+
+        def close(self) -> None:
+            self.closes += 1
+            super().close()
+
+    response = ObservedResponse(body=BytesIO(evidence.encode()), status=200, preload_content=False)
+
+    def transport(method: str, url: str, **_kwargs: Any) -> HTTPResponse:
+        observed.append((method, url))
+        return response
+
+    with ApiClient(Configuration(host="https://offline-kubernetes.invalid")) as api:
+        monkeypatch.setattr(api.rest_client.pool_manager, "request", transport)
+        result = otel_verify.fetch_otel_evidence(CoreV1Api(api), "test-ns")
+    assert result == evidence
+    assert observed == [
+        (
+            "GET",
+            "https://offline-kubernetes.invalid/api/v1/namespaces/test-ns/services/http%3Alightspeed-mock-mcp%3Amcp/proxy/otel",
+        )
+    ]
+    assert response.closes == 1
+
+
+def test_receiver_restart_cannot_mix_two_evidence_histories(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        otel_verify,
+        "fetch_otel_evidence",
+        Mock(
+            side_effect=[json.dumps({"receiverId": "first"}), json.dumps({"receiverId": "second"})]
+        ),
+    )
+    monkeypatch.setattr(otel_verify.time, "monotonic", Mock(return_value=0))
+    monkeypatch.setattr(otel_verify.time, "sleep", lambda _: None)
+    with pytest.raises(AssertionError, match="receiver restarted"):
+        otel_verify.wait_for_otel_traces(Mock(), "ns", "run", expect_shaping=False)
+
+
+@pytest.mark.parametrize("floating_first", [False, True])
+def test_integral_numeric_exports_are_valid_in_either_delivery_order(floating_first: bool) -> None:
+    integral = json.loads(trace_export(_trace_spans()))
+    floating = deepcopy(integral)
+    for resource in floating["resourceSpans"]:
+        for scope in resource["scopeSpans"]:
+            for span in scope["spans"]:
+                span["droppedAttributesCount"] = 0.0
+                for attribute in span["attributes"]:
+                    value = attribute["value"]
+                    if "intValue" in value:
+                        attribute["value"] = {"doubleValue": float(value["intValue"])}
+    exports = [floating, integral] if floating_first else [integral, floating]
+    with TestClient(create_app()) as client:
+        for export in exports:
+            assert client.post("/v1/traces", json=export).status_code == 200
+            evidence = client.get("/otel").text
+            otel_verify.assert_trace_reconstructable(evidence, "selected-run", expect_shaping=True)
+            assert logs_contain_tool_result_inspection_for_run(
+                evidence, "selected-run", expected_tool="lookup"
+            )
+
+
+@pytest.mark.parametrize("invalid_first", [False, True])
+@pytest.mark.parametrize(
+    "invalid_value",
+    [
+        {"boolValue": False},
+        {"doubleValue": 0.5},
+        {"doubleValue": -1.0},
+        {"doubleValue": "Infinity"},
+        {"doubleValue": "NaN"},
+    ],
+)
+def test_invalid_usage_cannot_be_hidden_by_numeric_normalization(
+    invalid_first: bool, invalid_value: dict[str, Any]
+) -> None:
+    valid = json.loads(trace_export(_trace_spans()))
+    invalid = deepcopy(valid)
+    for resource in invalid["resourceSpans"]:
+        for scope in resource["scopeSpans"]:
+            for span in scope["spans"]:
+                if span["spanId"] == "0000000000000002":
+                    for attribute in span["attributes"]:
+                        if attribute["key"] == "gen_ai.usage.input_tokens":
+                            attribute["value"] = invalid_value
+    exports = [invalid, valid] if invalid_first else [valid, invalid]
+    with TestClient(create_app()) as client:
+        for export in exports:
+            assert client.post("/v1/traces", json=export).status_code == 200
+        with pytest.raises(AssertionError):
+            otel_verify.assert_trace_reconstructable(
+                client.get("/otel").text, "selected-run", expect_shaping=True
+            )
+
+
+def test_parsed_payload_numbers_normalize_without_rewriting_strings() -> None:
+    raw = '{"count":9.0,"timing":0.5,"enabled":true,"label":"9.0","large":9007199254740993}'
+    evidence = _debug_span(0, ROOT_ID, "execute_tool lookup", {"gen_ai.tool.call.arguments": raw})
+    span = otel_verify._collector_spans(evidence)[0]
+    parsed = otel_verify._json_attribute(span, "gen_ai.tool.call.arguments")
+    assert parsed == {
+        "count": 9,
+        "timing": 0.5,
+        "enabled": True,
+        "label": "9.0",
+        "large": 9007199254740993,
+    }
+    assert type(parsed["count"]) is int
+    assert type(parsed["enabled"]) is bool
+    assert span.attributes["gen_ai.tool.call.arguments"] == raw
+
+
+@pytest.mark.parametrize("source_count", [1, 1.0, True, 1.5])
+def test_tool_argument_comparison_uses_numeric_normalization_without_boolean_aliases(
+    source_count: int | float | bool,
+) -> None:
+    spans = _trace_spans()
+    generation = next(span for span in spans if span["ID"] == "0000000000000002")
+    output = json.loads(generation["attrs"]["gen_ai.output.messages"])
+    output[0]["parts"][-1]["arguments"] = {"count": 1.0}
+    generation["attrs"]["gen_ai.output.messages"] = json.dumps(output)
+    tool = next(span for span in spans if span["Name"] == "execute_tool lookup")
+    tool["attrs"]["gen_ai.tool.call.arguments"] = json.dumps({"count": source_count})
+    if type(source_count) is bool or source_count == 1.5:
+        with pytest.raises(AssertionError, match="Tool arguments mismatch"):
+            otel_verify.assert_trace_reconstructable(
+                _debug_logs(spans), "selected-run", expect_shaping=True
+            )
+    else:
+        otel_verify.assert_trace_reconstructable(
+            _debug_logs(spans), "selected-run", expect_shaping=True
         )

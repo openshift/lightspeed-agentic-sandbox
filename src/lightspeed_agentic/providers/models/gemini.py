@@ -21,6 +21,10 @@ def create_vertex_gemini_model(
         VertexCredentialSource,
         VertexProviderParameters,
     )
+    from lightspeed_agentic.providers.audit_support import (
+        audited_model_class,
+        instrument_google_client,
+    )
     from lightspeed_agentic.providers.cloud_credentials import create_vertex_credentials
     from lightspeed_agentic.tls import get_ssl_context
 
@@ -40,4 +44,7 @@ def create_vertex_gemini_model(
         kwargs["max_output_tokens"] = parameters.max_output_tokens
     if reasoning_config:
         kwargs["thinking_config"] = reasoning_config
-    return ChatGoogleGenerativeAI(**kwargs)
+    model_class = audited_model_class(ChatGoogleGenerativeAI)
+    model = model_class(**kwargs)
+    instrument_google_client(cast(Any, model).client)
+    return model

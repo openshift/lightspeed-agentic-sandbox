@@ -716,8 +716,8 @@ def test_native_log_readers_preserve_text(log_http: Any, reader: str, log_text: 
     # its body automatically after reading; the raw response still needs closing.
     assert log_http.responses[0].close_calls == 1
     expected_query: dict[str, Any] = {"timestamps": reader == "collector"}
-    if reader != "collector":
-        expected_query["tailLines"] = 200 if reader == "batch" else 7
+    if reader == "pods":
+        expected_query["tailLines"] = 7
     assert log_http.queries == [expected_query]
 
 

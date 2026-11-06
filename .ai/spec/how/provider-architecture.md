@@ -62,6 +62,103 @@ configuration rather than independent CA arguments.
 - **azure.identity (Azure Entra ID):** the existing `azure-identity` optional dependency supplies the native async `ClientSecretCredential` and `get_bearer_token_provider` callback for the shared Azure model constructor. Identity owns acquisition/cache/refresh for `https://cognitiveservices.azure.com/.default`; the integration forwards the callback to native `AsyncAzureOpenAI`. Imports stay lazy, TLS is shared, and model cleanup closes the credential owner.
 - **OpenTelemetry:** `tracing.py` shared runtime and `start_generation_span`; `run_agent.py` invocation span; `audit.py` tool spans and legacy choice events; DeepAgents captures main-agent generations for Anthropic, Vertex/Google, and native/custom OpenAI routes (provider `openai` for native/custom OpenAI); the retired OpenAI Agents hooks are removed. Stdout/OTLP trace exporters exclude the exact `gcp.vertex.agent` instrumentation scope; `metrics.py` records in-process Prometheus histograms (no `/metrics` route).
 
+## Model HTTP Attempt Observation [OLS-4192]
+
+- `connection_audit.py` owns frozen model/classifier/destination metadata,
+  ContextVar restoration, the per-attempt start/completion latch, safe failure
+  categories, scalar-field allowlisting and the dedicated nonpropagating JSON
+  logger. `emit()` projects private adapter bookkeeping onto the shared v1
+  `outbound.request.started` / `outbound.request.finished` allowlist, omitting
+  invalid or unavailable optional values. `tracing.py` supplies resolved run
+  identity and attaches/detaches its existing OTLP handler without overwriting
+  validated outbound-record attributes. Both outputs honor the existing audit
+  gate. Valid captured trace/span IDs, including unsampled context, are reused;
+  otherwise both IDs remain absent and `attempt_id` correlates the pair. No
+  fallback IDs or audit-only spans are generated. HTTPX, aiohttp and urllib3
+  omit `request.body.size`: buffered lengths do not prove complete transmission.
+- `providers/audit_support.py::audited_model_class` decorates native `_generate`, `_agenerate`, `_stream`
+  and `_astream` methods, retaining explicit `run_manager` signatures. Nested
+  fallbacks reuse a logical call, but distinct known call IDs are not merged.
+  Streaming activates its captured call scope only while advancing/closing the
+  native iterator, not across caller-visible yields; cross-context closure must
+  not leak metadata or reset another Context's token. Factories instrument only
+  their explicit/lazy model-owned HTTP clients.
+- `providers/audit_support.py::instrument_httpx_client` decorates existing default/mounted HTTPX transports and
+  byte streams, retaining pools, context entry/exit, TLS/proxy/auth configuration,
+  native retry behavior and ownership. Private client transport fields and the
+  selected httpcore proxy authority are isolated here and tested against native
+  routing. Request streams are never pre-read; HTTPX phase timeouts are not
+  misrepresented as an overall timeout.
+- `providers/audit_support.py::instrument_aiohttp_session` uses native middleware for each physical attempt,
+  before connection work and inside native redirect/retry loops. It retains the
+  actual ClientResponse and delegates body reads/iteration/release/close; EOF
+  received into an unread buffer is not consumption. Known native total timeouts
+  are scoped at request dispatch. Model-only request kwargs also reach Google
+  authorized sessions without attaching audit middleware to token requests.
+- The Google API client's per-instance lazy session getter reinstalls observation
+  for closed/loop-local recreated sessions and SDK-reconstructed request kwargs.
+  Do not force HTTPX when the SDK selects aiohttp. No SDK implementation is copied.
+- `run_agent_query()` scopes explicit caller run/phase identity even without
+  tracing, with ContextVar isolation for concurrent invocations.
+  `DeepAgentsProvider.query()` scopes the existing deadline during each iterator
+  advance/close; `_query()` retains native graph/tool lifecycle. Classifier/shaping use immutable operation-tagged
+  `ModelParameters` copies. `inspection/inspector.py` scopes actual retry identity.
+  Existing canonical GenAI callbacks/spans and content gates are unchanged.
+
+Behavioral authority and tests: [audit-logging.md](../what/audit-logging.md#llm-request-metadata-audit-ols-4192).
+SDK upgrades must retain the tested private transport/session integration points.
+
+### MCP reuse [OLS-4192]
+
+`connection_audit.py` also scopes frozen `MCPRequestMetadata` through the same call
+context and emits shared records with `request.kind=mcp` through the same
+`RequestAttempt` lifecycle. Only a specific remote MCP tool contributes
+`gen_ai.tool.name`; server labels and tool-call IDs are not public wire fields.
+`mcp.py::create_mcp_http_client` delegates to the shared TLS factory and installs
+the existing `providers/audit_support.py` HTTPX observer. Canonical admission and
+DeepAgents runtime reload scope discovery; `mcp.py::audit_mcp_tool_call` is the
+native adapter's tool interceptor and scopes the complete native tool session.
+AnyIO background tasks inherit this context, including GET reconnects and DELETE
+termination. No request-body parsing, separate transport implementation, SDK
+patching or new production module is needed. LLM call interfaces/events remain
+unchanged; MCP deliberately does not inherit classifier-only metadata.
+
+Behavioral authority: [MCP request metadata audit](../what/audit-logging.md#mcp-request-metadata-audit-ols-4192).
+
+### Credential transport reuse [OLS-4192]
+
+`AuthRequestMetadata` and `auth_request()` reuse the existing call context and
+`RequestAttempt` lifecycle, projected as `request.kind=credential`. Same-provider
+nested exchanges reuse their internal logical ID; scope exit restores prior
+LLM/MCP identity. Provider identity (`azure`, `google`, `aws`) remains private
+adapter bookkeeping; model/classifier labels are omitted from the wire.
+
+`providers/cloud_credentials.py` decorates only owned native credential instances:
+Azure token methods scope the native cache/refresh calls and its lazy native
+`AioHttpTransport.open()` installs the existing aiohttp observer. Google final
+credential `refresh(request)` scopes the supplied native request; ADC loading uses
+a lazy native Request delegate to include federation/project discovery and closes
+only that loader-owned session without replacing a primary failure. Source
+credentials are not decorated before native impersonation copies/scopes them.
+Botocore's private session still creates its STS clients; their selected native
+connection managers receive observation, and the fetcher retains its native cache.
+
+The urllib3 section of `providers/audit_support.py` shares one observer for Google
+requests and botocore. This module groups HTTPX, aiohttp, urllib3 and model-scope
+support without changing their native transport behavior or adding compatibility
+shim modules.
+Per-instance requests adapter/manager hooks retain native mTLS and proxy selection;
+manager-selected pools start before native `urlopen`, observe `_make_request` and
+proxy preparation before native retries can swallow failures, and decorate native
+response reads/streams/close without changing their class or preloading. Stream
+exhaustion, not compressed socket EOF or response headers, completes observation.
+Typed native error causes map to existing safe categories without inspecting
+messages or implicit context. Native pools, retries, auth, TLS and ownership stay
+unchanged. These private hooks are covered against `uv.lock`; SDK upgrades and the
+separately resolved hermetic runtime still require compatibility validation.
+
+Behavioral authority: [credential metadata audit](../what/audit-logging.md#credential-request-metadata-audit-ols-4192).
+
 ## Container Build and Regeneration
 
 - **Release inputs:** `.konflux/build.args` selects RHOAI 3.5 CPU base images and hermetic mode. `.konflux/profiles.toml` selects the RHOAI 3.5 CPU package index, Python 3.12, `x86_64`/`aarch64`, extras, and bootstrap packages. Non-hermetic builds use the UBI Python defaults in `Containerfile` and install from `uv.lock`.

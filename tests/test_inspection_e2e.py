@@ -672,6 +672,16 @@ def run_runner(bdd_context, k8s_core_client, monkeypatch):
                 earlier.append(accepted)
             spans = spans + earlier if fault == "rejection-exported-first" else earlier + spans
         logs = _debug_logs(spans)
+        if not malicious:
+            from tests.test_connection_audit_bdd import _attempt, _audit_logs
+            records = (
+                _attempt() + _attempt("mcp", 2)
+                + _attempt("mcp", 3, tool="list_namespaces")
+            )
+            for record in records:
+                if record["body"]["request.kind"] == "mcp":
+                    record["body"]["server.address"] = "mock"
+            logs += "\n" + _audit_logs(records).replace("selected-run", "run")
         if malicious and fault in {"benign-then-reject", "rejection-exported-first"}:
             # The negative scenario must fail the controlled-input guard, not an
             # unrelated reconstruction defect in its scripted external evidence.
@@ -684,8 +694,10 @@ def run_runner(bdd_context, k8s_core_client, monkeypatch):
         monkeypatch.setattr(otel_verify, "time", SimpleNamespace(
             monotonic=lambda: next(clock), sleep=lambda _seconds: None,
         ))
-        k8s_core_client.read_namespaced_pod_log.side_effect = lambda **_: HTTPResponse(
-            body=BytesIO(logs.encode()), status=200, preload_content=False
+        def evidence_response(**_kwargs):
+            return HTTPResponse(body=BytesIO(logs.encode()), status=200, preload_content=False)
+        k8s_core_client.connect_get_namespaced_service_proxy_with_path.side_effect = (
+            evidence_response
         )
         body = {"success": True, "summary": "e2e-sentinel-ns-7f3a9"}
         return batch_to_run_result(RunBatchResult(

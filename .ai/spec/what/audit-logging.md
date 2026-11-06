@@ -10,6 +10,10 @@ Anthropic, Vertex/Google, native/custom OpenAI, and Azure routes use shared Deep
 
 The parent inspection/collection contract remains authoritative for native source evidence: a successful native tool source span retains its raw callback result independently of later inspection. Rejection suppresses normalized result events and Result CRs, not completed source evidence; compliance copies follow the parent content policy. This exception takes precedence over older statements below that could otherwise be read to suppress all canonical source-result attributes. Changed native span/event/message behavior requires the parent component/Dataverse compatibility review and version decision before implementation merges; migration grants no waiver.
 
+## Separate Outbound Records [IMPLEMENTED: OLS-4192]
+
+[Outbound request audit](outbound-request-audit.md) documents the implemented metadata-only JSON log type for Python transport attempts, with offline evidence and live-acceptance limits. Its dedicated emitter is a narrowly scoped exception to this file's span-only/Python-logging restrictions for that record type only. Native GenAI evidence, content capture, compliance projections, and product collection remain unchanged and MUST NOT be copied into the new records. Subprocess connections, including oc traffic, are not observed by this Python-only feature; complementary network observation is tracked by OLS-4848.
+
 ## Behavioral Rules
 
 ### Span Naming and Kinds
@@ -169,6 +173,135 @@ The existing `gen_ai.choice` projection and its gates remain unchanged. DeepAgen
 
 27. The audit/tracing layer MUST emit the invocation, tool, and three-model-family generation attributes defined in `data-collection.md` through the existing shared trace runtime. Existing `gen_ai.choice` events and their log projections remain legacy outputs with their old gates and ordering. The stdout and OTLP trace exporters exclude only spans with the exact `gcp.vertex.agent` instrumentation-scope name; native span processing and log behavior/gates remain unchanged, and other scopes are unaffected. The sandbox producer exception does not change the parent collection contract outside this scope.
 
+## LLM Request Metadata Audit [OLS-4192]
+
+The workspace `ols/.ai/spec/what/outbound-request-audit.md` is authoritative for
+the shared version-1 wire contract. The metadata channel does not replace
+content-bearing GenAI evidence. Emit only when the stripped, lowercased
+`LIGHTSPEED_AUDIT_ENABLED` value is `"true"`; otherwise suppress both stdout and
+OTLP audit records without suppressing requests or independently configured
+tracing. Content capture never changes this metadata-only projection. The
+operator continues setting audit to `true`; cluster-wide configuration plumbing
+is deferred, with no new flag, operator change or deployment component.
+
+- Emit `outbound.request.started` before connection work and exactly one
+  `outbound.request.finished` at response exhaustion, early close, cancellation
+  or failure. Preserve one fresh `attempt_id` across the pair. Native SDK retries
+  and redirect hops are separate attempts; overlapping adapters must not duplicate
+  them. Header receipt alone is not response completion.
+- The required shared fields are `schema_version=1`, `event`, `timestamp`,
+  `service.name="lightspeed-agentic-sandbox"`, `attempt_id`, `request.kind`,
+  and `network.transport`. HTTP observers use `tcp` and include the native
+  `http.request.method`. `request.kind` is `llm`, `mcp` or `credential` for the
+  implemented routes. `trace_id` and `span_id` are required together when valid
+  existing context is captured, including unsampled context, and retain the same
+  values on start and finish. Without valid context, omit both from both records
+  and correlate by `attempt_id`; do not generate fallback IDs, create audit-only
+  spans or substitute later context at finish.
+- Optional available fields are `server.address`, `server.port`,
+  `network.peer.address`, `agenticrun.uid`, `agenticrun.phase`, and
+  `gen_ai.tool.name` for a specific registered remote MCP tool only. The shared
+  contract also reserves `gen_ai.conversation.id` for Classic. Missing optional
+  values are omitted, not serialized as null. Destination server fields identify
+  the request authority even through a proxy; peer IP is omitted unless actually
+  observed. No proxy-target extensions or guessed peer IP are emitted. Source
+  workload identity belongs to Kubernetes logging enrichment, not application
+  pod/namespace lookups.
+- Validate metadata before either output: canonical UUIDs, the existing workflow
+  phases (`analysis`, `execution`, `verification`, `escalation`), normalized ASCII
+  DNS names (at most 253 characters, labels at most 63) or IP literals, and integer
+  ports from 1 through 65535. Observed peer addresses accept IP literals only.
+  Remote MCP tool names must be printable, nonempty and at most 256 characters;
+  HTTP methods must be tokens of at most 32 characters. Invalid optional values
+  are omitted silently, never echoed in diagnostics. OTLP run attributes use the
+  same validated attempt snapshot, not unvalidated runtime identity stamps.
+- Finish fields are `outcome`, `duration_ms`, observed
+  `http.response.status_code`, controlled `error.type` when failed/cancelled,
+  and `request.body.size` only when a complete transmitted size is known.
+  The current HTTPX, aiohttp and urllib3 observers cannot prove complete upload
+  transmission, so they omit `request.body.size` on every outcome, including
+  success and HTTP errors. Buffered lengths, response headers and response
+  completion are not upload-completion evidence; do not read, encode, buffer or
+  wrap request bodies merely to derive a size.
+  Start records never contain completion fields. Outcomes are `success`,
+  `http_error`, `transport_error` or `cancelled`; error categories are
+  `dns_error`, `connect_error`, `tls_error`, `timeout`, `protocol_error`,
+  `http_error`, `cancelled` or `unknown_error`. A consumed HTTP error is not a
+  network-policy denial or evidence of model/tool semantic failure. Early or
+  interrupted response closure is a protocol/transport error, not success.
+- No extra version-1 fields are permitted. Provider/model identity, operation
+  labels, logical-call IDs, tool-call IDs, classifier retry/chunk details,
+  timeouts, response-byte counts and TLS policy decisions are private adapter
+  bookkeeping, not public audit fields. Canonical spans retain their existing
+  independent evidence. Never emit payloads, headers, credentials, raw errors,
+  personal identities, or URL userinfo/path/query/fragment.
+- Use dedicated one-line JSON stdout plus the existing configured OTLP log
+  handler, without a span-event bridge, logger propagation or a new ingestion
+  path. OTLP record attributes retain `event`, `agenticrun.uid` and
+  `agenticrun.phase` correlation. Audit failure cannot replace primary request
+  errors or change native streaming, retries, TLS, authentication, timeouts,
+  cancellation or ownership.
+
+Coverage includes Anthropic, Bedrock and Vertex Anthropic, Vertex Gemini's native
+HTTPX/aiohttp paths, native/custom OpenAI, Azure APIs, and main, subagent,
+classifier and shaping requests. Constructors/local cache hits do not invent
+HTTP attempts. Scope excludes telemetry export, subprocess requests and Kubernetes
+infrastructure traffic, including Result publication.
+
+Verification: [test_outbound_schema.py](../../../tests/test_outbound_schema.py)
+independently checks the shared allowlist, fields, outcomes, errors and MCP-only
+tool attribution. [test_connection_audit.py](../../../tests/test_connection_audit.py)
+checks lifecycle, concurrent scopes, failure isolation and audit/content gates,
+including stdout/OTLP parity. [test_llm_http_audit.py](../../../tests/test_llm_http_audit.py)
+and [test_llm_audit_routes.py](../../../tests/test_llm_audit_routes.py) exercise
+native request/stream ownership, errors, retries, redirects and timeout behavior.
+[test_trace_sdk_routes.py](../../../tests/test_trace_sdk_routes.py) retains native
+trace reconstruction with audit both enabled and disabled. These offline checks
+are not live-provider or deployed ingestion acceptance.
+
+Trace correlation is conditional under the shared contract: requests without
+valid existing context remain auditable through `attempt_id`, without synthetic
+trace/span IDs. Producer-side bounded metadata validation is enforced, and
+adapters omit unproven request-body sizes.
+
+## MCP Request Metadata Audit [OLS-4192]
+
+MCP uses the same shared events and `request.kind="mcp"`, lifecycle, gates,
+allowlist and transport observers. Cover canonical admission, runtime discovery,
+session initialization/notifications/tool execution, background GET streams,
+reconnections and DELETE termination. HTTP success is not MCP semantic success.
+Do not log arguments, results, descriptions, schemas, session/event IDs or RPC
+bodies. `gen_ai.tool.name` is present only for a specific remote tool session;
+classifier LLM requests do not inherit it. Tool-call IDs and inspection/shaping
+semantics remain in their existing native trace evidence rather than extending
+the outbound schema.
+
+Verification: [test_mcp.py](../../../tests/test_mcp.py),
+[test_mcp_tool_collisions.py](../../../tests/test_mcp_tool_collisions.py), and
+[test_mcp_initialization_errors.py](../../../tests/test_mcp_initialization_errors.py)
+retain real adapter/SDK sessions, pairing, native concurrency/cancellation,
+unchanged admission and operational failures, safe tool attribution and resource
+cleanup. No live MCP/provider or deployed-ingestion acceptance is implied.
+
+## Credential Request Metadata Audit [OLS-4192]
+
+Configured Azure Entra, Google/Vertex and AWS STS credential HTTP exchanges use
+the shared events and `request.kind="credential"` under the same audit gate.
+Observe actual acquisition/refresh, retries, federation/impersonation and
+configured proxy routes; preserve native caches, credentials, timing and owned
+resource cleanup. Cached tokens, static keys and local signing produce no
+invented HTTP records. Credential scopes restore prior LLM/MCP context without
+copying model/classifier/tool labels into the records. Native token errors and
+cancellation propagate unchanged. Do not parse, buffer or log credential payloads.
+
+Verification: [test_cloud_credentials.py](../../../tests/test_cloud_credentials.py)
+and [test_azure_credentials.py](../../../tests/test_azure_credentials.py) retain
+native credential, cache, transport, body consumption, retry and cleanup tests,
+with JSON/OTLP parity and domain separation. Local tests do not establish live
+credential acceptance, separately resolved runtime SDK compatibility or deployed
+searchability/latency guarantees.
+
+
 ## Verification
 
 - Inspection decision categories: [test_tool_result_inspection_telemetry.py](../../../tests/test_tool_result_inspection_telemetry.py) verifies benign/malicious categories and category absence on provider/invalid-response failures; [test_otel_verify.py](../../../tests/test_otel_verify.py) passes real inspector span attributes through the CI reconstruction verifier.
@@ -180,7 +313,7 @@ The existing `gen_ai.choice` projection and its gates remain unchanged. DeepAgen
 - Cancellation boundary/OTLP smoke: root ERROR/`CancelledError` and pending-tool ERROR/`missing_tool_result` survived the wire with no tool result, duration-histogram observation, or cancellation-triggered choice/log flush.
 - Escaping tool errors: [test_tool_execution_errors.py](../../../tests/test_tool_execution_errors.py) verifies native exception-class metadata without source exception events/results, payload-free main/subagent operational logs and summaries, and failed Result publication without raw exception details.
 - Existing log/metric regression checks: [test_run_agent.py](../../../tests/test_run_agent.py) verifies cancellation does not flush legacy event buffers or log cancellation details; [test_tracing.py](../../../tests/test_tracing.py) verifies LoggingHandler/span-event log forwarding and correlation gates; [test_metrics.py](../../../tests/test_metrics.py) verifies in-process histogram recording.
-- Existing live batch coverage: [sandbox_e2e.feature](../../../tests/e2e/features/sandbox_e2e.feature) checks trace and bridged audit-log export; it is not deployed FileExporter/Dataverse proof for this profile.
+- Existing live batch coverage: the OTEL scenario validates paired shared-schema LLM attempts and stdout/OTLP delivery parity for observed credential records, without a provider selection table or forced refresh. The successful MCP inspection scenario requires configured MCP server authorities and a tool name matching native tool evidence; existing trace reconstruction separately verifies shaping, classifier chunks and actual tool-call IDs. Both parse structured OTLP, not human-readable Collector text; nested or multiline payload text cannot supply missing evidence. Selected records accept only the shared body allowlist and correlation/code-location log attributes. Conditional trace/span omission, OTLP-envelope equality when IDs are present, scenario-specific exported-span linkage, immutable attempt identity, omissions rather than nulls, controlled outcomes, retry ordering and identical retransmissions are checked. No new model calls, scenarios or ingestion components are added. Receipt is not downstream searchable availability or a five-second proof. [test_connection_audit_bdd.py](../../../tests/test_connection_audit_bdd.py) tests the validators with corrupt/missing evidence and actual exported OTLP protobufs. Live acceptance requires the existing CI matrix.
 
 ### MCP Semantic Conventions [UNTRACKED]
 
