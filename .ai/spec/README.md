@@ -20,7 +20,7 @@ These specs define the behavioral rules and codebase navigation for the lightspe
 | [configuration.md](what/configuration.md) | Environment variables, provider selection, model resolution, container layout, build system |
 | [health-probes.md](what/health-probes.md) | Readiness checks at batch startup (R1); HTTP probes superseded |
 | [audit-logging.md](what/audit-logging.md) | OTel GenAI invocation, tool, and generation spans; legacy choice events and audit-log projections |
-| [outbound-request-audit.md](what/outbound-request-audit.md) | [PLANNED: OLS-4192] Metadata-only Python/SDK request audit; subprocess network observation excluded and tracked by OLS-4848 |
+| [outbound-request-audit.md](what/outbound-request-audit.md) | [IMPLEMENTED: OLS-4192] Metadata-only Python/SDK request audit; offline-verified, live acceptance outstanding; subprocess network observation tracked separately by OLS-4848 |
 | [data-collection.md](what/data-collection.md) | Three model-family GenAI invocation/tool/generation profile and exact `gcp.vertex.agent` exclusion from stdout/OTLP trace exports |
 | [e2e-testing.md](what/e2e-testing.md) | Batch cluster BDD harness: OpenShift Jobs, fixtures, live vs unit split |
 
