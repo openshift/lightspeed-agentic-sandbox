@@ -10,6 +10,10 @@ Anthropic, Vertex/Google, native/custom OpenAI, and Azure routes use shared Deep
 
 The parent inspection/collection contract remains authoritative for native source evidence: a successful native tool source span retains its raw callback result independently of later inspection. Rejection suppresses normalized result events and Result CRs, not completed source evidence; compliance copies follow the parent content policy. This exception takes precedence over older statements below that could otherwise be read to suppress all canonical source-result attributes. Changed native span/event/message behavior requires the parent component/Dataverse compatibility review and version decision before implementation merges; migration grants no waiver.
 
+## Separate Outbound Records [IMPLEMENTED: OLS-4192]
+
+[Outbound request audit](outbound-request-audit.md) documents the implemented metadata-only JSON log type for Python transport attempts, with offline evidence and live-acceptance limits. Its dedicated emitter is a narrowly scoped exception to this file's span-only/Python-logging restrictions for that record type only. Native GenAI evidence, content capture, compliance projections, and product collection remain unchanged and MUST NOT be copied into the new records. Subprocess connections, including oc traffic, are not observed by this Python-only feature; complementary network observation is tracked by OLS-4848.
+
 ## Behavioral Rules
 
 ### Span Naming and Kinds
