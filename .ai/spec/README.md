@@ -17,6 +17,7 @@ These specs define the behavioral rules and codebase navigation for the lightspe
 | [system-overview.md](what/system-overview.md) | System role, component inventory, lifecycle, integration boundaries |
 | [run-api.md](what/run-api.md) | Batch entrypoint: `/input/` files, agent run, Result CR publishing, context prefix, timeouts |
 | [provider-contract.md](what/provider-contract.md) | AgentProvider ABC, event model, structured output, thin-adapter principle, skills delegation; DeepAgents routes including native/custom OpenAI; Vertex supports only Anthropic and Google |
+| [tool-output-redaction.md](what/tool-output-redaction.md) | [PLANNED: OLS-3939] DeepAgents tool-result redaction, raw native-span boundary and per-reply UI signal |
 | [configuration.md](what/configuration.md) | Environment variables, provider selection, model resolution, container layout, build system |
 | [health-probes.md](what/health-probes.md) | Readiness checks at batch startup (R1); HTTP probes superseded |
 | [audit-logging.md](what/audit-logging.md) | OTel GenAI invocation, tool, and generation spans; legacy choice events and audit-log projections |
