@@ -262,16 +262,12 @@ def test_migrated_routes_preserve_batch_outcomes_events_limits_and_cleanup(
         max_turns=71,
     )
     assert recursion_limits == [71]
-    assert len(clients) == (1 if outcome == "empty-terminal" else 2)
+    assert len(clients) == 1
     assert all(client.close_count == 1 for client in clients)
     assert len(terminal_events) == 1
     terminal = terminal_events[0]
     assert terminal.response_model == ""  # No observed response-model metadata in the script.
-    expected_usage = (
-        {"inputTokens": 3, "outputTokens": 2}
-        if outcome == "empty-terminal"
-        else {"inputTokens": 8, "outputTokens": 6}
-    )
+    expected_usage = {"inputTokens": 3, "outputTokens": 2}
     assert (terminal.input_tokens, terminal.output_tokens) == tuple(expected_usage.values())
     if outcome == "empty-terminal":
         assert terminal.text == ""
@@ -442,7 +438,7 @@ def test_completed_batch_publishes_exact_outcome(
     _, calls = _run_scripted_batch(
         tmp_path, monkeypatch, kind=kind, schema=schema, create_model=create_model
     )
-    assert model_calls == ["main", "shaping"]
+    assert model_calls == ["main"]
     status = calls[1][1]["body"]["status"]
     conditions = status["conditions"]
     assert len(conditions) == 2
@@ -451,8 +447,8 @@ def test_completed_batch_publishes_exact_outcome(
     expected = {
         **fields,
         "tokenUsage": {
-            "inputTokens": 8 if report_usage else 0,
-            "outputTokens": 6 if report_usage else 0,
+            "inputTokens": 3 if report_usage else 0,
+            "outputTokens": 2 if report_usage else 0,
         },
         "conditions": [
             {
@@ -568,9 +564,13 @@ def test_invalid_output_and_provider_errors_publish_failed_result(
         create_model=create_model,
         provider="openai",
     )
-    expected_stages = ["main"] if failure == "main-error" else ["main", "shaping"]
-    assert model_calls == expected_stages
-    assert model_requests == expected_stages
+    expected_model_calls = ["main"] if failure == "main-error" else ["main", "shaping"]
+    expected_model_requests = {
+        "main-error": ["main"],
+        "shaping-error": ["main", "shaping"],
+    }.get(failure, ["main", "shaping", "shaping"])
+    assert model_calls == expected_model_calls
+    assert model_requests == expected_model_requests
     status = calls[1][1]["body"]["status"]
     assert set(status) == {"failureReason", "tokenUsage", "conditions"}
     assert status["failureReason"] == message

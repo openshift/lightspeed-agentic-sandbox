@@ -1118,6 +1118,251 @@ async def test_raw_shaping_validates_locally_without_rejecting_falsy_values(
 
 
 @pytest.mark.asyncio
+async def test_schema_valid_agent_json_skips_the_shaping_model_call() -> None:
+    from langchain_core.messages import AIMessage
+
+    from lightspeed_agentic.providers.deepagents import _shape_structured_output
+
+    schema = {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+        "additionalProperties": False,
+    }
+    bound = MagicMock()
+    bound.ainvoke = AsyncMock(
+        return_value={"parsed": {"ok": True}, "raw": AIMessage(content='{"ok": true}')}
+    )
+    model = MagicMock()
+    model.with_structured_output.return_value = bound
+    create_model = Mock(return_value=model)
+    route = make_model_route(create_model)
+
+    result, input_tokens, output_tokens = await _shape_structured_output(
+        route, schema, "sys", "ask", '{"ok": true}', Mock()
+    )
+
+    assert result == {"ok": True}
+    assert input_tokens == output_tokens == 0
+    create_model.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("number_token", ["NaN", "Infinity", "-Infinity", "1e999"])
+async def test_non_finite_or_unrepresentable_numbers_fall_through_to_shaping(
+    number_token: str,
+) -> None:
+    from langchain_core.messages import AIMessage
+
+    from lightspeed_agentic.providers.deepagents import _shape_structured_output
+
+    schema = {
+        "type": "object",
+        "properties": {"value": {"type": "number"}},
+        "required": ["value"],
+    }
+    bound = MagicMock()
+    bound.ainvoke = AsyncMock(
+        return_value={
+            "parsed": {"value": 1.25},
+            "raw": AIMessage(content='{"value": 1.25}'),
+            "parsing_error": None,
+        }
+    )
+    model = MagicMock()
+    model.with_structured_output.return_value = bound
+    create_model = Mock(return_value=model)
+
+    result, _, _ = await _shape_structured_output(
+        make_model_route(create_model),
+        schema,
+        "sys",
+        "ask",
+        f'{{"value": {number_token}}}',
+        Mock(),
+    )
+
+    assert result == {"value": 1.25}
+    create_model.assert_called_once()
+    bound.ainvoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_deeply_nested_agent_json_falls_through_to_shaping() -> None:
+    from langchain_core.messages import AIMessage
+
+    from lightspeed_agentic.providers.deepagents import _shape_structured_output
+
+    schema = {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+    }
+    bound = MagicMock()
+    bound.ainvoke = AsyncMock(
+        return_value={
+            "parsed": {"ok": True},
+            "raw": AIMessage(content='{"ok": true}'),
+            "parsing_error": None,
+        }
+    )
+    model = MagicMock()
+    model.with_structured_output.return_value = bound
+    create_model = Mock(return_value=model)
+
+    result, _, _ = await _shape_structured_output(
+        make_model_route(create_model),
+        schema,
+        "sys",
+        "ask",
+        "[" * 2_000 + "]" * 2_000,
+        Mock(),
+    )
+
+    assert result == {"ok": True}
+    create_model.assert_called_once()
+    bound.ainvoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_recursion_errors_in_validation_fall_back_and_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from langchain_core.messages import AIMessage
+
+    from lightspeed_agentic.providers import deepagents as mod
+
+    schema = {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+    }
+    bound = MagicMock()
+    bound.ainvoke = AsyncMock(
+        return_value={
+            "parsed": {"ok": True},
+            "raw": AIMessage(content='{"ok": true}'),
+            "parsing_error": None,
+        }
+    )
+    model = MagicMock()
+    model.with_structured_output.return_value = bound
+    original_validate = mod._validate_structured_output
+    validations = 0
+
+    def recurse_twice(parsed: Any, output_schema: Any) -> Any:
+        nonlocal validations
+        validations += 1
+        if validations <= 2:
+            raise RecursionError("simulated nesting overflow")
+        return original_validate(parsed, output_schema)
+
+    monkeypatch.setattr(mod, "_validate_structured_output", recurse_twice)
+    result, _, _ = await mod._shape_structured_output(
+        make_model_route(Mock(return_value=model)),
+        schema,
+        "sys",
+        "ask",
+        '{"ok": true}',
+        Mock(),
+    )
+
+    assert result == {"ok": True}
+    assert validations == 3
+    assert bound.ainvoke.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_shaping_retries_parse_failure_once_and_accepts_valid_retry() -> None:
+    from langchain_core.messages import AIMessage
+
+    from lightspeed_agentic.providers.deepagents import _shape_structured_output
+
+    schema = {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+        "additionalProperties": False,
+    }
+    bound = MagicMock()
+    bound.ainvoke = AsyncMock(
+        side_effect=[
+            {
+                "parsed": None,
+                "raw": AIMessage(
+                    content="not structured",
+                    usage_metadata={"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+                ),
+                "parsing_error": ValueError("invalid response"),
+            },
+            {
+                "parsed": {"ok": True},
+                "raw": AIMessage(
+                    content='{"ok": true}',
+                    usage_metadata={"input_tokens": 5, "output_tokens": 7, "total_tokens": 12},
+                ),
+                "parsing_error": None,
+            },
+        ]
+    )
+    model = MagicMock()
+    model.with_structured_output.return_value = bound
+    route = make_model_route(Mock(return_value=model))
+
+    result, input_tokens, output_tokens = await _shape_structured_output(
+        route, schema, "sys", "ask", "agent report", Mock()
+    )
+
+    assert result == {"ok": True}
+    assert (input_tokens, output_tokens) == (7, 10)
+    assert bound.ainvoke.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_shaping_retries_non_finite_numeric_result() -> None:
+    from langchain_core.messages import AIMessage
+
+    from lightspeed_agentic.providers.deepagents import _shape_structured_output
+
+    schema = {
+        "type": "object",
+        "properties": {"value": {"type": "number"}},
+        "required": ["value"],
+    }
+    bound = MagicMock()
+    bound.ainvoke = AsyncMock(
+        side_effect=[
+            {
+                "parsed": {"value": float("nan")},
+                "raw": AIMessage(content='{"value": NaN}'),
+                "parsing_error": None,
+            },
+            {
+                "parsed": {"value": 1.25},
+                "raw": AIMessage(content='{"value": 1.25}'),
+                "parsing_error": None,
+            },
+        ]
+    )
+    model = MagicMock()
+    model.with_structured_output.return_value = bound
+
+    result, _, _ = await _shape_structured_output(
+        make_model_route(Mock(return_value=model)),
+        schema,
+        "sys",
+        "ask",
+        "agent output needs shaping",
+        Mock(),
+    )
+
+    assert result == {"value": 1.25}
+    assert bound.ainvoke.await_count == 2
+    retry_messages = bound.ainvoke.await_args_list[1].args[0]
+    assert "previous response could not be parsed" in retry_messages[1].content
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("sdk_result", "raises_error"),
     [
@@ -1134,10 +1379,10 @@ async def test_raw_shaping_validates_locally_without_rejecting_falsy_values(
         pytest.param({}, True, id="missing-envelope"),
     ],
 )
-async def test_shaping_prompt_requests_native_json_types_once(
+async def test_shaping_prompt_requests_native_json_types_and_retries_invalid_output_once(
     sdk_result: dict[str, Any], raises_error: bool
 ) -> None:
-    """Shaping uses one call, even when the result cannot be parsed."""
+    """Invalid shaped output is retried once; valid output is accepted immediately."""
     from langchain_anthropic.chat_models import convert_to_anthropic_tool
     from langchain_core.messages import AIMessage
 
@@ -1183,7 +1428,7 @@ async def test_shaping_prompt_requests_native_json_types_once(
     else:
         shaped = await shape()
         assert shaped.model_dump() == {"success": False, "actionsTaken": []}
-    bound.ainvoke.assert_awaited_once()
+    assert bound.ainvoke.await_count == (2 if raises_error else 1)
     tool_schema = convert_to_anthropic_tool(model.with_structured_output.call_args.args[0])[
         "input_schema"
     ]
@@ -1203,6 +1448,64 @@ async def test_shaping_prompt_requests_native_json_types_once(
     assert "booleans for boolean fields" in prompt
     assert "arrays for array fields" in prompt
     assert "Never serialize an array or object as a string" in prompt
+    if raises_error:
+        retry_messages = bound.ainvoke.await_args_list[1].args[0]
+        assert "previous response could not be parsed" in retry_messages[1].content
+
+
+@pytest.mark.asyncio
+async def test_shaping_retries_recursion_error_from_structured_parser() -> None:
+    from langchain_core.messages import AIMessage
+
+    from lightspeed_agentic.providers.deepagents import _shape_structured_output
+
+    bound = MagicMock()
+    bound.ainvoke = AsyncMock(
+        side_effect=[
+            RecursionError("structured parser nesting overflow"),
+            {
+                "parsed": {"ok": True},
+                "raw": AIMessage(content='{"ok": true}'),
+                "parsing_error": None,
+            },
+        ]
+    )
+    model = MagicMock()
+    model.with_structured_output.return_value = bound
+
+    result, _, _ = await _shape_structured_output(
+        make_model_route(Mock(return_value=model)),
+        {"type": "object", "properties": {"ok": {"type": "boolean"}}},
+        "sys",
+        "ask",
+        "not JSON",
+        Mock(),
+    )
+
+    assert result == {"ok": True}
+    assert bound.ainvoke.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_shaping_does_not_retry_provider_invocation_errors() -> None:
+    from lightspeed_agentic.providers.deepagents import _shape_structured_output
+
+    bound = MagicMock()
+    bound.ainvoke = AsyncMock(side_effect=RuntimeError("provider unavailable"))
+    model = MagicMock()
+    model.with_structured_output.return_value = bound
+
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        await _shape_structured_output(
+            make_model_route(Mock(return_value=model)),
+            {"type": "object"},
+            "sys",
+            "ask",
+            "not JSON",
+            Mock(),
+        )
+
+    bound.ainvoke.assert_awaited_once()
 
 
 class TestEventMapping:

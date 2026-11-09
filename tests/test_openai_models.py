@@ -1632,7 +1632,7 @@ async def test_compatible_openai_failures_return_failed_result_and_close_clients
         assert request.headers["authorization"] == "Bearer EMPTY"
         body = json.loads(request.content)
         requests.append(body)
-        assert len(requests) <= 2, "Unexpected retry or additional model call"
+        assert len(requests) <= 3, "Unexpected retry or additional model call"
         if case == "agent-http-error" or (case == "shape-http-error" and len(requests) == 2):
             return httpx.Response(
                 401,
@@ -1746,7 +1746,15 @@ async def test_compatible_openai_failures_return_failed_result_and_close_clients
     }.get(case, "ValueError")
     assert invocation.attributes["error.type"] == expected_error
     generations = [span for span in spans if span.name == "chat org/served-model"]
-    expected_generations = 0 if setup_failure else 1 if case == "agent-http-error" else 2
+    expected_generations = (
+        0
+        if setup_failure
+        else 1
+        if case == "agent-http-error"
+        else 2
+        if case == "shape-http-error"
+        else 3
+    )
     assert len(generations) == expected_generations
     assert len(requests) == len(generations)
     assert all(span.parent.span_id == invocation.context.span_id for span in generations)
