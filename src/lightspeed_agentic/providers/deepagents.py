@@ -9,6 +9,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import math
 import os
 import time
 import uuid
@@ -496,6 +497,68 @@ def _create_generation_callback(
     return GenerationCallback()
 
 
+def _reject_nonstandard_json_constant(value: str) -> Any:
+    """Reject Python's permissive NaN/Infinity tokens, which aren't valid JSON."""
+    raise ValueError(f"Non-standard JSON numeric constant: {value}")
+
+
+def _parse_finite_json_float(value: str) -> float:
+    """Parse a JSON float only when it has a finite Python representation."""
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("JSON number is outside the finite float range")
+    return parsed
+
+
+def _validate_finite_json_numbers(value: Any) -> None:
+    """Reject non-finite floats anywhere in parsed JSON-shaped data."""
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("Structured output contains a non-finite number")
+    elif isinstance(value, Mapping):
+        for nested_value in value.values():
+            _validate_finite_json_numbers(nested_value)
+    elif isinstance(value, (list, tuple)):
+        for nested_value in value:
+            _validate_finite_json_numbers(nested_value)
+
+
+def _validate_structured_output(parsed: Any, schema: Any) -> Any:
+    """Validate structured data locally and return its normalized representation."""
+    from pydantic import BaseModel
+
+    if isinstance(parsed, BaseModel):
+        _validate_finite_json_numbers(parsed.model_dump(mode="python"))
+    else:
+        _validate_finite_json_numbers(parsed)
+
+    if isinstance(schema, dict):
+        from jsonschema import ValidationError, validate  # type: ignore[import-untyped]
+        from referencing import Registry
+
+        try:
+            # Local definitions/references work; an empty registry never fetches URLs.
+            validate(parsed, schema, registry=Registry())
+        except ValidationError:
+            raise ValueError("Structured output does not match configured schema") from None
+    elif isinstance(schema, type) and issubclass(schema, BaseModel):
+        # Binders and SDK parsers may return plain dictionaries for Pydantic-mode
+        # routes; validate them here so schema-invalid values cannot succeed, and
+        # keep the validated model so coerced values replace incorrectly typed
+        # input (for example a numeric string for an integer field).
+        from pydantic import ValidationError
+
+        try:
+            if not isinstance(parsed, schema):
+                parsed = schema.model_validate(parsed)
+        except ValidationError:
+            raise ValueError("Structured output does not match configured schema") from None
+        _validate_finite_json_numbers(parsed.model_dump(mode="python"))
+    elif parsed is None:
+        raise ValueError("Structured output response is missing parsed output")
+    return parsed
+
+
 async def _shape_structured_output(
     model_route: ResolvedModelRoute,
     schema: Any,
@@ -506,80 +569,112 @@ async def _shape_structured_output(
     *,
     prepared_schema: Any | None = None,
 ) -> tuple[Any, int, int]:
-    """Shape pass: tool-free structured binding on a model without thinking."""
+    """Use valid agent JSON directly; otherwise shape the output with one retry.
+
+    The initial agent call is not schema-constrained, so its text is accepted only
+    when it parses as JSON and passes local validation. Shaping is reserved for
+    outputs that need it, avoiding an unnecessary provider call for valid JSON.
+    """
 
     from langchain_core.messages import HumanMessage, SystemMessage
-    from pydantic import BaseModel
+
+    # Keep validation on the caller's schema; shaping may use a provider-specific form.
+    validation_schema = schema
+    try:
+        agent_output = json.loads(
+            agent_text,
+            parse_constant=_reject_nonstandard_json_constant,
+            parse_float=_parse_finite_json_float,
+        )
+    except (ValueError, TypeError, RecursionError):
+        pass
+    else:
+        try:
+            # This fast path creates no shaping model and contributes no shaping tokens.
+            return _validate_structured_output(agent_output, validation_schema), 0, 0
+        except (ValueError, RecursionError):
+            # JSON syntax alone is insufficient; invalid data falls through to shaping.
+            pass
 
     format_model = model_route.create_model(model_route.model_parameters, None)
     try:
-        validation_schema = schema
+        # Prepare the schema for this provider without changing local validation rules.
         if prepared_schema is not None:
-            schema = prepared_schema
+            shaping_schema = prepared_schema
         elif model_route.translate_output_schema is not None:
-            schema = model_route.translate_output_schema(schema)
+            shaping_schema = model_route.translate_output_schema(schema)
+        else:
+            shaping_schema = schema
         if model_route.bind_structured_output is None:
             structured = format_model.with_structured_output(
-                schema,
+                shaping_schema,
                 method=model_route.structured_output_method,
                 include_raw=True,
             )
         else:
-            structured = model_route.bind_structured_output(format_model, schema)
+            structured = model_route.bind_structured_output(format_model, shaping_schema)
+        shape_content = (
+            f"Original user request:\n{prompt}\n\n"
+            f"Agent run output:\n{agent_text}\n\n"
+            "Call the structured response tool with every required field. "
+            "Use native JSON types: booleans for boolean fields, arrays for array fields, "
+            "and objects for object fields. "
+            "Never serialize an array or object as a string. "
+            "Base the field values only on the agent run output."
+        )
+        retry_message = HumanMessage(
+            content=(
+                f"{shape_content}\n\n"
+                "The previous response could not be parsed or did not match the schema. "
+                "Try once more. Return only a structured response matching the schema, "
+                "with no surrounding prose."
+            )
+        )
         shape_messages = [
             SystemMessage(content=system_prompt),
-            HumanMessage(
-                content=(
-                    f"Original user request:\n{prompt}\n\n"
-                    f"Agent run output:\n{agent_text}\n\n"
-                    "Call the structured response tool with every required field. "
-                    "Use native JSON types: booleans for boolean fields, arrays for array fields, "
-                    "and objects for object fields. "
-                    "Never serialize an array or object as a string. "
-                    "Base the field values only on the agent run output."
-                )
-            ),
+            HumanMessage(content=shape_content),
         ]
-        result = await structured.ainvoke(
-            shape_messages,
-            config={"callbacks": [generation_callback]},
-        )
+        # Count both calls if a malformed response requires the single retry.
+        input_tokens = output_tokens = 0
+        # Network/provider errors propagate; parser recursion and response/schema errors retry.
+        for attempt in range(2):
+            try:
+                result = await structured.ainvoke(
+                    shape_messages,
+                    config={"callbacks": [generation_callback]},
+                )
+            except RecursionError:
+                if attempt == 1:
+                    raise
+                shape_messages[1] = retry_message
+                continue
+            in_tok, out_tok = _usage_from_message(
+                result.get("raw") if isinstance(result, dict) else None
+            )
+            input_tokens += in_tok
+            output_tokens += out_tok
+            try:
+                if not isinstance(result, dict) or "parsed" not in result:
+                    raise ValueError("Structured output response is missing parsed output")
+                if result.get("parsing_error") is not None:
+                    raise ValueError("Structured output parsing failed")
+                parsed = _validate_structured_output(result["parsed"], validation_schema)
+            except (ValueError, RecursionError):
+                # First invalid response gets one corrective prompt; second failure is terminal.
+                if attempt == 1:
+                    raise
+                shape_messages[1] = retry_message
+                continue
+            return parsed, input_tokens, output_tokens
+        raise AssertionError("structured output retry loop did not return or raise")
     except BaseException as exc:
+        # Mark any open generation spans with the actual failure before cleanup.
         generation_callback.close_open(type(exc).__name__)
         raise
     finally:
+        # Also runs on success/cancellation; close any remaining spans and model clients.
         generation_callback.close_open("generation_interrupted")
         await _close_model_clients(format_model)
-    if not isinstance(result, dict) or "parsed" not in result:
-        raise ValueError("Structured output response is missing parsed output")
-    if result.get("parsing_error") is not None:
-        raise ValueError("Structured output parsing failed")
-    parsed = result["parsed"]
-    if isinstance(validation_schema, dict):
-        from jsonschema import ValidationError, validate  # type: ignore[import-untyped]
-        from referencing import Registry
-
-        try:
-            # Local definitions/references work; an empty registry never fetches URLs.
-            validate(parsed, validation_schema, registry=Registry())
-        except ValidationError:
-            raise ValueError("Structured output does not match configured schema") from None
-    elif isinstance(validation_schema, type) and issubclass(validation_schema, BaseModel):
-        # Binders and SDK parsers may return plain dictionaries for Pydantic-mode
-        # routes; validate them here so schema-invalid values cannot succeed, and
-        # keep the validated model so coerced values replace incorrectly typed
-        # input (for example a numeric string for an integer field).
-        from pydantic import ValidationError
-
-        try:
-            if not isinstance(parsed, validation_schema):
-                parsed = validation_schema.model_validate(parsed)
-        except ValidationError:
-            raise ValueError("Structured output does not match configured schema") from None
-    elif parsed is None:
-        raise ValueError("Structured output response is missing parsed output")
-    in_tok, out_tok = _usage_from_message(result.get("raw"))
-    return parsed, in_tok, out_tok
 
 
 def _tool_call_events(msg: Any) -> list[ProviderEvent]:
