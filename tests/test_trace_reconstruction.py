@@ -726,7 +726,10 @@ async def test_sdk_exposed_partial_response_survives_otlp_export(
     root = get_tracer().start_span(
         "invoke_agent",
         context=parent_context,
-        attributes={"agenticrun.uid": "wire-run", "agenticrun.phase": "analysis"},
+        attributes={
+            "agenticrun.uid": "11111111-1111-4111-8111-111111111111",
+            "agenticrun.phase": "analysis",
+        },
     )
     callback = _create_generation_callback(
         make_model_route(lambda *_args: None, model="requested-model"),
@@ -798,7 +801,10 @@ def _native_callback() -> tuple[Any, Any]:
     root = get_tracer().start_span(
         "invoke_agent",
         context=parent,
-        attributes={"agenticrun.uid": "wire-run", "agenticrun.phase": "analysis"},
+        attributes={
+            "agenticrun.uid": "11111111-1111-4111-8111-111111111111",
+            "agenticrun.phase": "analysis",
+        },
     )
     callback = _create_generation_callback(
         make_model_route(lambda *_args: None, model="requested-model"),

@@ -203,12 +203,14 @@ def _family(route: str) -> ResolvedModelFamily:
         "azure-responses-entra",
     ],
 )
+@pytest.mark.parametrize("wire_trace", ["false", "true"], indirect=True)
 async def test_native_sdk_metadata_and_shaping_are_reconstructable_from_otlp(
     wire_trace: Callable[[], list[Any]],
     request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     route_name: str,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Do not substitute fake AIMessage metadata for actual SDK-exposed fields."""
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -369,6 +371,10 @@ async def test_native_sdk_metadata_and_shaping_are_reconstructable_from_otlp(
             else:
                 monkeypatch.setattr(tls, "create_http_client", sync_client)
                 monkeypatch.setattr(tls, "create_async_http_client", async_client)
+                if route_name.startswith("vertex/google"):
+                    from google.genai import _api_client
+
+                    monkeypatch.setattr(_api_client, "AsyncHttpxClient", async_client)
                 route = resolve_model_route(model_family=_family(route_name))
             real_create = route.create_model
 
@@ -381,8 +387,6 @@ async def test_native_sdk_metadata_and_shaping_are_reconstructable_from_otlp(
                 elif route.route == "vertex/google":
                     api = model.client._api_client
                     client = api._async_httpx_client
-                    client._transport = transport
-                    client._mounts.clear()
                     api._http_options.httpx_async_client = client
                     google_models.append(model)
                 return model
@@ -400,6 +404,36 @@ async def test_native_sdk_metadata_and_shaping_are_reconstructable_from_otlp(
                     model.client.close()
                     await model.client.aio.aclose()
     assert result.output == {"success": True, "summary": "native answer"}
+    audit_records = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith('{"schema_version":1,')
+    ]
+    if request.node.callspec.params["wire_trace"] == "true":
+        assert len(audit_records) == 4
+        assert [row["event"] for row in audit_records] == [
+            "outbound.request.started",
+            "outbound.request.finished",
+            "outbound.request.started",
+            "outbound.request.finished",
+        ]
+        assert all(row["request.kind"] == "llm" for row in audit_records)
+        assert len({row["attempt_id"] for row in audit_records}) == 2
+        assert all(
+            row["agenticrun.uid"] == "11111111-1111-4111-8111-111111111111"
+            and row["agenticrun.phase"] == "analysis"
+            for row in audit_records
+        )
+        assert all(row["http.request.method"] == "POST" for row in audit_records)
+        assert all(
+            row["server.address"] == http_requests[index // 2].url.host
+            for index, row in enumerate(audit_records)
+        )
+        assert all(row["outcome"] == "success" for row in audit_records[1::2])
+        assert "native answer" not in json.dumps(audit_records)
+        assert "offline-token" not in json.dumps(audit_records)
+    else:
+        assert audit_records == []
     assert len(bodies) == len(sdk_results) == 2
     spans = wire_trace()
     root = invocation(spans)
@@ -448,7 +482,7 @@ async def test_native_sdk_metadata_and_shaping_are_reconstructable_from_otlp(
             assert attrs["gen_ai.response.finish_reasons"] == [stops[index - 1]]
         assert attrs["gen_ai.usage.input_tokens"] == (0 if index == 1 else 3)
         assert attrs["gen_ai.usage.output_tokens"] == (4 if index == 1 else 2)
-        assert attrs["agenticrun.uid"] == "wire-run"
+        assert attrs["agenticrun.uid"] == "11111111-1111-4111-8111-111111111111"
         assert attrs["agenticrun.phase"] == "analysis"
         if route_name.startswith("vertex/google") or ("anthropic" in route_name and index == 1):
             # These SDK wrappers do not expose the HTTP response ID in the

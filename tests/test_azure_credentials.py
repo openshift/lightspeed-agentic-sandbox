@@ -16,6 +16,8 @@ from typing import Any
 
 import pytest
 
+from tests.helpers import otlp_requests as otlp_requests
+
 
 @pytest.fixture
 def azure_identity_http(monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -297,3 +299,311 @@ asyncio.run(auth.aclose())
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.fixture
+def azure_audit_wire(monkeypatch, capsys):
+    """Keep native session middleware, pipeline/cache and body consumption real."""
+    monkeypatch.setenv("LIGHTSPEED_AUDIT_ENABLED", "true")
+    import aiohttp
+    from aiohttp.base_protocol import BaseProtocol
+    from aiohttp.helpers import TimerNoop
+    from aiohttp.streams import StreamReader
+    from multidict import CIMultiDict, CIMultiDictProxy
+
+    state = SimpleNamespace(responses=[], requests=[], events=[], sessions=[])
+
+    def capture():
+        state.events.extend(
+            json.loads(line)
+            for line in capsys.readouterr().out.splitlines()
+            if line.startswith('{"schema_version":1,')
+        )
+        return state.events
+
+    original_init = aiohttp.ClientSession.__init__
+
+    def session_init(session, *args, **kwargs):
+        original_init(session, *args, **kwargs)
+        state.sessions.append(session)
+
+    async def connect(_connector, request, **_kwargs):
+        events = capture()
+        assert events
+        assert events[-1]["event"] == "outbound.request.started"
+        state.requests.append(request)
+        scripted = state.responses.pop(0)
+        if isinstance(scripted, BaseException):
+            raise scripted
+        protocol = SimpleNamespace(set_response_params=lambda **_kwargs: None)
+        return SimpleNamespace(protocol=protocol, close=lambda: None, response=scripted)
+
+    async def send(request, conn):
+        status, payload = conn.response
+        loop = asyncio.get_running_loop()
+        response = aiohttp.ClientResponse(
+            request.method,
+            request.url,
+            writer=None,
+            continue100=None,
+            timer=TimerNoop(),
+            request_info=request.request_info,
+            traces=[],
+            loop=loop,
+            session=request._session,
+            stream_writer=SimpleNamespace(output_size=0),
+        )
+        response.status = status
+        response.reason = "OK"
+        response._headers = CIMultiDictProxy(CIMultiDict({"Content-Type": "application/json"}))
+        response.content = StreamReader(BaseProtocol(loop), limit=2**16, loop=loop)
+        response.content.feed_data(json.dumps(payload).encode())
+        response.content.feed_eof()
+
+        async def start(_conn):
+            return response
+
+        response.start = start
+        return response
+
+    def reject(*_args, **_kwargs):
+        pytest.fail("Unscripted Azure auth network access")
+
+    monkeypatch.setattr(aiohttp.ClientSession, "__init__", session_init)
+    monkeypatch.setattr(aiohttp.TCPConnector, "connect", connect)
+    monkeypatch.setattr(aiohttp.ClientRequest, "send", send)
+    monkeypatch.setattr(socket.socket, "connect", reject)
+    monkeypatch.setattr(socket, "getaddrinfo", reject)
+    state.capture = capture
+    return state
+
+
+@pytest.mark.asyncio
+async def test_azure_native_auth_audit_cache_concurrency_refresh(azure_audit_wire, monkeypatch):
+    from lightspeed_agentic.config import AzureEntraCredentialSource
+    from lightspeed_agentic.providers.cloud_credentials import create_azure_credentials
+
+    wire = azure_audit_wire
+    clock = [2_000_000_000]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    wire.responses.extend(
+        [
+            (
+                200,
+                {"access_token": f"PRIVATE_TOKEN_{i}", "expires_in": 3600, "token_type": "Bearer"},
+            )
+            for i in range(2)
+        ]
+    )
+    auth = create_azure_credentials(
+        AzureEntraCredentialSource("PRIVATE-TENANT", "PRIVATE_CLIENT", "PRIVATE_SECRET")
+    )
+    assert wire.requests == []
+    assert wire.sessions == []
+    try:
+        assert (
+            await asyncio.gather(*(auth.token_provider() for _ in range(4)))
+            == ["PRIVATE_TOKEN_0"] * 4
+        )
+        assert len(wire.requests) == 1
+        clock[0] += 3601
+        assert await auth.token_provider() == "PRIVATE_TOKEN_1"
+        assert await auth.token_provider() == "PRIVATE_TOKEN_1"
+        assert len(wire.requests) == 2
+    finally:
+        await auth.aclose()
+    events = wire.capture()
+    assert [row["event"] for row in events] == [
+        "outbound.request.started",
+        "outbound.request.finished",
+    ] * 2
+    assert {row["request.kind"] for row in events} == {"credential"}
+    assert len({row["attempt_id"] for row in events}) == 2
+    assert all(row["outcome"] == "success" for row in events[1::2])
+    assert all(row["http.request.method"] == "POST" for row in events)
+    assert all(session.closed for session in wire.sessions)
+    assert "PRIVATE" not in json.dumps(events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", ["2024-08-01-preview", "2025-03-01-preview"])
+async def test_native_azure_model_auth_json_otlp_parity(
+    azure_audit_wire, monkeypatch, otlp_requests, version
+):
+    import httpx
+    from opentelemetry import trace
+    from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
+
+    from lightspeed_agentic import tls, tracing
+    from lightspeed_agentic.config import (
+        AzureEntraCredentialSource,
+        AzureProviderParameters,
+        ModelParameters,
+    )
+    from lightspeed_agentic.providers.deepagents import _close_model_clients
+    from lightspeed_agentic.providers.models.openai import create_azure_model
+    from tests.test_openai_models import _openai_chat_completion, _openai_response
+
+    wire = azure_audit_wire
+    wire.responses.append((200, {"access_token": "PRIVATE_TOKEN", "expires_in": 3600}))
+    monkeypatch.setenv("LIGHTSPEED_AUDIT_ENABLED", "true")
+    monkeypatch.setenv("LIGHTSPEED_CAPTURE_CONTENT", "false")
+    monkeypatch.setenv("LIGHTSPEED_AGENTICRUN_UID", "11111111-1111-4111-8111-111111111111")
+    monkeypatch.setenv("LIGHTSPEED_AGENTICRUN_STEP", "analysis")
+
+    def model_http(request):
+        assert request.headers["authorization"] == "Bearer PRIVATE_TOKEN"
+        if "responses" in request.url.path:
+            return httpx.Response(
+                200,
+                json=_openai_response(
+                    "response-1",
+                    {
+                        "id": "message-1",
+                        "type": "message",
+                        "status": "completed",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "answer", "annotations": []}],
+                    },
+                    input_tokens=3,
+                    output_tokens=2,
+                ),
+            )
+        return _openai_chat_completion("response-1", {"role": "assistant", "content": "answer"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(model_http)) as client:
+        monkeypatch.setattr(tls, "create_async_http_client", lambda: client)
+        tracing.init_tracer()
+        model = None
+        try:
+            with trace.get_tracer("auth-sdk-test").start_as_current_span("invoke_agent") as span:
+                span_id = span.get_span_context().span_id
+                model = create_azure_model(
+                    ModelParameters(
+                        model="deployment",
+                        base_url="https://model.example",
+                        provider=AzureProviderParameters(version),
+                        credentials=AzureEntraCredentialSource(
+                            "PRIVATE-TENANT", "PRIVATE_CLIENT", "PRIVATE_SECRET"
+                        ),
+                    )
+                )
+                for _ in range(2):
+                    assert (await model.ainvoke("PRIVATE prompt")).text == "answer"
+        finally:
+            if model is not None:
+                await _close_model_clients(model)
+            tracing.shutdown_tracer()
+    local = wire.capture()
+    auth = [row for row in local if row["request.kind"] == "credential"]
+    llm = [row for row in local if row["request.kind"] == "llm"]
+    assert len(auth) == 2
+    assert len(llm) == 4
+    assert auth[0]["server.address"] == "login.microsoftonline.com"
+    assert all(row["server.address"] == "model.example" for row in llm)
+    assert all(
+        row["agenticrun.uid"] == "11111111-1111-4111-8111-111111111111"
+        and row["span_id"] == f"{span_id:016x}"
+        for row in local
+    )
+    remote = []
+    while not otlp_requests.logs.empty():
+        request = ExportLogsServiceRequest.FromString(otlp_requests.logs.get_nowait())
+        remote.extend(
+            record
+            for resource in request.resource_logs
+            for scope in resource.scope_logs
+            for record in scope.log_records
+            if record.body.string_value.startswith('{"schema_version":1')
+        )
+    assert [json.loads(record.body.string_value) for record in remote] == local
+    assert all(int.from_bytes(record.span_id, "big") == span_id for record in remote)
+    assert all(session.closed for session in wire.sessions)
+    assert "PRIVATE" not in json.dumps(local)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result", ["rejected", "retry", "cancel", "timeout", "tls"])
+async def test_azure_auth_audit_failures_and_native_retry(azure_audit_wire, monkeypatch, result):
+    import aiohttp
+
+    from lightspeed_agentic.config import AzureEntraCredentialSource
+    from lightspeed_agentic.providers.cloud_credentials import create_azure_credentials
+
+    wire = azure_audit_wire
+    if result == "rejected":
+        wire.responses.append((403, {"error": "invalid_client", "error_description": "PRIVATE"}))
+    elif result == "retry":
+        wire.responses.extend(
+            [
+                (503, {"error": "temporarily_unavailable"}),
+                (200, {"access_token": "PRIVATE_TOKEN", "expires_in": 3600}),
+            ]
+        )
+    elif result == "cancel":
+        wire.responses.append(asyncio.CancelledError("PRIVATE"))
+    elif result == "timeout":
+        wire.responses.extend([TimeoutError("PRIVATE") for _ in range(4)])
+    else:
+        wire.responses.extend(
+            [
+                aiohttp.ClientConnectorCertificateError(
+                    SimpleNamespace(host="PRIVATE", port=443, ssl=True, is_ssl=True),
+                    ssl.SSLCertVerificationError("PRIVATE"),
+                )
+                for _ in range(4)
+            ]
+        )
+    # Keep the retry policy real; skip only its native backoff wait.
+    from azure.core.exceptions import (
+        ClientAuthenticationError,
+        ServiceRequestError,
+        ServiceResponseError,
+    )
+    from azure.core.pipeline.transport import AioHttpTransport
+
+    async def no_sleep(self, duration):
+        pass
+
+    monkeypatch.setattr(AioHttpTransport, "sleep", no_sleep)
+    auth = create_azure_credentials(
+        AzureEntraCredentialSource("PRIVATE-TENANT", "PRIVATE_CLIENT", "PRIVATE_SECRET")
+    )
+    try:
+        if result == "retry":
+            assert await auth.token_provider() == "PRIVATE_TOKEN"
+        else:
+            expected = (
+                asyncio.CancelledError
+                if result == "cancel"
+                else ClientAuthenticationError
+                if result == "rejected"
+                else (ServiceRequestError, ServiceResponseError)
+            )
+            with pytest.raises(expected):
+                await auth.token_provider()
+    finally:
+        await auth.aclose()
+    events = wire.capture()
+    starts = [row for row in events if row["event"] == "outbound.request.started"]
+    ends = [row for row in events if row["event"] == "outbound.request.finished"]
+    assert len(starts) == len(ends) == len(wire.requests)
+    assert len(starts) >= 1
+    assert len({row["attempt_id"] for row in starts}) == len(starts)
+    assert {row["attempt_id"] for row in starts} == {row["attempt_id"] for row in ends}
+    assert (
+        ends[0]["error.type"]
+        == {
+            "rejected": "http_error",
+            "retry": "http_error",
+            "cancel": "cancelled",
+            "timeout": "timeout",
+            "tls": "tls_error",
+        }[result]
+    )
+    assert "decision" not in ends[0]
+    if result == "retry":
+        assert len(starts) == 2
+        assert ends[-1]["outcome"] == "success"
+    assert all(session.closed for session in wire.sessions)
+    assert "PRIVATE" not in json.dumps(events)

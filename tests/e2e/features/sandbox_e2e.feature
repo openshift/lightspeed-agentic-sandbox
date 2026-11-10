@@ -28,6 +28,7 @@ Feature: Sandbox E2E contract
     When I run the agent with the prepared query and no output schema
     Then the run completes successfully
     And the OTEL collector received traces for the batch run
+    # Also validates paired LLM requests and delivery of auth JSON records from pod stdout.
     And the OTEL collector received audit logs with agenticrun attributes
 
   Scenario: Approved option from context reaches the model

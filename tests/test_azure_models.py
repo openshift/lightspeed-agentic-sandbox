@@ -446,6 +446,7 @@ async def test_azure_formatter_setup_failure_closes_native_resources(
 
     def create_model(settings: ModelParameters, reasoning: Any) -> Any:
         assert settings is parameters
+        assert settings.credentials is parameters.credentials
         assert reasoning is None
         return model
 
@@ -886,11 +887,11 @@ async def test_azure_model_clients_retain_shared_tls_context(
     model = create_azure_model(_parameters("2024-08-01-preview"))
     try:
         assert (
-            model.root_client._client._transport._pool._ssl_context
+            model.root_client._client._transport.transport._pool._ssl_context
             is azure_identity_http.ssl_context
         )
         assert (
-            model.root_async_client._client._transport._pool._ssl_context
+            model.root_async_client._client._transport.transport._pool._ssl_context
             is azure_identity_http.ssl_context
         )
     finally:

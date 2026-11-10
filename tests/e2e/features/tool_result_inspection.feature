@@ -12,6 +12,7 @@ Feature: Tool-result safety inspection
     And success is true
     And the response JSON validates against the output schema
     And the response summary contains the sentinel namespace from the tool
+    # Also validates MCP discovery/tool and agent/classifier/shaping HTTP audit records.
     And the OTEL collector received a tool-result inspection span
 
   Scenario: Malicious MCP tool output is rejected before model use

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import jsonschema
 from kubernetes.client import ApiException, CoreV1Api, CustomObjectsApi  # type: ignore[import-untyped]
@@ -139,8 +141,10 @@ def assert_otel_tool_result_inspection_received(
     batch_e2e_config: BatchE2EConfig,
     k8s_core_client: CoreV1Api,
 ) -> None:
-    """Assert generation, source, inspection, and shaping evidence is reconstructable."""
+    """Require native inspection/shaping traces and shared-schema LLM/MCP requests."""
     run_uid = _require_run_uid(bdd_context)
+    servers = json.loads(batch_e2e_config.job_env["LIGHTSPEED_MCP_SERVERS"])
+    assert servers, "Missing configured MCP servers for audit validation"
     wait_for_otel_tool_result_inspection(
         k8s_core_client,
         batch_e2e_config.namespace,
@@ -148,6 +152,7 @@ def assert_otel_tool_result_inspection_received(
         expect_shaping=bdd_context["run_expects_shaping"],
         expected_tool="list_namespaces",
         phase=str(bdd_context.get("run_step", "analysis")),
+        mcp_addresses={urlsplit(server["url"]).hostname or "" for server in servers},
     )
     bdd_context.setdefault("inspection_checks", {})["inspection_span"] = True
 
@@ -178,7 +183,7 @@ def assert_otel_audit_logs_received(
     batch_e2e_config: BatchE2EConfig,
     k8s_core_client: CoreV1Api,
 ) -> None:
-    """Assert bridged audit OTLP logs include agenticrun uid/phase for this batch run."""
+    """Require LLM records and delivery of emitted auth metadata, regardless of provider."""
     run_uid = _require_run_uid(bdd_context)
     phase = str(bdd_context.get("run_step", "analysis"))
     wait_for_otel_audit_logs(
@@ -186,6 +191,7 @@ def assert_otel_audit_logs_received(
         batch_e2e_config.namespace,
         run_uid,
         phase=phase,
+        auth_stdout=_require_run_result(bdd_context).raw_text,
     )
 
 

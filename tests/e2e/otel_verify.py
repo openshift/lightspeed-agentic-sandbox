@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from itertools import pairwise
 from typing import Any
+from uuid import UUID
 
 from kubernetes.client import ApiException, CoreV1Api  # type: ignore[import-untyped]
 
@@ -23,88 +25,150 @@ DEFAULT_LOG_TAIL_LINES = None
 TOOL_RESULT_INSPECTION_TIMEOUT_SECONDS = 180.0
 
 
-@dataclass
+def _normalize_number(value: float) -> int | float:
+    """Keep exact integers, fractions and booleans distinct; never truncate."""
+    return int(value) if math.isfinite(value) and value.is_integer() else value
+
+
+def _load_json(value: str) -> Any:
+    # parse_float applies at every depth without changing integers or payload strings.
+    return json.loads(value, parse_float=lambda text: _normalize_number(float(text)))
+
+
+def _same_value(left: Any, right: Any) -> bool:
+    """Compare normalized evidence without treating booleans as numeric aliases."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            _same_value(value, right[key]) for key, value in left.items()
+        )
+    if isinstance(left, (list, tuple)):
+        return len(left) == len(right) and all(
+            _same_value(a, b) for a, b in zip(left, right, strict=True)
+        )
+    return bool(left == right)
+
+
+def _same_uuid(left: Any, right: str) -> bool:
+    """Compare UUID identities independent of hyphenation, preserving opaque test IDs."""
+    if left == right:
+        return True
+    if not isinstance(left, str):
+        return False
+    try:
+        return UUID(left) == UUID(right)
+    except ValueError:
+        return False
+
+
+@dataclass(eq=False)
 class _CollectorSpan:
     fields: dict[str, str] = field(default_factory=dict)
     attributes: dict[str, Any] = field(default_factory=dict)
     scope: str = ""
     valid: bool = True
 
-
-_LOG_PREFIX = re.compile(r"^(?:\[[^\]\r\n]+\]\s+)?(?:\d{4}-\d{2}-\d{2}T\S+\s+)?")
-_SPAN_FIELD = re.compile(
-    r"^\s*(Trace ID|Parent ID|ID|Name|Kind|Start time|End time|Status code|Status message"
-    r"|DroppedAttributesCount)"
-    r"\s*:\s*(.*)$"
-)
-_ATTRIBUTE = re.compile(r"^\s*-> ([\w.]+): (\w+)\((.*)\)$")
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _CollectorSpan) and _same_value(vars(self), vars(other))
 
 
-def _collector_spans(logs: str) -> list[_CollectorSpan]:
-    """Read detailed Collector text, not payload markers or nested event attributes."""
-    spans: list[_CollectorSpan] = []
-    current: _CollectorSpan | None = None
-    scope = ""
-    in_attributes = False
-    # splitlines() also splits valid Unicode separators inside JSON strings.
-    for raw_line in logs.split("\n"):
-        line = _LOG_PREFIX.sub("", raw_line).strip()
-        if re.fullmatch(r"Span #\d+", line):
-            current = _CollectorSpan(scope=scope)
-            spans.append(current)
-            in_attributes = False
-        elif boundary := re.fullmatch(r"(?:\w+\t)?((?:Resource|Scope)\w+|LogRecord) #\d+", line):
-            # Timestamp stripping leaves the console level on the first header.
-            # Payload strings containing header-like text are not boundaries.
-            current = None
-            in_attributes = False
-            if boundary[1].startswith("Resource"):
-                scope = ""
-        elif line == "InstrumentationScope" or line.startswith("InstrumentationScope "):
-            scope = line.split()[1] if len(line.split()) > 1 else ""
-        elif current is not None:
-            if line == "Attributes:":
-                in_attributes = True
-            elif line in ("Events:", "Links:"):
-                current = None
-                in_attributes = False
-            elif not in_attributes and (match := _SPAN_FIELD.fullmatch(line)):
-                key, value = match.groups()
-                current.valid &= key not in current.fields
-                current.fields[key] = value
-            elif in_attributes and (match := _ATTRIBUTE.fullmatch(line)):
-                key, kind, value = match.groups()
-                current.valid &= key not in current.attributes
-                # Only these scalar kinds participate in reconstruction checks.
-                # Other typed values remain literal instead of being guessed.
-                current.attributes[key] = (
-                    int(value)
-                    if kind == "Int" and re.fullmatch(r"-?\d+", value)
-                    else value
-                    if kind == "Str"
-                    else value == "true"
-                    if kind == "Bool" and value in {"true", "false"}
-                    else (kind, value)
-                )
+def otlp_exports(evidence: str) -> list[dict[str, Any]]:
+    """Read frames, never interpret text inside an AnyValue as record boundaries."""
+    try:
+        exports = [_load_json(line) for line in evidence.split("\n") if line.strip()]
+    except ValueError:
+        raise AssertionError("Invalid structured OTLP evidence") from None
+    assert all(isinstance(export, dict) for export in exports), "Invalid OTLP export envelope"
+    return exports
+
+
+def otlp_value(value: dict[str, Any]) -> Any:
+    if not value:
+        return None
+    assert len(value) == 1, "Ambiguous OTLP AnyValue"
+    kind, data = next(iter(value.items()))
+    if kind == "intValue":
+        assert type(data) in (str, int), "Invalid OTLP integer"
+        return int(data)
+    if kind == "doubleValue":
+        assert type(data) in (int, float) or data in ("NaN", "Infinity", "-Infinity"), (
+            "Invalid OTLP double"
+        )
+        return _normalize_number(float(data))
+    if kind == "arrayValue":
+        return [otlp_value(item) for item in data.get("values", [])]
+    if kind == "kvlistValue":
+        attributes, valid = otlp_attributes(data.get("values", []))
+        assert valid, "Duplicate OTLP map key"
+        return attributes
+    expected = {
+        "stringValue": str,
+        "boolValue": bool,
+        "bytesValue": str,
+    }
+    assert kind in expected, "Invalid OTLP AnyValue"
+    assert isinstance(data, expected[kind]), "Invalid OTLP AnyValue"
+    return ("bytes", data) if kind == "bytesValue" else data
+
+
+def otlp_attributes(items: list[dict[str, Any]]) -> tuple[dict[str, Any], bool]:
+    attributes = {item["key"]: otlp_value(item.get("value", {})) for item in items}
+    return attributes, len(attributes) == len(items)
+
+
+def _collector_spans(evidence: str) -> list[_CollectorSpan]:
+    """Decode only actual spans, never records embedded in attribute strings."""
+    spans = []
+    for export in otlp_exports(evidence):
+        for resource in export.get("resourceSpans", []):
+            for scope in resource.get("scopeSpans", []):
+                for span in scope.get("spans", []):
+                    attributes, valid = otlp_attributes(span.get("attributes", []))
+                    fields = {
+                        name: str(span.get(key, ""))
+                        for name, key in {
+                            "Trace ID": "traceId",
+                            "Parent ID": "parentSpanId",
+                            "ID": "spanId",
+                            "Name": "name",
+                            "Start time": "startTimeUnixNano",
+                            "End time": "endTimeUnixNano",
+                        }.items()
+                    }
+                    fields["Kind"] = {
+                        0: "Unspecified",
+                        1: "Internal",
+                        2: "Server",
+                        3: "Client",
+                        4: "Producer",
+                        5: "Consumer",
+                    }.get(span.get("kind", 0), "Unknown")
+                    status = span.get("status", {})
+                    fields["Status code"] = {0: "Unset", 1: "Ok", 2: "Error"}.get(
+                        status.get("code", 0), "Unknown"
+                    )
+                    fields["Status message"] = status.get("message", "")
+                    fields["DroppedAttributesCount"] = str(span.get("droppedAttributesCount", 0))
+                    spans.append(
+                        _CollectorSpan(
+                            fields, attributes, scope.get("scope", {}).get("name", ""), valid
+                        )
+                    )
     return spans
 
 
 def _timestamp(value: str) -> int:
-    """Preserve nanoseconds in Collector Go timestamps and RFC3339 timestamps."""
-    match = re.fullmatch(
-        r"(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(?: \+0000 UTC|Z)",
-        value,
-    )
-    assert match, "Missing or invalid span timestamp"
-    seconds = int(datetime.fromisoformat(match[1]).replace(tzinfo=UTC).timestamp())
-    return seconds * 1_000_000_000 + int((match[2] or "").ljust(9, "0"))
+    """OTLP encodes nanoseconds directly as decimal integers."""
+    assert re.fullmatch(r"[0-9]+", value), "Missing or invalid span timestamp"
+    return int(value)
 
 
 def _json_attribute(span: _CollectorSpan, name: str) -> Any:
     value = span.attributes.get(name)
     assert isinstance(value, str), f"Missing {name} on span {span.fields.get('ID')}"
     try:
-        parsed = json.loads(value)
+        parsed = _load_json(value)
         json.dumps(parsed, allow_nan=False)  # Reject nonfinite values, including exponent overflow.
     except (ValueError, TypeError) as exc:
         raise AssertionError(f"Invalid JSON in {name} on span {span.fields.get('ID')}") from exc
@@ -260,9 +324,9 @@ def assert_trace_reconstructable(
     for tool in tools:
         call, generation = calls[tool.attributes["gen_ai.tool.call.id"]]
         assert tool.attributes.get("gen_ai.tool.name") == call.get("name"), "Tool name mismatch"
-        assert _json_attribute(tool, "gen_ai.tool.call.arguments") == call.get("arguments"), (
-            "Tool arguments mismatch"
-        )
+        assert _same_value(
+            _json_attribute(tool, "gen_ai.tool.call.arguments"), call.get("arguments")
+        ), "Tool arguments mismatch"
         assert _timestamp(generation.fields["End time"]) <= _timestamp(tool.fields["Start time"]), (
             "Tool precedes its generation"
         )
@@ -331,6 +395,324 @@ def assert_trace_reconstructable(
                 )
 
 
+# Independent schema check: do not import the producer's allowlist into its CI oracle.
+_CONNECTION_FIELDS = frozenset(
+    {
+        "schema_version",
+        "event",
+        "timestamp",
+        "service.name",
+        "attempt_id",
+        "request.kind",
+        "server.address",
+        "server.port",
+        "network.peer.address",
+        "network.transport",
+        "http.request.method",
+        "trace_id",
+        "span_id",
+        "gen_ai.conversation.id",
+        "agenticrun.uid",
+        "agenticrun.phase",
+        "gen_ai.tool.name",
+        "outcome",
+        "error.type",
+        "http.response.status_code",
+        "duration_ms",
+        "request.body.size",
+    }
+)
+_REQUIRED_CONNECTION_FIELDS = frozenset(
+    {
+        "schema_version",
+        "event",
+        "timestamp",
+        "service.name",
+        "attempt_id",
+        "request.kind",
+        "network.transport",
+        "agenticrun.uid",
+        "agenticrun.phase",
+    }
+)
+_COMPLETION_FIELDS = frozenset(
+    {
+        "outcome",
+        "error.type",
+        "duration_ms",
+        "http.response.status_code",
+        "request.body.size",
+    }
+)
+
+
+_CONNECTION_LOG_ATTRIBUTES = frozenset(
+    {
+        "event",
+        "agenticrun.uid",
+        "agenticrun.phase",
+        "code.file.path",
+        "code.function.name",
+        "code.line.number",
+    }
+)
+
+
+@dataclass
+class _CollectorLog:
+    scope: str
+    fields: dict[str, Any] = field(default_factory=dict)
+    attributes: dict[str, Any] = field(default_factory=dict)
+    valid: bool = True
+
+
+def _collector_logs(evidence: str) -> list[_CollectorLog]:
+    """Resource, scope, body and record attributes retain their OTLP boundaries."""
+    records = []
+    for export in otlp_exports(evidence):
+        for resource in export.get("resourceLogs", []):
+            for scope in resource.get("scopeLogs", []):
+                for record in scope.get("logRecords", []):
+                    attributes, valid = otlp_attributes(record.get("attributes", []))
+                    records.append(
+                        _CollectorLog(
+                            scope.get("scope", {}).get("name", ""),
+                            {
+                                "Body": otlp_value(record.get("body", {})),
+                                "Trace ID": record.get("traceId", ""),
+                                "Span ID": record.get("spanId", ""),
+                                "DroppedAttributesCount": str(
+                                    record.get("droppedAttributesCount", 0)
+                                ),
+                            },
+                            attributes,
+                            valid,
+                        )
+                    )
+    return records
+
+
+def assert_connection_audit(
+    logs: str,
+    run_uid: str,
+    *,
+    phase: str,
+    auth_stdout: str | None = None,
+    mcp_addresses: set[str] | None = None,
+    require_exported_spans: bool = False,
+) -> None:
+    """Validate shared v1 records; exported-span linkage is scenario-specific."""
+    spans = _collector_spans(logs)
+    trace_ids = {
+        s.fields.get("Trace ID") for s in spans if s.attributes.get("agenticrun.uid") == run_uid
+    }
+    span_references = {(s.fields.get("Trace ID"), s.fields.get("ID")) for s in spans}
+    tools = {
+        s.attributes.get("gen_ai.tool.name")
+        for s in spans
+        if s.fields.get("Trace ID") in trace_ids
+        and s.fields.get("Name", "").startswith("execute_tool ")
+    }
+    attempts: dict[str, dict[str, dict[str, Any]]] = {}
+    observed_auth: list[dict[str, Any]] = []
+    for record in _collector_logs(logs):
+        if record.scope != "lightspeed_agentic.connection_audit":
+            continue
+        try:
+            body = _load_json(record.fields["Body"])
+        except (ValueError, TypeError):
+            body = None
+        attributed = _same_uuid(record.attributes.get("agenticrun.uid"), run_uid)
+        if not attributed and (
+            not isinstance(body, dict) or not _same_uuid(body.get("agenticrun.uid"), run_uid)
+        ):
+            continue
+        assert isinstance(body, dict), "Invalid connection-audit JSON body"
+        assert record.valid, "Duplicate connection-audit attributes"
+        assert record.attributes.keys() <= _CONNECTION_LOG_ATTRIBUTES, (
+            "Unexpected connection-audit attribute"
+        )
+        for name in ("code.file.path", "code.function.name"):
+            if name in record.attributes:
+                assert isinstance(record.attributes[name], str), "Invalid code-location attribute"
+        if "code.line.number" in record.attributes:
+            location = record.attributes["code.line.number"]
+            assert type(location) is int, "Invalid code-location attribute"
+            assert location >= 0, "Invalid code-location attribute"
+        assert body.keys() <= _CONNECTION_FIELDS, "Unexpected connection-audit field"
+        assert body.keys() >= _REQUIRED_CONNECTION_FIELDS, "Missing connection-audit metadata"
+        assert all(
+            type(value) in (str, bool, int, float)
+            and (type(value) is not float or math.isfinite(value))
+            for value in body.values()
+        ), "Non-scalar, null or nonfinite connection-audit metadata"
+        assert type(body["schema_version"]) is int
+        assert body["schema_version"] == 1
+        assert body["service.name"] == "lightspeed-agentic-sandbox", "Wrong audit service"
+        kind = body["request.kind"]
+        assert kind in {"llm", "mcp", "retrieval", "credential", "other"}, "Unknown request kind"
+        event = body["event"]
+        assert event in {"outbound.request.started", "outbound.request.finished"}, (
+            "Unknown request event"
+        )
+        stage = event.rsplit(".", 1)[1]
+        assert _same_uuid(body["agenticrun.uid"], run_uid), "Wrong audit run"
+        assert _same_uuid(record.attributes.get("agenticrun.uid"), run_uid), "Wrong audit run"
+        assert body["agenticrun.phase"] == record.attributes.get("agenticrun.phase") == phase, (
+            "Wrong audit phase"
+        )
+        assert record.attributes.get("event") == event, "Wrong OTLP event attribute"
+        assert record.fields.get("DroppedAttributesCount", "0") == "0", "Audit attributes dropped"
+        try:
+            timestamp = datetime.fromisoformat(body["timestamp"])
+        except (TypeError, ValueError) as exc:
+            raise AssertionError("Invalid audit timestamp") from exc
+        assert timestamp.tzinfo is not None, "Audit timestamp lacks timezone"
+        assert isinstance(body["attempt_id"], str)
+        assert re.fullmatch(
+            r"[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", body["attempt_id"]
+        ), "Invalid attempt UUID"
+        assert body["network.transport"] in {"tcp", "udp", "other"}, "Invalid network transport"
+        if "http.request.method" in body:
+            assert isinstance(body["http.request.method"], str)
+            assert re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", body["http.request.method"]), (
+                "Invalid HTTP method"
+            )
+        has_context = "trace_id" in body
+        assert has_context == ("span_id" in body), "Incomplete audit trace context"
+        for name, width in (("trace_id", 32), ("span_id", 16)):
+            native = record.fields.get("Trace ID" if name == "trace_id" else "Span ID", "")
+            if has_context:
+                value = body[name]
+                assert isinstance(value, str)
+                assert re.fullmatch(rf"[0-9a-f]{{{width}}}", value)
+                assert int(value, 16), "Empty native OTLP correlation"
+                assert native == value, "Wrong native OTLP correlation"
+            else:
+                assert native in ("", "0" * width), "Unreported native OTLP correlation"
+        if has_context and require_exported_spans:
+            assert body["trace_id"] in trace_ids, "Audit belongs to another trace"
+            assert (body["trace_id"], body["span_id"]) in span_references, (
+                "Audit references missing span"
+            )
+        if "server.address" in body:
+            host = body["server.address"]
+            assert isinstance(host, str), "Invalid authority host"
+            assert 0 < len(host) <= 253, "Invalid authority host"
+            assert not any(c.isspace() or c in "/?#@" for c in host), "Not an authority-only host"
+        if "server.port" in body:
+            port = body["server.port"]
+            assert type(port) is int, "Invalid authority port"
+            assert 1 <= port <= 65535, "Invalid authority port"
+        if "network.peer.address" in body:
+            import ipaddress
+
+            assert isinstance(body["network.peer.address"], str), "Invalid peer IP"
+            try:
+                ipaddress.ip_address(body["network.peer.address"])
+            except ValueError as exc:
+                raise AssertionError("Invalid peer IP") from exc
+        if "gen_ai.tool.name" in body:
+            name = body["gen_ai.tool.name"]
+            assert kind == "mcp", "Tool name on non-MCP request"
+            assert isinstance(name, str), "Invalid tool name"
+            assert 0 < len(name) <= 256, "Invalid tool name"
+            assert name.isprintable(), "Invalid tool name"
+            if mcp_addresses is not None:
+                assert name in tools, "Unmatched MCP tool name"
+        if kind == "mcp" and mcp_addresses is not None:
+            assert body.get("server.address") in mcp_addresses, "Unconfigured MCP address"
+        if stage == "started":
+            assert not _COMPLETION_FIELDS.intersection(body), "Premature completion metadata"
+        else:
+            assert {"outcome", "duration_ms"} <= body.keys(), "Missing completion metadata"
+            assert type(body["duration_ms"]) in (int, float)
+            assert body["duration_ms"] >= 0
+            status = body.get("http.response.status_code")
+            assert status is None or (type(status) is int and 100 <= status <= 599)
+            if "request.body.size" in body:
+                assert type(body["request.body.size"]) is int, "Invalid metadata count"
+                assert body["request.body.size"] >= 0, "Invalid metadata count"
+            category = body.get("error.type")
+            assert category in {
+                None,
+                "dns_error",
+                "connect_error",
+                "tls_error",
+                "timeout",
+                "protocol_error",
+                "http_error",
+                "cancelled",
+                "unknown_error",
+            }, "Unknown error category"
+            outcome = body["outcome"]
+            assert outcome in {"success", "http_error", "transport_error", "cancelled"}, (
+                "Unknown outcome"
+            )
+            if outcome == "success":
+                assert category is None, "Invalid successful outcome"
+                assert status is None or status < 400, "Invalid successful outcome"
+            elif outcome == "http_error":
+                assert category == "http_error", "Invalid HTTP error"
+                assert status is not None, "Invalid HTTP error"
+                assert status >= 400, "Invalid HTTP error"
+            elif outcome == "cancelled":
+                assert category == "cancelled", "Invalid cancellation"
+            else:
+                assert category is not None, "Invalid transport error"
+                assert category not in {"http_error", "cancelled"}, "Invalid transport error"
+        pair = attempts.setdefault(body["attempt_id"], {})
+        assert stage not in pair or _same_value(pair[stage], body), (
+            "Conflicting duplicate audit event"
+        )
+        pair[stage] = body
+        if kind == "credential" and not any(
+            _same_value(body, previous) for previous in observed_auth
+        ):
+            observed_auth.append(body)
+    starts = []
+    mutable = _COMPLETION_FIELDS | {"event", "timestamp"}
+    for pair in attempts.values():
+        assert pair.keys() == {"started", "finished"}, "Unpaired HTTP attempt"
+        start, end = pair["started"], pair["finished"]
+        assert _same_value(
+            {key: value for key, value in start.items() if key not in mutable},
+            {key: value for key, value in end.items() if key not in mutable},
+        ), "Changed attempt identity"
+        starts.append(start)
+    assert any(body["request.kind"] == "llm" for body in starts), "Missing LLM request attempts"
+    if auth_stdout is not None:
+        emitted_auth: list[dict[str, Any]] = []
+        for line in auth_stdout.split("\n"):
+            try:
+                emitted = _load_json(line)
+            except ValueError:
+                continue
+            if (
+                isinstance(emitted, dict)
+                and emitted.get("event")
+                in {"outbound.request.started", "outbound.request.finished"}
+                and emitted.get("request.kind") == "credential"
+                and _same_uuid(emitted.get("agenticrun.uid"), run_uid)
+                and emitted.get("agenticrun.phase") == phase
+                and not any(_same_value(emitted, previous) for previous in emitted_auth)
+            ):
+                emitted_auth.append(emitted)
+        assert len(observed_auth) == len(emitted_auth), "Auth stdout/OTEL mismatch"
+        assert all(
+            any(_same_value(body, observed) for observed in observed_auth) for body in emitted_auth
+        ), "Auth stdout/OTEL mismatch"
+    if mcp_addresses is not None:
+        assert mcp_addresses <= {
+            body.get("server.address")
+            for body in starts
+            if body["request.kind"] == "mcp" and "gen_ai.tool.name" not in body
+        }, "Missing MCP discovery/session requests"
+        assert any(
+            body["request.kind"] == "mcp" and "gen_ai.tool.name" in body for body in starts
+        ), "Missing MCP tool session"
+
+
 def fetch_otel_collector_logs(
     core_api: CoreV1Api,
     namespace: str,
@@ -364,12 +746,20 @@ def fetch_otel_collector_logs(
     return "\n".join(chunks)
 
 
+def fetch_otel_evidence(core_api: CoreV1Api, namespace: str) -> str:
+    """Use the runner's Kubernetes credentials, without an external Route or port-forward."""
+    with core_api.connect_get_namespaced_service_proxy_with_path(
+        name="http:lightspeed-mock-mcp:mcp",
+        namespace=namespace,
+        path="otel",
+        _preload_content=False,
+        _request_timeout=(3.0, 10.0),
+    ) as response:
+        return response.data.decode("utf-8")
+
+
 def logs_contain_traces_for_run(logs: str, run_uid: str) -> bool:
-    """True when debug exporter output includes spans correlated to ``run_uid``."""
-    if run_uid not in logs:
-        return False
-    trace_markers = ("ResourceSpans", "Span #", "Trace ID")
-    return any(marker in logs for marker in trace_markers)
+    return any(span.attributes.get("agenticrun.uid") == run_uid for span in _collector_spans(logs))
 
 
 def _is_native_execution(
@@ -503,15 +893,13 @@ def logs_contain_tool_result_inspection_for_run(
 
 
 def logs_contain_audit_logs_for_run(logs: str, run_uid: str, *, phase: str) -> bool:
-    """True when debug exporter output includes bridged audit log records for the run."""
-    if run_uid not in logs:
-        return False
-    if phase not in logs:
-        return False
-    audit_markers = ("LogRecord", "LogsExporter", "gen_ai.choice")
-    if not any(marker in logs for marker in audit_markers):
-        return False
-    return "agenticrun" in logs
+    """Require actual selected-run log attributes, not matching text in a body."""
+    return any(
+        _same_uuid(record.attributes.get("agenticrun.uid"), run_uid)
+        and record.attributes.get("agenticrun.phase") == phase
+        and isinstance(record.attributes.get("event"), str)
+        for record in _collector_logs(logs)
+    )
 
 
 def wait_for_otel_traces(
@@ -530,7 +918,7 @@ def wait_for_otel_traces(
         assert_trace_reconstructable(logs, run_uid, expect_shaping=expect_shaping, phase=phase)
         return True
 
-    return _poll_collector_logs(
+    return _poll_otel_evidence(
         core_api,
         namespace,
         run_uid,
@@ -549,6 +937,7 @@ def wait_for_otel_tool_result_inspection(
     expect_shaping: bool,
     expected_tool: str,
     expected_outcome: str = "benign",
+    mcp_addresses: set[str] | None = None,
     timeout_seconds: float = TOOL_RESULT_INSPECTION_TIMEOUT_SECONDS,
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
     phase: str = "analysis",
@@ -567,9 +956,13 @@ def wait_for_otel_tool_result_inspection(
             phase=phase,
             inspection_outcome=expected_outcome,
         )
+        if mcp_addresses is not None:
+            assert_connection_audit(
+                logs, run_uid, phase=phase, mcp_addresses=mcp_addresses, require_exported_spans=True
+            )
         return True
 
-    return _poll_collector_logs(
+    return _poll_otel_evidence(
         core_api,
         namespace,
         run_uid,
@@ -577,7 +970,6 @@ def wait_for_otel_tool_result_inspection(
         timeout_seconds=timeout_seconds,
         poll_interval_seconds=poll_interval_seconds,
         evidence_kind="tool-result inspection span",
-        tail_lines=None,
     )
 
 
@@ -587,22 +979,31 @@ def wait_for_otel_audit_logs(
     run_uid: str,
     *,
     phase: str,
+    auth_stdout: str,
     timeout_seconds: float = DEFAULT_POLL_TIMEOUT_SECONDS,
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
 ) -> str:
-    """Poll collector logs until audit log export for ``run_uid`` is visible."""
-    return _poll_collector_logs(
+    """Require LLM records and stdout-to-collector auth delivery for the selected run."""
+    assert auth_stdout.strip(), "Missing pod log reference for auth delivery"
+
+    def validated(logs: str) -> bool:
+        assert_connection_audit(
+            logs, run_uid, phase=phase, auth_stdout=auth_stdout, require_exported_spans=True
+        )
+        return logs_contain_audit_logs_for_run(logs, run_uid, phase=phase)
+
+    return _poll_otel_evidence(
         core_api,
         namespace,
         run_uid,
-        predicate=lambda logs: logs_contain_audit_logs_for_run(logs, run_uid, phase=phase),
+        predicate=validated,
         timeout_seconds=timeout_seconds,
         poll_interval_seconds=poll_interval_seconds,
         evidence_kind=f"audit logs (phase={phase})",
     )
 
 
-def _poll_collector_logs(
+def _poll_otel_evidence(
     core_api: CoreV1Api,
     namespace: str,
     run_uid: str,
@@ -611,29 +1012,33 @@ def _poll_collector_logs(
     timeout_seconds: float,
     poll_interval_seconds: float,
     evidence_kind: str,
-    tail_lines: int | None = DEFAULT_LOG_TAIL_LINES,
 ) -> str:
     deadline = time.monotonic() + timeout_seconds
-    last_logs = ""
     last_validation_error = ""
+    receiver_id = None
     while time.monotonic() < deadline:
-        last_logs = fetch_otel_collector_logs(
-            core_api,
-            namespace,
-            tail_lines=tail_lines,
+        last_logs = fetch_otel_evidence(core_api, namespace)
+        exports = otlp_exports(last_logs)
+        identities = {export["receiverId"] for export in exports if "receiverId" in export}
+        assert len(identities) == 1, "Missing evidence receiver identity"
+        assert all(isinstance(item, str) and item for item in identities), (
+            "Missing evidence receiver identity"
         )
+        current_id = identities.pop()
+        assert receiver_id is None or receiver_id == current_id, (
+            "Evidence receiver restarted during polling"
+        )
+        receiver_id = current_id
         try:
             if predicate(last_logs):
                 return last_logs
         except AssertionError as exc:
             last_validation_error = str(exc)
         time.sleep(poll_interval_seconds)
-    snippet = last_logs[-2000:] if last_logs else "(empty collector logs)"
     msg = (
         f"OTEL collector missing {evidence_kind} for run_uid={run_uid} "
         f"after {timeout_seconds}s; "
-        f"last validation: {last_validation_error or 'no matching evidence'}; "
-        f"recent collector log tail:\n{snippet}"
+        f"last validation: {last_validation_error or 'no matching evidence'}"
     )
     raise AssertionError(msg)
 

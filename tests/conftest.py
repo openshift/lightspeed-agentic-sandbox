@@ -67,5 +67,11 @@ def span_exporter():
 
 
 @pytest.fixture
+def connection_audit_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Opt metadata-audit tests into the same setting supplied by the operator."""
+    monkeypatch.setenv("LIGHTSPEED_AUDIT_ENABLED", "true")
+
+
+@pytest.fixture
 def mock_provider() -> MockProvider:
     return MockProvider()
