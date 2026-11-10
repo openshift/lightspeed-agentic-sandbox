@@ -20,6 +20,7 @@ from lightspeed_agentic import tracing
 from lightspeed_agentic.providers.deepagents import DeepAgentsProvider, _create_generation_callback
 from lightspeed_agentic.run_agent import run_agent_query
 from lightspeed_agentic.tracing import get_tracer, parse_traceparent
+from lightspeed_agentic.types import ToolResultEvent
 
 from .helpers import (
     TEST_WORKFLOW_MAX_TURNS,
@@ -953,6 +954,10 @@ async def test_native_tool_failure_does_not_erase_completed_sibling_evidence(
             },
             config={"callbacks": [callback]},
         )
+        callback.record_tool_result(
+            "lookup",
+            ToolResultEvent(output="completed-sibling-evidence", call_id="completed-call"),
+        )
         with pytest.raises(RuntimeError, match="PRIVATE-NATIVE-FAILURE"):
             await lookup.ainvoke(
                 {
@@ -1007,6 +1012,9 @@ async def test_unmatched_native_result_cannot_complete_another_pending_call(
         )
         await callback.on_tool_end("UNMATCHED-RESULT", run_id=uuid4())
         await callback.on_tool_end("completed-evidence", run_id=completed_run)
+        callback.record_tool_result(
+            "lookup", ToolResultEvent(output="completed-evidence", call_id="completed-call")
+        )
         callback.close_open("CancelledError")
         callback.close_open("generation_interrupted")
     finally:

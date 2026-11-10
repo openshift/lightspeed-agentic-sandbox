@@ -684,6 +684,28 @@ def test_tool_output_inspection_rejects_invalid_value(monkeypatch: pytest.Monkey
         config.parse_tool_output_inspection_enabled()
 
 
+def test_tool_output_redaction_defaults_to_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LIGHTSPEED_TOOL_OUTPUT_REDACTION_ENABLED", raising=False)
+
+    assert config.parse_tool_output_redaction_enabled() is True
+
+
+@pytest.mark.parametrize(("value", "expected"), [("TRUE", True), ("false", False)])
+def test_tool_output_redaction_parses_explicit_boolean(
+    monkeypatch: pytest.MonkeyPatch, value: str, expected: bool
+) -> None:
+    monkeypatch.setenv("LIGHTSPEED_TOOL_OUTPUT_REDACTION_ENABLED", value)
+
+    assert config.parse_tool_output_redaction_enabled() is expected
+
+
+def test_tool_output_redaction_rejects_invalid_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LIGHTSPEED_TOOL_OUTPUT_REDACTION_ENABLED", "off")
+
+    with pytest.raises(ValueError, match="LIGHTSPEED_TOOL_OUTPUT_REDACTION_ENABLED"):
+        config.parse_tool_output_redaction_enabled()
+
+
 # ── Azure Entra ID credential resolution ──
 
 

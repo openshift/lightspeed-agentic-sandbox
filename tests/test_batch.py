@@ -71,6 +71,7 @@ class TestBatchMain:
                     "LIGHTSPEED_PROVIDER_URL": base_url or "",
                     "LIGHTSPEED_AGENT_TIMEOUT_SECONDS": "300",
                     "LIGHTSPEED_AGENT_MAX_TURNS": "200",
+                    "LIGHTSPEED_TOOL_OUTPUT_REDACTION_ENABLED": "false",
                     "AZURE_OPENAI_API_KEY": "test-key",
                 },
                 clear=True,
@@ -102,6 +103,7 @@ class TestBatchMain:
         resolve_family.assert_called_once_with()
         assert ready.call_args.args[0].name == family
         assert len(create.call_args.args) == 1
+        assert create.call_args.kwargs["tool_output_redaction_enabled"] is False
         assert ready.call_args.args[1] is create.call_args.args[0]
         assert query.call_args.kwargs["model"] == "exact-configured-model"
         assert query.call_args.args[0] is provider

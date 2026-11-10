@@ -330,6 +330,7 @@ async def test_actual_native_callback_and_inspector_spans_satisfy_mcp_evidence(
     from lightspeed_agentic.inspection.inspector import inspect_tool_result
     from lightspeed_agentic.inspection.models import ClassifierDecision
     from lightspeed_agentic.providers.deepagents import _create_generation_callback
+    from lightspeed_agentic.types import ToolResultEvent
     from tests.helpers import make_model_route
 
     name = "malicious_probe" if malicious else "list_namespaces"
@@ -369,6 +370,10 @@ async def test_actual_native_callback_and_inspector_spans_satisfy_mcp_evidence(
             result = await remote_tool.ainvoke(
                 {"name": name, "id": f"actual-mcp-call-{index}", "type": "tool_call", "args": {}},
                 config={"callbacks": [callback]},
+            )
+            callback.record_tool_result(
+                name,
+                ToolResultEvent(output=result.content, call_id=result.tool_call_id or ""),
             )
             decision = await inspect_tool_result(
                 client,

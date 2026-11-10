@@ -22,6 +22,7 @@ from lightspeed_agentic.config import (
     parse_max_turns,
     parse_reasoning_config,
     parse_tool_output_inspection_enabled,
+    parse_tool_output_redaction_enabled,
     resolve_model_family,
 )
 from lightspeed_agentic.inspection.errors import ToolResultSafetyInspectionFailed
@@ -180,6 +181,7 @@ def main() -> None:
         agent_timeout_seconds = parse_agent_timeout()
         agent_max_turns = parse_max_turns()
         tool_output_inspection_enabled = parse_tool_output_inspection_enabled()
+        tool_output_redaction_enabled = parse_tool_output_redaction_enabled()
         readiness_ok, readiness_checks = run_readiness_checks(model_family, model_route)
         if not readiness_ok:
             write_termination_log(_format_readiness_failure(readiness_checks))
@@ -195,7 +197,9 @@ def main() -> None:
 
         admitted_mcp_servers = asyncio.run(discover_and_admit_mcp_servers(mcp_servers))
         provider_mcp_servers, mcp_policies = split_admitted_mcp_servers(admitted_mcp_servers)
-        provider = DeepAgentsProvider(model_route)
+        provider = DeepAgentsProvider(
+            model_route, tool_output_redaction_enabled=tool_output_redaction_enabled
+        )
         model = model_route.model
         audit_enabled = os.environ.get("LIGHTSPEED_AUDIT_ENABLED", "").strip().lower() == "true"
         capture_content = _resolve_capture_content(audit_enabled)

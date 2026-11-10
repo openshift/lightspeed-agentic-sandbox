@@ -52,6 +52,9 @@ class ToolResultEvent:
     output: str = ""
     call_id: str = ""
     error_type: str | None = None
+    redacted: bool = False
+    redacted_count: int = 0
+    redaction_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

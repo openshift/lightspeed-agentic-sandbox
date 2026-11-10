@@ -184,6 +184,10 @@ OPENAI_API_KEY: <token-or-placeholder>
 
 22f. DeepAgents tool-output wrapping and its system-prompt trust instruction MUST remain active regardless of this value. SAFE-02 requires no new environment variable, operator setting, or configurable delimiter format. See `provider-contract.md`, Tool-Output Content Boundary.
 
+22g. `LIGHTSPEED_TOOL_OUTPUT_REDACTION_ENABLED` controls the sandbox's built-in tool-result redaction. It MUST default to `true` when absent or empty and accept only case-insensitive `true` or `false`; another non-empty value MUST fail startup.
+
+22h. When redaction is disabled, the sandbox MUST skip redaction and warn, but MUST NOT disable inspection. Unredacted tool output can then flow to inspection/model input, normalized events, and native spans. See `tool-output-redaction.md` for the implemented boundary and limitations.
+
 ### Provider-egress TLS and CA
 
  1. **Stable CA mount root.** The sandbox MUST treat `/var/run/secrets/lightspeed/tls/` as the common read-only root for operator-provided CA sources. It MUST scan regular `.crt` and `.pem` files below this root, including files from the additional CA ConfigMap and integration CA Secrets. When the additional CA reference is absent, no `additional-ca/` source is expected and the system trust store remains the base trust source.
@@ -233,6 +237,7 @@ OPENAI_API_KEY: <token-or-placeholder>
 | `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` | [PLANNED: OLS-3743] Required whole-agent invocation timeout from the operator. |
 | `LIGHTSPEED_AGENT_MAX_TURNS` | [PLANNED: OLS-3743] Required provider iteration cap from the operator. |
 | `LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED` | [PLANNED: OLS-3928] DeepAgents tool-result inspection; defaults to `true`. |
+| `LIGHTSPEED_TOOL_OUTPUT_REDACTION_ENABLED` | DeepAgents tool-result redaction; defaults to `true`; strict case-insensitive boolean parsing. |
 | `resolve_model_family()` | SDK env mapping, family identity, and credential/readiness metadata (see `config.py`). |
 | `resolve_model_route(model=None, model_family=...)` | Typed DeepAgents routes for all supported providers; unsupported Vertex families fail before routing (see `providers/model_router.py`). |
 

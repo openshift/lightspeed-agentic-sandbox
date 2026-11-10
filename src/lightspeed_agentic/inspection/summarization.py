@@ -8,7 +8,7 @@ from typing import Any
 
 from langchain_core.messages import AnyMessage, ToolMessage, get_buffer_string
 
-from lightspeed_agentic.inspection.middleware import (
+from lightspeed_agentic.inspection.tool_data import (
     TOOL_DATA_TRUST_INSTRUCTION,
     _wrap_tool_output,
     filter_untrusted_tool_results,

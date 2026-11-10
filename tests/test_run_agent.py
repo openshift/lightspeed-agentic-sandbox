@@ -13,7 +13,7 @@ from langchain_core.messages import ToolMessage
 from opentelemetry.trace import SpanKind, StatusCode
 
 from lightspeed_agentic.inspection.errors import ToolResultSafetyInspectionFailed
-from lightspeed_agentic.inspection.middleware import ToolResultInspectionMiddleware
+from lightspeed_agentic.providers.tool_result_middleware import ToolResultInspectionMiddleware
 from lightspeed_agentic.run_agent import ContextFormatError, format_context_prefix, run_agent_query
 from lightspeed_agentic.types import (
     ProviderEvent,

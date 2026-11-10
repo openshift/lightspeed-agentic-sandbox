@@ -13,6 +13,7 @@ import math
 import os
 import time
 import uuid
+from collections import defaultdict, deque
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 from uuid import UUID
@@ -24,6 +25,7 @@ from opentelemetry.trace import Span, SpanKind, StatusCode
 
 from lightspeed_agentic.audit import _set_tool_payload
 from lightspeed_agentic.metrics import tool_duration
+from lightspeed_agentic.redaction.engine import CompiledRuleSet
 from lightspeed_agentic.skills import has_skills
 from lightspeed_agentic.tracing import get_tracer, set_json_span_attribute, start_generation_span
 from lightspeed_agentic.types import (
@@ -317,7 +319,7 @@ def _create_generation_callback(
     *,
     main_name: str | None,
 ) -> Any:
-    """Capture main generations and native tool executions, independently of inspection."""
+    """Capture model generations and redacted tool executions."""
     from langchain_core.callbacks import AsyncCallbackHandler
 
     class GenerationCallback(AsyncCallbackHandler):
@@ -436,47 +438,47 @@ def _create_generation_callback(
             self._tool_spans[run_id] = (span, time.monotonic(), name, tool_call_id)
 
         async def on_tool_end(self, output: Any, *, run_id: UUID, **kwargs: Any) -> None:
-            from langchain_core.messages import ToolMessage
-            from langgraph.types import Command
-
-            del kwargs
-            if isinstance(output, Command):
-                entry = self._tool_spans.get(run_id)
-                if entry is None:
-                    return
-                call_id = entry[3]
-                messages = (
-                    output.update.get("messages", []) if isinstance(output.update, dict) else []
-                )
-                results = [
-                    message
-                    for message in messages
-                    if isinstance(message, ToolMessage) and message.tool_call_id == call_id
-                ]
-                output = results[0] if len(results) == 1 else None
-            self._finish_tool(
-                run_id,
-                output=getattr(output, "content", output),
-                error_type="tool_error" if getattr(output, "status", None) == "error" else None,
-            )
+            # The middleware hands off the sanitized ToolMessage after this callback.
+            del output, run_id, kwargs
 
         async def on_tool_error(self, error: BaseException, *, run_id: UUID, **kwargs: Any) -> None:
             del kwargs
-            self._finish_tool(run_id, error_type=type(error).__name__)
-
-        def _finish_tool(
-            self, run_id: UUID, *, output: Any = None, error_type: str | None = None
-        ) -> None:
             entry = self._tool_spans.pop(run_id, None)
             if entry is None:
                 return
             span, start, name, _call_id = entry
             try:
-                if error_type is None:
-                    if output is not None:
-                        _set_tool_payload(span, "gen_ai.tool.call.result", stringify(output))
-                else:
-                    span.set_attribute("error.type", error_type)
+                span.set_attribute("error.type", type(error).__name__)
+                span.set_status(StatusCode.ERROR)
+                tool_duration.labels(gen_ai_tool_name=name).observe(time.monotonic() - start)
+            finally:
+                span.end()
+
+        def record_tool_result(self, tool_name: str, result: ToolResultEvent) -> None:
+            matches = [
+                (run_id, entry)
+                for run_id, entry in self._tool_spans.items()
+                if entry[2] == tool_name
+                and (entry[3] == result.call_id if result.call_id else True)
+            ]
+            if len(matches) != 1:
+                return
+            run_id, (span, start, name, _call_id) = matches[0]
+            self._tool_spans.pop(run_id)
+            try:
+                _set_tool_payload(span, "gen_ai.tool.call.result", result.output)
+                if result.redacted:
+                    span.set_attribute("lightspeed.tool_output.redacted", True)
+                    span.set_attribute(
+                        "lightspeed.tool_output.redacted_count", result.redacted_count
+                    )
+                    set_json_span_attribute(
+                        span,
+                        "lightspeed.tool_output.redaction_counts",
+                        result.redaction_counts,
+                    )
+                if result.error_type:
+                    span.set_attribute("error.type", result.error_type)
                     span.set_status(StatusCode.ERROR)
                 tool_duration.labels(gen_ai_tool_name=name).observe(time.monotonic() - start)
             finally:
@@ -738,8 +740,20 @@ def _process_ai_message(
 class DeepAgentsProvider(AgentProvider):
     captures_native_tool_spans = True
 
-    def __init__(self, model_route: ResolvedModelRoute) -> None:
+    def __init__(
+        self,
+        model_route: ResolvedModelRoute,
+        *,
+        tool_output_redaction_enabled: bool = True,
+    ) -> None:
         self._model_route = model_route
+        self._redaction_rules: CompiledRuleSet | None
+        if tool_output_redaction_enabled:
+            from lightspeed_agentic.redaction.rulesets.mcp import MCP_RULES
+
+            self._redaction_rules = MCP_RULES.compile()
+        else:
+            self._redaction_rules = None
 
     @property
     def name(self) -> str:
@@ -756,18 +770,20 @@ class DeepAgentsProvider(AgentProvider):
         try:
             from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 
-            from lightspeed_agentic.inspection.middleware import (
-                TOOL_DATA_TRUST_INSTRUCTION,
-                ToolResultInspectionMiddleware,
-            )
             from lightspeed_agentic.inspection.summarization import (
                 create_tool_data_summarization_middleware,
+            )
+            from lightspeed_agentic.inspection.tool_data import TOOL_DATA_TRUST_INSTRUCTION
+            from lightspeed_agentic.providers.tool_result_middleware import (
+                ToolResultInspectionMiddleware,
+                tool_result_signature,
             )
         except Exception as exc:
             raise ToolResultSafetyInspectionFailed() from exc
 
         classifier_model: Any | None = None
         inspector_callback: Any | None = None
+        generation_callback: Any | None = None
 
         logger.debug(
             "Starting deepagents query route=%s model=%s cwd=%s max_turns=%s",
@@ -795,7 +811,6 @@ class DeepAgentsProvider(AgentProvider):
         chat_model = self._model_route.create_model(
             self._model_route.model_parameters, options.reasoning_config
         )
-        generation_callback: Any | None = None
         try:
             local_backend = LocalShellBackend(
                 root_dir=options.cwd,
@@ -889,11 +904,30 @@ class DeepAgentsProvider(AgentProvider):
                 except Exception as exc:
                     raise ToolResultSafetyInspectionFailed() from exc
 
+            generation_callback = _create_generation_callback(
+                self._model_route,
+                parent_context,
+                main_name=agent_kwargs.get("name"),
+            )
+            tool_results_by_signature: dict[tuple[str, str, str, str], deque[ToolResultEvent]] = (
+                defaultdict(deque)
+            )
+
+            def retain_tool_result(message: Any, event: ToolResultEvent) -> None:
+                signature = tool_result_signature(
+                    message.name or "",
+                    "error" if message.status == "error" else "result",
+                    message.tool_call_id or "",
+                    message.content,
+                )
+                tool_results_by_signature[signature].append(event)
+                generation_callback.record_tool_result(message.name or "", event)
+
             def notify_accepted_results(messages: Sequence[Any]) -> None:
                 from langgraph.config import get_stream_writer
 
                 signatures = {
-                    ToolResultInspectionMiddleware._signature(
+                    tool_result_signature(
                         message.name or "",
                         "error" if message.status == "error" else "result",
                         message.tool_call_id or "",
@@ -906,6 +940,8 @@ class DeepAgentsProvider(AgentProvider):
             inspection_middleware = ToolResultInspectionMiddleware(
                 inspector_callback,
                 on_accepted=(notify_accepted_results if inspector_callback is not None else None),
+                redaction_rules=self._redaction_rules,
+                on_tool_result=retain_tool_result,
             )
             summarization_middleware = create_tool_data_summarization_middleware(
                 chat_model, backend
@@ -913,12 +949,6 @@ class DeepAgentsProvider(AgentProvider):
             agent_kwargs["middleware"] = [inspection_middleware, summarization_middleware]
             subagent_spec["middleware"] = [inspection_middleware, summarization_middleware]
             agent_kwargs["subagents"] = [subagent_spec]
-            generation_callback = _create_generation_callback(
-                self._model_route,
-                parent_context,
-                main_name=agent_kwargs.get("name"),
-            )
-
             if has_skills(skills_root):
                 agent_kwargs["skills"] = ["/skills/"]
 
@@ -1006,7 +1036,7 @@ class DeepAgentsProvider(AgentProvider):
                     released: list[ToolResultEvent] = []
                     remaining = []
                     for pending in pending_tool_results:
-                        if inspection_middleware._signature(*pending[:4]) in accepted:
+                        if tool_result_signature(*pending[:4]) in accepted:
                             released.append(pending[4])
                         else:
                             remaining.append(pending)
@@ -1079,11 +1109,15 @@ class DeepAgentsProvider(AgentProvider):
                         "error" if getattr(msg, "status", "success") == "error" else "result"
                     )
                     call_id = getattr(msg, "tool_call_id", "") or ""
-                    tool_result_event = ToolResultEvent(
-                        output=stringify(msg.content),
-                        call_id=call_id,
-                        error_type=("tool_error" if result_type == "error" else None),
-                    )
+                    signature = tool_result_signature(tool_name, result_type, call_id, msg.content)
+                    retained = tool_results_by_signature.get(signature)
+                    if not retained:
+                        # Synthetic ToolMessages are not tool-call results and are outside
+                        # the redaction/audit contract.
+                        continue
+                    tool_result_event = retained.popleft()
+                    if not retained:
+                        tool_results_by_signature.pop(signature, None)
                     if not options.tool_output_inspection_enabled:
                         yield tool_result_event
                     else:
