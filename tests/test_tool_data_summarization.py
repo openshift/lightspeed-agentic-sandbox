@@ -9,8 +9,8 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import PrivateAttr
 
-from lightspeed_agentic.inspection.middleware import TOOL_DATA_TRUST_INSTRUCTION
 from lightspeed_agentic.inspection.summarization import create_tool_data_summarization_middleware
+from lightspeed_agentic.inspection.tool_data import TOOL_DATA_TRUST_INSTRUCTION
 
 
 class RecordingFakeChatModel(FakeListChatModel):

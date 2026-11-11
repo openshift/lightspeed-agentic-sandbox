@@ -13,15 +13,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar, Literal
 from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
+from uuid import uuid4
 
 import pytest
 
-from lightspeed_agentic.inspection.middleware import ToolResultInspectionMiddleware
 from lightspeed_agentic.mcp import (  # type: ignore[import-untyped]
     AdmittedMCPProviderServer,
     ResolvedMCPHeader,
 )
 from lightspeed_agentic.providers.model_router import ModelParameters, ResolvedModelRoute
+from lightspeed_agentic.providers.tool_result_middleware import ToolResultInspectionMiddleware
 from lightspeed_agentic.types import (  # type: ignore[import-untyped]
     ContentBlockStopEvent,
     ProviderQueryOptions,
@@ -127,6 +128,36 @@ async def _collect_events(
     return events
 
 
+async def _complete_tool_result(
+    middleware: Any,
+    message: Any,
+    *,
+    callback: Any | None = None,
+    tool_args: dict[str, Any] | None = None,
+) -> Any:
+    async def handler(_request: Any) -> Any:
+        return message
+
+    if callback is not None:
+        await callback.on_tool_start(
+            {"name": message.name or "unknown"},
+            "",
+            run_id=uuid4(),
+            inputs=tool_args or {},
+            tool_call_id=message.tool_call_id or None,
+        )
+    return await middleware.awrap_tool_call(
+        SimpleNamespace(
+            tool_call={
+                "name": message.name or "",
+                "id": message.tool_call_id or "",
+                "args": {},
+            }
+        ),
+        handler,
+    )
+
+
 @contextmanager
 def _deepagents_provider(
     mock_create: MagicMock,
@@ -160,6 +191,22 @@ def _real_deepagents_provider(
     import lightspeed_agentic.providers.deepagents as provider_module
 
     return provider_module.DeepAgentsProvider(make_model_route(Mock(return_value=model)))
+
+
+def test_deepagents_skips_redaction_rule_compilation_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lightspeed_agentic.providers.deepagents import DeepAgentsProvider
+    from lightspeed_agentic.redaction.rulesets import mcp
+
+    monkeypatch.setattr(mcp, "MCP_RULES", SimpleNamespace(compile=Mock(side_effect=AssertionError)))
+
+    provider = DeepAgentsProvider(
+        make_model_route(Mock(return_value=Mock())),
+        tool_output_redaction_enabled=False,
+    )
+
+    assert provider._redaction_rules is None
 
 
 def _capturing_fake_chat_model(responses: list[Any]) -> tuple[Any, list[list[Any]]]:
@@ -1731,7 +1778,9 @@ class TestEventMapping:
 
     @pytest.mark.asyncio
     async def test_tool_call_and_result_events(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Tool calls yield ToolCallEvent; ToolMessages yield ToolResultEvent."""
+        """Actual wrapped tool calls yield correlated call/result events."""
+        from langchain_core.messages import ToolMessage
+
         monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
 
@@ -1744,10 +1793,9 @@ class TestEventMapping:
         mock_ai_tool_msg.usage_metadata = {"input_tokens": 20, "output_tokens": 10}
         mock_ai_tool_msg.content_blocks = []
 
-        mock_tool_result = MagicMock()
-        mock_tool_result.type = "tool"
-        mock_tool_result.content = "file1.py\nfile2.py"
-        mock_tool_result.tool_call_id = "tc_1"
+        mock_tool_result = ToolMessage(
+            content="file1.py\nfile2.py", name="execute", tool_call_id="tc_1"
+        )
 
         mock_ai_final = MagicMock()
         mock_ai_final.type = "ai"
@@ -1763,12 +1811,21 @@ class TestEventMapping:
             *_args: Any, **_kwargs: Any
         ) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
             yield (mock_ai_tool_msg, {"langgraph_node": "agent"})
-            yield (mock_tool_result, {"langgraph_node": "tools"})
+            middleware = mock_create.call_args.kwargs["middleware"][0]
+            callback = _kwargs["config"]["callbacks"][0]
+            safe_result = await _complete_tool_result(
+                middleware,
+                mock_tool_result,
+                callback=callback,
+                tool_args={"command": "ls -la"},
+            )
+            yield (safe_result, {"langgraph_node": "tools"})
             yield (mock_ai_final, {"langgraph_node": "agent"})
 
         mock_agent = MagicMock()
         mock_agent.astream = mock_astream
-        with _deepagents_provider(MagicMock(return_value=mock_agent), MagicMock()) as provider:
+        mock_create = MagicMock(return_value=mock_agent)
+        with _deepagents_provider(mock_create, MagicMock()) as provider:
             events = await _collect_events(
                 provider,
                 _base_options(tool_output_inspection_enabled=False),
@@ -1781,9 +1838,36 @@ class TestEventMapping:
         assert len(tool_results) == 1
         assert "file1.py" in tool_results[0].output
 
+    @pytest.mark.asyncio
+    async def test_synthetic_tool_message_without_wrapper_handoff_is_not_a_result_event(
+        self,
+    ) -> None:
+        from langchain_core.messages import ToolMessage
+
+        synthetic = ToolMessage(
+            content="synthetic message",
+            name="approval_control",
+            tool_call_id="synthetic-call",
+        )
+
+        async def mock_astream(
+            *_args: Any, **_kwargs: Any
+        ) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
+            yield synthetic, {"langgraph_node": "tools"}
+
+        mock_agent = MagicMock()
+        mock_agent.astream = mock_astream
+        with _deepagents_provider(MagicMock(return_value=mock_agent), MagicMock()) as provider:
+            events = await _collect_events(
+                provider,
+                _base_options(tool_output_inspection_enabled=False),
+            )
+
+        assert not any(isinstance(event, ToolResultEvent) for event in events)
+
     @pytest.mark.parametrize("error_as_text_blocks", [False, True])
     @pytest.mark.asyncio
-    async def test_main_agent_receives_wrapped_tool_result_and_emits_raw_event(
+    async def test_main_agent_receives_wrapped_tool_result_and_emits_safe_event(
         self, span_exporter, error_as_text_blocks: bool
     ) -> None:
         from langchain.agents.middleware import ModelRequest
@@ -1840,15 +1924,25 @@ class TestEventMapping:
         ) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
             yield mock_ai_tool, {"langgraph_node": "agent"}
             middleware = mock_create.call_args.kwargs["middleware"][0]
+            callback = _kwargs["config"]["callbacks"][0]
+            safe_results = [
+                await _complete_tool_result(
+                    middleware,
+                    tool_result,
+                    callback=callback,
+                    tool_args={},
+                )
+                for tool_result in tool_results
+            ]
 
             async def capture_model_input(request: Any) -> None:
                 model_inputs.extend(request.messages)
 
             await middleware.awrap_model_call(
-                ModelRequest(model=MagicMock(), messages=tool_results),
+                ModelRequest(model=MagicMock(), messages=safe_results),
                 capture_model_input,
             )
-            for tool_result in tool_results:
+            for tool_result in safe_results:
                 yield tool_result, {"langgraph_node": "tools"}
             yield mock_ai_final, {"langgraph_node": "agent"}
 
@@ -1905,7 +1999,7 @@ class TestEventMapping:
         event_types = [event.type for event in events]
         assert event_types[:6] == ["tool_call"] * 3 + ["tool_result"] * 3
 
-        audit = AuditLogger(phase="execution")
+        audit = AuditLogger(phase="execution", capture_tool_spans=False)
         for event in events:
             audit.process_event(event)
         result_event = next(event for event in events if isinstance(event, ResultEvent))
@@ -1927,8 +2021,8 @@ class TestEventMapping:
         tool_attrs = [dict(span.attributes) for span in spans]
         assert [attrs.get("error.type") for attrs in tool_attrs] == [None, None, "tool_error"]
         assert [span.status.status_code for span in spans] == [
-            StatusCode.OK,
-            StatusCode.OK,
+            StatusCode.UNSET,
+            StatusCode.UNSET,
             StatusCode.ERROR,
         ]
 
@@ -1973,12 +2067,21 @@ class TestEventMapping:
         ) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
             for chunk in chunks:
                 yield chunk, {"langgraph_node": "agent"}
-            yield tool_result, {"langgraph_node": "tools"}
+            middleware = mock_create.call_args.kwargs["middleware"][0]
+            callback = _kwargs["config"]["callbacks"][0]
+            safe_result = await _complete_tool_result(
+                middleware,
+                tool_result,
+                callback=callback,
+                tool_args={"command": "kubectl get pods"},
+            )
+            yield safe_result, {"langgraph_node": "tools"}
 
         mock_agent = MagicMock()
         mock_agent.astream = mock_astream
+        mock_create = MagicMock(return_value=mock_agent)
         with (
-            _deepagents_provider(MagicMock(return_value=mock_agent), MagicMock()) as provider,
+            _deepagents_provider(mock_create, MagicMock()) as provider,
             _patch_sys_modules(
                 {
                     "langchain_core": langchain_core,
@@ -2000,7 +2103,7 @@ class TestEventMapping:
         assert len(tool_results) == 1
         assert tool_results[0].call_id == "call-1"
 
-        audit = AuditLogger(phase="execution")
+        audit = AuditLogger(phase="execution", capture_tool_spans=False)
         for event in events:
             audit.process_event(event)
         audit.complete(input_tokens=0, output_tokens=0)
@@ -2019,11 +2122,13 @@ class TestEventMapping:
         assert json.loads(dict(tool_spans[0].attributes)["gen_ai.tool.call.result"]) == {
             "content": "pod-a"
         }
-        assert tool_spans[0].status.status_code == StatusCode.OK
+        assert tool_spans[0].status.status_code == StatusCode.UNSET
 
     @pytest.mark.asyncio
     async def test_tool_io_truncation_at_boundary(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Tool call and result events preserve complete values for audit consumers."""
+        """Wrapped tool call/result events preserve complete values for audit consumers."""
+        from langchain_core.messages import ToolMessage
+
         monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
 
@@ -2039,20 +2144,26 @@ class TestEventMapping:
         mock_ai_tool_msg.usage_metadata = None
         mock_ai_tool_msg.content_blocks = []
 
-        mock_tool_result = MagicMock()
-        mock_tool_result.type = "tool"
-        mock_tool_result.content = long_output
-        mock_tool_result.tool_call_id = "tc_long"
+        mock_tool_result = ToolMessage(content=long_output, name="execute", tool_call_id="tc_long")
 
         async def mock_astream(
             *_args: Any, **_kwargs: Any
         ) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
             yield (mock_ai_tool_msg, {"langgraph_node": "agent"})
-            yield (mock_tool_result, {"langgraph_node": "tools"})
+            middleware = mock_create.call_args.kwargs["middleware"][0]
+            callback = _kwargs["config"]["callbacks"][0]
+            safe_result = await _complete_tool_result(
+                middleware,
+                mock_tool_result,
+                callback=callback,
+                tool_args={"command": long_arg},
+            )
+            yield (safe_result, {"langgraph_node": "tools"})
 
         mock_agent = MagicMock()
         mock_agent.astream = mock_astream
-        with _deepagents_provider(MagicMock(return_value=mock_agent), MagicMock()) as provider:
+        mock_create = MagicMock(return_value=mock_agent)
+        with _deepagents_provider(mock_create, MagicMock()) as provider:
             events = await _collect_events(
                 provider,
                 _base_options(tool_output_inspection_enabled=False),
@@ -2564,25 +2675,32 @@ async def test_provider_inspection_setup_import_failure_is_safety_failure() -> N
 
 
 @pytest.mark.asyncio
-async def test_provider_discards_buffered_tool_result_when_inspection_fails() -> None:
-    from lightspeed_agentic.inspection.middleware import ToolResultSafetyInspectionFailed
+async def test_provider_discards_rejected_result_but_keeps_safe_source_span(
+    span_exporter: Any,
+) -> None:
+    from langchain_core.messages import ToolMessage
 
-    tool_message = MagicMock()
-    tool_message.type = "tool"
-    tool_message.name = "execute"
-    tool_message.status = "success"
-    tool_message.content = "REJECTED-RESULT-SECRET"
-    tool_message.tool_call_id = "rejected-call"
+    from lightspeed_agentic.inspection.errors import ToolResultSafetyInspectionFailed
+
+    tool_message = ToolMessage(
+        content="REJECTED admin@example.com",
+        name="execute",
+        tool_call_id="rejected-call",
+    )
 
     async def mock_astream(
         *_args: Any, **_kwargs: Any
     ) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
-        yield tool_message, {"langgraph_node": "tools"}
+        middleware = mock_create.call_args.kwargs["middleware"][0]
+        callback = _kwargs["config"]["callbacks"][0]
+        safe_result = await _complete_tool_result(middleware, tool_message, callback=callback)
+        yield safe_result, {"langgraph_node": "tools"}
         raise ToolResultSafetyInspectionFailed()
 
     mock_agent = MagicMock()
     mock_agent.astream = mock_astream
-    with _deepagents_provider(MagicMock(return_value=mock_agent), MagicMock()) as provider:
+    mock_create = MagicMock(return_value=mock_agent)
+    with _deepagents_provider(mock_create, MagicMock()) as provider:
         emitted: list[Any] = []
 
         async def consume() -> None:
@@ -2593,6 +2711,11 @@ async def test_provider_discards_buffered_tool_result_when_inspection_fails() ->
             await consume()
 
     assert not any(isinstance(event, ToolResultEvent) for event in emitted)
+    span = next(
+        span for span in span_exporter.get_finished_spans() if span.name == "execute_tool execute"
+    )
+    assert "[REDACTED:email]" in span.attributes["gen_ai.tool.call.result"]
+    assert "admin@example.com" not in str(span.attributes)
 
 
 @pytest.mark.asyncio
@@ -2601,7 +2724,8 @@ async def test_provider_emits_complete_result_only_after_model_boundary_passes(
 ) -> None:
     from langchain_core.messages import AIMessage, ToolMessage
 
-    long_output = "passed-result-" * 900
+    long_output = "passed-result-" * 900 + " admin@example.com"
+    safe_output = long_output.replace("admin@example.com", "[REDACTED:email]")
     tool_message = ToolMessage(
         content=long_output,
         name="execute",
@@ -2622,10 +2746,14 @@ async def test_provider_emits_complete_result_only_after_model_boundary_passes(
         *_args: Any, **_kwargs: Any
     ) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
         yield tool_call_message, {"langgraph_node": "agent"}
-        yield tool_message, {"langgraph_node": "tools"}
         middleware = mock_create.call_args.kwargs["middleware"][0]
+        callback = _kwargs["config"]["callbacks"][0]
+        safe_tool_message = await _complete_tool_result(
+            middleware, tool_message, callback=callback, tool_args={}
+        )
+        yield safe_tool_message, {"langgraph_node": "tools"}
         await middleware.awrap_model_call(
-            MagicMock(messages=[tool_message]),
+            MagicMock(messages=[safe_tool_message]),
             lambda _request: _async_noop(),
         )
         yield mock_ai, {"langgraph_node": "agent"}
@@ -2657,10 +2785,13 @@ async def test_provider_emits_complete_result_only_after_model_boundary_passes(
         )
 
     tool_result = next(event for event in events if isinstance(event, ToolResultEvent))
-    assert tool_result.output == long_output
+    assert tool_result.output == safe_output
+    assert tool_result.redacted is True
+    assert tool_result.redacted_count == 1
+    assert tool_result.redaction_counts == {"email": 1}
     from lightspeed_agentic.audit import AuditLogger
 
-    audit = AuditLogger(phase="execution")
+    audit = AuditLogger(phase="execution", capture_tool_spans=False)
     for event in events:
         audit.process_event(event)
     audit.complete(input_tokens=0, output_tokens=0)
@@ -2669,8 +2800,11 @@ async def test_provider_emits_complete_result_only_after_model_boundary_passes(
     )
     tool_attrs = dict(tool_span.attributes)
     assert tool_attrs["gen_ai.tool.call.id"] == "accepted-call"
-    assert json.loads(tool_attrs["gen_ai.tool.call.result"]) == {"content": long_output}
-    assert tool_span.status.status_code.name == "OK"
+    assert json.loads(tool_attrs["gen_ai.tool.call.result"]) == {"content": safe_output}
+    assert tool_attrs["lightspeed.tool_output.redacted"] is True
+    assert tool_attrs["lightspeed.tool_output.redacted_count"] == 1
+    assert "admin@example.com" not in str(tool_attrs)
+    assert tool_span.status.status_code.name == "UNSET"
     inspection_spans = [
         span for span in span_exporter.get_finished_spans() if span.name == "tool_result.inspection"
     ]
@@ -2702,11 +2836,16 @@ async def test_provider_does_not_reuse_consumed_boundary_acceptance(end_with_ai:
         pass
 
     async def stream(*_args: Any, **_kwargs: Any) -> AsyncIterator[Any]:
-        yield tool_result, {"langgraph_node": "tools"}
         middleware = create.call_args.kwargs["middleware"][0]
-        await middleware.awrap_model_call(MagicMock(messages=[call, tool_result]), model_handler)
+        callback = _kwargs["config"]["callbacks"][0]
+        first_result = await _complete_tool_result(middleware, tool_result, callback=callback)
+        yield first_result, {"langgraph_node": "tools"}
+        await middleware.awrap_model_call(MagicMock(messages=[call, first_result]), model_handler)
         yield AIMessage(content="first response"), {"langgraph_node": "agent"}
-        yield tool_result.model_copy(), {"langgraph_node": "tools"}
+        second_result = await _complete_tool_result(
+            middleware, tool_result.model_copy(), callback=callback
+        )
+        yield second_result, {"langgraph_node": "tools"}
         # A second result needs its own boundary acknowledgement, even when identical.
         if end_with_ai:
             yield AIMessage(content="must not be released"), {"langgraph_node": "agent"}
@@ -2748,10 +2887,14 @@ async def test_provider_releases_subagent_result_after_child_boundary_passes() -
     async def mock_astream(
         *_args: Any, **_kwargs: Any
     ) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
-        yield tool_message, {"langgraph_node": "tools", "subgraph": True}
         child_middleware = mock_create.call_args.kwargs["subagents"][0]["middleware"][0]
+        callback = _kwargs["config"]["callbacks"][0]
+        safe_tool_message = await _complete_tool_result(
+            child_middleware, tool_message, callback=callback
+        )
+        yield safe_tool_message, {"langgraph_node": "tools", "subgraph": True}
         await child_middleware.awrap_model_call(
-            MagicMock(messages=[tool_message]),
+            MagicMock(messages=[safe_tool_message]),
             lambda _request: _async_noop(),
         )
         yield mock_ai, {"langgraph_node": "agent"}

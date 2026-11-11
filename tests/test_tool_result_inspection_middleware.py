@@ -6,12 +6,29 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.types import Command
+from pydantic import BaseModel
 
-from lightspeed_agentic.inspection.errors import InspectionError
-from lightspeed_agentic.inspection.middleware import (
+from lightspeed_agentic.inspection.errors import InspectionError, ToolResultSafetyInspectionFailed
+from lightspeed_agentic.providers.tool_result_middleware import (
     ToolResultInspectionMiddleware,
-    ToolResultSafetyInspectionFailed,
+    redact_tool_result,
+    tool_result_signature,
 )
+from lightspeed_agentic.redaction.engine import Redactor
+from lightspeed_agentic.redaction.rulesets.mcp import MCP_RULES
+
+
+def test_public_tool_result_signature_is_deterministic() -> None:
+    content = {"value": "result", "nested": [1, 2]}
+
+    signature = tool_result_signature("lookup", "result", "call-1", content)
+
+    assert signature == tool_result_signature("lookup", "result", "call-1", content)
+    assert signature[:3] == ("lookup", "result", "call-1")
+    assert len(signature[3]) == 64
+    assert signature != tool_result_signature("lookup", "error", "call-1", content)
+    assert signature != tool_result_signature("lookup", "result", "call-1", {"value": "changed"})
 
 
 class ModelRequest:
@@ -20,6 +37,54 @@ class ModelRequest:
 
     def override(self, **changes: Any) -> ModelRequest:
         return ModelRequest(changes.get("messages", self.messages))
+
+
+def test_tool_result_middleware_is_owned_by_providers() -> None:
+    assert (
+        ToolResultInspectionMiddleware.__module__
+        == "lightspeed_agentic.providers.tool_result_middleware"
+    )
+
+
+@pytest.mark.asyncio
+async def test_disabled_redaction_preserves_raw_tool_result_through_handoff() -> None:
+    raw = "contact admin@example.com"
+    original = ToolMessage(content=raw, name="execute", tool_call_id="raw-call")
+    handed_off: list[tuple[ToolMessage, Any]] = []
+    inspected: list[str] = []
+    model_messages: list[ToolMessage] = []
+
+    async def inspect(_tool: str, _result_type: str, content: Any, _call_id: str) -> Any:
+        inspected.append(content)
+        return SimpleNamespace(passed=True)
+
+    middleware = ToolResultInspectionMiddleware(
+        inspect,
+        redaction_rules=None,
+        on_tool_result=lambda message, event: handed_off.append((message, event)),
+    )
+
+    async def tool_handler(_request: Any) -> ToolMessage:
+        return original
+
+    result = await middleware.awrap_tool_call(
+        SimpleNamespace(tool_call={"name": "execute"}), tool_handler
+    )
+
+    async def model_handler(request: ModelRequest) -> str:
+        model_messages.extend(request.messages)
+        return "ok"
+
+    await middleware.awrap_model_call(ModelRequest([result]), model_handler)
+
+    assert result.content == raw
+    assert inspected == [raw]
+    assert raw in model_messages[0].content
+    assert len(handed_off) == 1
+    assert handed_off[0][0].content == raw
+    assert handed_off[0][1].output == raw
+    assert handed_off[0][1].redacted is False
+    assert handed_off[0][1].redacted_count == 0
 
 
 @pytest.mark.asyncio
@@ -41,6 +106,232 @@ async def test_tool_boundary_preserves_control_failures(failure: str) -> None:
             SimpleNamespace(tool_call={"name": "task"}), handler
         )
     assert raised.value is error
+
+
+def test_redact_tool_result_transforms_nested_messages_and_returns_safe_events() -> None:
+    from langgraph.types import Command
+
+    error = ToolMessage(
+        content="admin@example.com",
+        name="read_output",
+        tool_call_id="redaction-error",
+        status="error",
+    )
+    success = ToolMessage(
+        content="second user@example.com",
+        name="read_output",
+        tool_call_id="redaction-success",
+    )
+
+    result, events = redact_tool_result(
+        Command(update={"messages": [error, success], "todos": ["preserve me"]}),
+        MCP_RULES.compile(),
+    )
+
+    messages = result.update["messages"]
+    assert messages[0].content == "[REDACTED:email]"
+    assert messages[1].content == "second [REDACTED:email]"
+    assert error.content == "admin@example.com"
+    assert result.update["todos"] == ["preserve me"]
+    safe_events = [event for _message, event in events]
+    assert [event.call_id for event in safe_events] == [
+        "redaction-error",
+        "redaction-success",
+    ]
+    assert safe_events[0].error_type == "tool_error"
+    assert safe_events[0].output == "[REDACTED:email]"
+    assert safe_events[0].redacted is True
+
+
+def test_redact_tool_result_transforms_top_level_result_lists() -> None:
+    messages = [
+        ToolMessage(content="first admin@example.com", name="read_output", tool_call_id="list-1"),
+        ToolMessage(content="second user@example.com", name="read_output", tool_call_id="list-2"),
+    ]
+
+    result, events = redact_tool_result(messages, MCP_RULES.compile())
+
+    assert [message.content for message in result] == [
+        "first [REDACTED:email]",
+        "second [REDACTED:email]",
+    ]
+    assert [event.output for _message, event in events] == [
+        "first [REDACTED:email]",
+        "second [REDACTED:email]",
+    ]
+
+
+def test_redact_tool_result_preserves_copyable_model_types_and_none_fields() -> None:
+    class NestedPayload(BaseModel):
+        credential: str
+        optional: str | None = None
+
+    class Payload(BaseModel):
+        nested: NestedPayload
+        optional: str | None = None
+
+    original_payload = Payload(
+        nested=NestedPayload(credential="password=hunter2"),
+    )
+    original = ToolMessage(
+        content=[{"type": "data", "payload": original_payload}],
+        name="read_output",
+        tool_call_id="model-call",
+    )
+
+    result, events = redact_tool_result(original, MCP_RULES.compile())
+
+    safe_payload = result.content[0]["payload"]
+    assert isinstance(safe_payload, Payload)
+    assert isinstance(safe_payload.nested, NestedPayload)
+    assert safe_payload.nested.credential == "password=[REDACTED:credential]"
+    assert safe_payload.nested.optional is None
+    assert safe_payload.optional is None
+    assert original.content[0]["payload"] is original_payload
+    assert original_payload.nested.credential == "password=hunter2"
+    assert events[0][1].redacted is True
+
+
+def test_redact_dump_only_model_fallback_keeps_none_fields() -> None:
+    class DumpOnlyPayload:
+        def model_dump(self, *, exclude_none: bool = True) -> dict[str, Any]:
+            result: dict[str, Any] = {"credential": "password=hunter2"}
+            if not exclude_none:
+                result["optional"] = None
+            return result
+
+    original = ToolMessage(
+        content=[{"type": "data", "payload": DumpOnlyPayload()}],
+        name="read_output",
+        tool_call_id="dump-only-call",
+    )
+
+    result, _events = redact_tool_result(original, MCP_RULES.compile())
+
+    assert result.content[0]["payload"] == {
+        "credential": "password=[REDACTED:credential]",
+        "optional": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_structured_tool_result_redacts_text_and_keys_before_handoff() -> None:
+    content = [
+        {
+            "type": "text",
+            "text": "password=hunter2",
+            "admin@example.com": "contact user@example.com",
+        }
+    ]
+    original = ToolMessage(content=content, name="read_output", tool_call_id="structured-call")
+    observed: list[tuple[ToolMessage, Any]] = []
+    middleware = ToolResultInspectionMiddleware(
+        redaction_rules=MCP_RULES.compile(),
+        on_tool_result=lambda message, event: observed.append((message, event)),
+    )
+
+    async def handler(_request: Any) -> ToolMessage:
+        return original
+
+    result = await middleware.awrap_tool_call(
+        SimpleNamespace(tool_call={"name": "read_output"}), handler
+    )
+
+    expected_content = [
+        {
+            "type": "text",
+            "text": "password=[REDACTED:credential]",
+            "[REDACTED:email]": "contact [REDACTED:email]",
+        }
+    ]
+    assert result.content == expected_content
+    assert original.content == content
+    assert len(observed) == 1
+    assert observed[0][0] is result
+    assert observed[0][1].output == (
+        '[{"type": "text", "text": "password=[REDACTED:credential]", '
+        '"[REDACTED:email]": "contact [REDACTED:email]"}]'
+    )
+    assert observed[0][1].redacted is True
+    assert observed[0][1].redacted_count == 3
+    assert observed[0][1].redaction_counts == {"credential": 1, "email": 2}
+
+
+@pytest.mark.asyncio
+async def test_command_tool_results_are_redacted_before_returning_to_state() -> None:
+    raw = ToolMessage(
+        content={"result": "contact admin@example.com"},
+        name="read_output",
+        tool_call_id="command-redaction-call",
+    )
+    observed: list[tuple[ToolMessage, Any]] = []
+
+    async def handler(_request: Any) -> Command:
+        return Command(update={"messages": [raw]})
+
+    middleware = ToolResultInspectionMiddleware(
+        redaction_rules=MCP_RULES.compile(),
+        on_tool_result=lambda message, event: observed.append((message, event)),
+    )
+    result = await middleware.awrap_tool_call(
+        SimpleNamespace(tool_call={"name": "read_output", "id": "command-redaction-call"}),
+        handler,
+    )
+
+    sanitized = result.update["messages"][0]
+    assert isinstance(result, Command)
+    assert sanitized.content == "{'result': 'contact [REDACTED:email]'}"
+    assert raw.content == "{'result': 'contact admin@example.com'}"
+    assert observed[0][0] is sanitized
+    assert observed[0][1].output == "{'result': 'contact [REDACTED:email]'}"
+
+
+@pytest.mark.asyncio
+async def test_tool_call_redacts_once_and_model_boundary_uses_sanitized_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = ToolMessage(
+        content="contact admin@example.com",
+        name="read_output",
+        tool_call_id="redaction-call",
+    )
+    observed: list[tuple[ToolMessage, Any]] = []
+    inspected: list[Any] = []
+    redaction_calls = 0
+    original_redact = Redactor.redact
+
+    def redact_once(text: str, rules: Any) -> Any:
+        nonlocal redaction_calls
+        redaction_calls += 1
+        return original_redact(text, rules)
+
+    monkeypatch.setattr(Redactor, "redact", staticmethod(redact_once))
+
+    async def inspect(_tool: str, _kind: str, content: Any, _call_id: str) -> None:
+        inspected.append(content)
+
+    async def tool_handler(_request: Any) -> ToolMessage:
+        return raw
+
+    middleware = ToolResultInspectionMiddleware(
+        inspect,
+        redaction_rules=MCP_RULES.compile(),
+        on_tool_result=lambda message, event: observed.append((message, event)),
+    )
+    request = SimpleNamespace(tool_call={"name": "read_output", "id": "redaction-call"})
+
+    sanitized = await middleware.awrap_tool_call(request, tool_handler)
+    await middleware.awrap_model_call(ModelRequest([sanitized]), _identity_handler)
+
+    assert sanitized.content == "contact [REDACTED:email]"
+    assert raw.content == "contact admin@example.com"
+    assert observed[0][0] is sanitized
+    assert observed[0][1].output == "contact [REDACTED:email]"
+    assert observed[0][1].redacted is True
+    assert observed[0][1].redacted_count == 1
+    assert observed[0][1].redaction_counts == {"email": 1}
+    assert inspected == ["contact [REDACTED:email]"]
+    assert redaction_calls == 1
 
 
 @pytest.mark.asyncio
@@ -591,7 +882,7 @@ async def test_model_boundary_wraps_offload_preview_and_artifact_read(tmp_path: 
 
 
 def test_filter_untrusted_tool_results_preserves_context_and_selects_external_results() -> None:
-    from lightspeed_agentic.inspection.middleware import filter_untrusted_tool_results
+    from lightspeed_agentic.inspection.tool_data import filter_untrusted_tool_results
 
     call = AIMessage(
         content="",

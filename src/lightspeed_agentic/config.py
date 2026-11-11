@@ -429,6 +429,19 @@ def parse_tool_output_inspection_enabled() -> bool:
     raise ValueError("LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED must be true or false")
 
 
+def parse_tool_output_redaction_enabled() -> bool:
+    """Parse the DeepAgents tool-result redaction toggle; default to enabled."""
+    raw = os.environ.get("LIGHTSPEED_TOOL_OUTPUT_REDACTION_ENABLED", "").strip()
+    if not raw or raw.lower() == "true":
+        return True
+    if raw.lower() == "false":
+        logger.warning(
+            "Tool-output redaction is disabled; raw tool results may contain sensitive data"
+        )
+        return False
+    raise ValueError("LIGHTSPEED_TOOL_OUTPUT_REDACTION_ENABLED must be true or false")
+
+
 def parse_reasoning_config() -> dict[str, Any] | None:
     """Parse LIGHTSPEED_REASONING_CONFIG env var at startup.
 

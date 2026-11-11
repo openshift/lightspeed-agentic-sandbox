@@ -17,7 +17,7 @@ These specs define the behavioral rules and codebase navigation for the lightspe
 | [system-overview.md](what/system-overview.md) | System role, component inventory, lifecycle, integration boundaries |
 | [run-api.md](what/run-api.md) | Batch entrypoint: `/input/` files, agent run, Result CR publishing, context prefix, timeouts |
 | [provider-contract.md](what/provider-contract.md) | AgentProvider ABC, event model, structured output, thin-adapter principle, skills delegation; DeepAgents routes including native/custom OpenAI; Vertex supports only Anthropic and Google |
-| [tool-output-redaction.md](what/tool-output-redaction.md) | [PLANNED: OLS-3939] DeepAgents tool-result redaction, raw native-span boundary and per-reply UI signal |
+| [tool-output-redaction.md](what/tool-output-redaction.md) | [PARTIALLY IMPLEMENTED: OLS-3939] DeepAgents tool-result redaction, sanitized native-span boundary and opt-out |
 | [configuration.md](what/configuration.md) | Environment variables, provider selection, model resolution, container layout, build system |
 | [health-probes.md](what/health-probes.md) | Readiness checks at batch startup (R1); HTTP probes superseded |
 | [audit-logging.md](what/audit-logging.md) | OTel GenAI invocation, tool, and generation spans; legacy choice events and audit-log projections |
@@ -62,6 +62,7 @@ AI agents. Content is optimized for precision and machine consumption.
 | Understand readiness checks | `what/health-probes.md` |
 | Understand audit logging | `what/audit-logging.md` |
 | Understand sandbox Agentic content traces | `what/data-collection.md` |
+| Understand Agentic tool-output redaction and its limits | `what/tool-output-redaction.md` |
 | Understand E2E testing | `what/e2e-testing.md` |
 | Run live cluster BDD | `what/e2e-testing.md` + `make e2e` |
 
