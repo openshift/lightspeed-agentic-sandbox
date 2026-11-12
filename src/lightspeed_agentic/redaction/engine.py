@@ -76,7 +76,11 @@ class RuleSet:
                         if candidate == group_name:
                             counts[rule.name] = counts.get(rule.name, 0) + 1
                             replacement = rule.replacement
-                            return replacement(match) if callable(replacement) else replacement
+                            return (
+                                replacement(match)
+                                if callable(replacement)
+                                else match.expand(replacement)
+                            )
                     raise RuntimeError("compiled ruleset matched without a named rule")
 
                 return matcher.sub(replace, text), counts

@@ -17,7 +17,11 @@ MCP_RULES = RuleSet(
                 (?:password|passwd|pwd|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret[_-]?key)
                 [ \t]*=[ \t]*
             )
-            (?P<credential_value>[^\s,;#]+)
+            (?P<credential_value>
+                "(?:\\.|[^"\\])*"
+                |'(?:\\.|[^'\\])*'
+                |[^\s,;#]+
+            )
             """,
             lambda match: f"{match.group('credential_prefix')}[REDACTED:credential]",
         ),
