@@ -10,6 +10,10 @@ Anthropic, Vertex/Google, native/custom OpenAI, and Azure routes use shared Deep
 
 Tool-result redaction occurs at the actual tool-call return boundary before native tool-span result capture. By default, successful tool spans and normalized events therefore contain sanitized results; with `LIGHTSPEED_TOOL_OUTPUT_REDACTION_ENABLED=false`, both can contain raw results. Later inspection rejection suppresses normalized result events and Result CRs but does not erase completed span evidence. Compliance copies follow the existing content-capture policy. See [tool-output-redaction.md](tool-output-redaction.md) for the opt-out and its implications. Changed native span/event/message behavior requires the parent component/Dataverse compatibility review and version decision before implementation merges; migration grants no waiver.
 
+## Separate Outbound Records [IMPLEMENTED: OLS-4192]
+
+[Outbound request audit](outbound-request-audit.md) documents the implemented metadata-only JSON log type for Python transport attempts, with offline evidence and live-acceptance limits. Its dedicated emitter is a narrowly scoped exception to this file's span-only/Python-logging restrictions for that record type only. Native GenAI evidence, content capture, compliance projections, and product collection remain unchanged and MUST NOT be copied into the new records. Subprocess connections, including oc traffic, are not observed by this Python-only feature; complementary network observation is tracked by OLS-4848.
+
 ## Behavioral Rules
 
 ### Span Naming and Kinds
