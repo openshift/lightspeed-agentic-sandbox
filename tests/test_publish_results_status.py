@@ -458,7 +458,9 @@ def _crd_rbac_violations(status: dict) -> list[str]:
         if rbac is None:
             continue
         if not isinstance(rbac, dict) or not rbac:
-            violations.append(f"options[{opt_idx}].rbac: Invalid value: should have at least 1 properties")
+            violations.append(
+                f"options[{opt_idx}].rbac: Invalid value: should have at least 1 properties"
+            )
             continue
         for scope in ("namespaceScoped", "clusterScoped"):
             rules = rbac.get(scope)
@@ -496,7 +498,9 @@ class TestBuildStatusRbacCrdValidation:
                     "diagnosis": {"summary": "s", "rootCause": "r"},
                     "remediationPlan": {
                         "description": "plan",
-                        "actions": [{"command": "kubectl ...", "type": "mutation", "description": "d"}],
+                        "actions": [
+                            {"command": "kubectl ...", "type": "mutation", "description": "d"}
+                        ],
                     },
                     "rbac": {
                         "clusterScoped": [
@@ -504,7 +508,10 @@ class TestBuildStatusRbacCrdValidation:
                                 "apiGroups": ["route.openshift.io"],
                                 "resources": [],
                                 "verbs": [],
-                                "justification": "May need to list/get cluster-wide route info (may be unnecessary)",
+                                "justification": (
+                                    "May need to list/get cluster-wide route info "
+                                    "(may be unnecessary)"
+                                ),
                             }
                         ]
                     },

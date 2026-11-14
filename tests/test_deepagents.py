@@ -1495,6 +1495,8 @@ async def test_shaping_prompt_requests_native_json_types_and_retries_invalid_out
     assert "booleans for boolean fields" in prompt
     assert "arrays for array fields" in prompt
     assert "Never serialize an array or object as a string" in prompt
+    assert "Never invent placeholder entries" in prompt
+    assert "never fabricate RBAC rules" in prompt
     if raises_error:
         retry_messages = bound.ainvoke.await_args_list[1].args[0]
         assert "previous response could not be parsed" in retry_messages[1].content
