@@ -284,11 +284,13 @@ def _sanitize_analysis_options(
                 kept: list[dict[str, Any]] = []
                 for rule in rules:
                     if not isinstance(rule, dict):
-                        logger.warning(
-                            "dropping non-dict RBAC rule in option %d %s", idx, scope
-                        )
+                        logger.warning("dropping non-dict RBAC rule in option %d %s", idx, scope)
                         continue
-                    if not rule.get("apiGroups") or not rule.get("resources") or not rule.get("verbs"):
+                    if (
+                        not rule.get("apiGroups")
+                        or not rule.get("resources")
+                        or not rule.get("verbs")
+                    ):
                         logger.warning(
                             "dropping RBAC rule in option %d %s: empty or missing "
                             "apiGroups/resources/verbs",
