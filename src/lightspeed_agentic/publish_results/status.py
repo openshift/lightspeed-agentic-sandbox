@@ -6,9 +6,10 @@ lifecycle conditions, and sets failureReason when the agent or sandbox
 reports failure.
 
 For AnalysisResult, ``_sanitize_analysis_options`` truncates string fields
-that exceed CRD maxLength limits and removes per-option diagnosis dicts
-whose required fields are empty, preventing CRD validation failures on
-publish (OLS-3864).
+that exceed CRD maxLength limits, removes per-option diagnosis dicts
+whose required fields are empty, and drops RBAC rules whose required
+arrays (apiGroups/resources/verbs) are empty or missing, preventing CRD
+validation failures on publish (OLS-3864, OLS-3465).
 """
 
 from __future__ import annotations
@@ -266,15 +267,42 @@ def _sanitize_analysis_options(
                     step["type"] = _truncate(step["type"], _MAX_LEN_VERIFICATION_STEP_TYPE)
 
         # --- rbac ---
+        # OLS-3465: LLMs sometimes hedge by emitting speculative rules with
+        # empty apiGroups/resources/verbs instead of omitting them. Such rules
+        # violate the CRD (+required, MinItems=1), and _strip_empty_values
+        # would delete the empty keys but keep the rule, producing a
+        # "Required value" rejection that loses the entire analysis. Drop the
+        # whole rule instead (silent salvage per run-api.md rule 21b); empty
+        # scope lists and empty rbac objects are removed later by
+        # _strip_empty_values.
         rbac = opt.get("rbac")
         if isinstance(rbac, dict):
             for scope in ("namespaceScoped", "clusterScoped"):
-                for rule in rbac.get(scope) or []:
+                rules = rbac.get(scope)
+                if not isinstance(rules, list):
+                    continue
+                kept: list[dict[str, Any]] = []
+                for rule in rules:
                     if not isinstance(rule, dict):
+                        logger.warning("dropping non-dict RBAC rule in option %d %s", idx, scope)
+                        continue
+                    if (
+                        not rule.get("apiGroups")
+                        or not rule.get("resources")
+                        or not rule.get("verbs")
+                    ):
+                        logger.warning(
+                            "dropping RBAC rule in option %d %s: empty or missing "
+                            "apiGroups/resources/verbs",
+                            idx,
+                            scope,
+                        )
                         continue
                     if isinstance(rule.get("justification"), str):
                         max_len = _MAX_LEN_RBAC_JUSTIFICATION
                         rule["justification"] = _truncate(rule["justification"], max_len)
+                    kept.append(rule)
+                rbac[scope] = kept
 
     return options, errors
 
