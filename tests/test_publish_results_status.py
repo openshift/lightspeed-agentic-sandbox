@@ -438,3 +438,133 @@ class TestBuildConditionsTimeout:
             timed_out=False,
         )
         assert conds[1]["reason"] == "Failed"
+
+
+def _crd_rbac_violations(status: dict) -> list[str]:
+    """Check AnalysisResult status against the CRD's RBAC validation rules.
+
+    Mirrors the kubebuilder markers on RBACResult/RBACRule in
+    lightspeed-agentic-operator api/v1alpha1/agenticrun_analysis_types.go:
+    - rbac: MinProperties=1 (at least one of namespaceScoped/clusterScoped)
+    - namespaceScoped/clusterScoped: MinItems=1 when present
+    - each rule: apiGroups/resources/verbs are +required with MinItems=1
+
+    Returns a list of violation messages in the API server's spirit
+    (e.g. "options[0].rbac.clusterScoped[0].resources: Required value").
+    """
+    violations: list[str] = []
+    for opt_idx, opt in enumerate(status.get("options") or []):
+        rbac = opt.get("rbac")
+        if rbac is None:
+            continue
+        if not isinstance(rbac, dict) or not rbac:
+            violations.append(f"options[{opt_idx}].rbac: Invalid value: should have at least 1 properties")
+            continue
+        for scope in ("namespaceScoped", "clusterScoped"):
+            rules = rbac.get(scope)
+            if rules is None:
+                continue
+            if not rules:
+                violations.append(f"options[{opt_idx}].rbac.{scope}: Required value")
+                continue
+            for rule_idx, rule in enumerate(rules):
+                for field in ("apiGroups", "resources", "verbs"):
+                    if not rule.get(field):
+                        violations.append(
+                            f"options[{opt_idx}].rbac.{scope}[{rule_idx}].{field}: Required value"
+                        )
+    return violations
+
+
+class TestBuildStatusRbacCrdValidation:
+    """OLS-3465: hedged RBAC entries must not produce CRD-invalid status.
+
+    The analysis agent (observed with OpenAI models) sometimes hedges by
+    emitting speculative RBAC rules with empty ``resources``/``verbs``
+    instead of omitting them. The published status must still satisfy the
+    AnalysisResult CRD, or the API server rejects the patch and the entire
+    analysis is lost.
+    """
+
+    def test_hedged_rule_with_empty_resources_and_verbs(self) -> None:
+        """Example 1 from OLS-3465: clusterScoped rule with empty arrays."""
+        agent = {
+            "actionRequired": True,
+            "options": [
+                {
+                    "title": "Restart deployment",
+                    "diagnosis": {"summary": "s", "rootCause": "r"},
+                    "remediationPlan": {
+                        "description": "plan",
+                        "actions": [{"command": "kubectl ...", "type": "mutation", "description": "d"}],
+                    },
+                    "rbac": {
+                        "clusterScoped": [
+                            {
+                                "apiGroups": ["route.openshift.io"],
+                                "resources": [],
+                                "verbs": [],
+                                "justification": "May need to list/get cluster-wide route info (may be unnecessary)",
+                            }
+                        ]
+                    },
+                }
+            ],
+        }
+        status = build_status(
+            "AnalysisResult",
+            agent,
+            started_at=_dt(),
+            completed_at=_dt(),
+        )
+        # The hedged rule is dropped; empty clusterScoped list and rbac object
+        # cascade away; the option itself survives.
+        assert "rbac" not in status["options"][0]
+        assert status["options"][0]["title"] == "Restart deployment"
+        assert _crd_rbac_violations(status) == []
+
+    def test_empty_rbac_object_removed(self) -> None:
+        """Example 2 from OLS-3465: gpt-5 returning rbac: {}."""
+        agent = {
+            "actionRequired": True,
+            "options": [
+                {
+                    "title": "Advisory only",
+                    "rbac": {},
+                }
+            ],
+        }
+        status = build_status(
+            "AnalysisResult",
+            agent,
+            started_at=_dt(),
+            completed_at=_dt(),
+        )
+        assert "rbac" not in status["options"][0]
+        assert _crd_rbac_violations(status) == []
+
+    def test_valid_rbac_rules_survive_untouched(self) -> None:
+        """Well-formed rules are preserved exactly."""
+        rule = {
+            "apiGroups": ["apps"],
+            "resources": ["deployments"],
+            "verbs": ["patch"],
+            "justification": "kubectl patch deployment/foo",
+        }
+        agent = {
+            "actionRequired": True,
+            "options": [
+                {
+                    "title": "Patch deployment",
+                    "rbac": {"namespaceScoped": [dict(rule, namespace="prod")]},
+                }
+            ],
+        }
+        status = build_status(
+            "AnalysisResult",
+            agent,
+            started_at=_dt(),
+            completed_at=_dt(),
+        )
+        assert status["options"][0]["rbac"]["namespaceScoped"] == [dict(rule, namespace="prod")]
+        assert _crd_rbac_violations(status) == []
