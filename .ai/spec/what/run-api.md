@@ -69,6 +69,7 @@ The agent returns structured JSON via `run_agent_query()` (formerly HTTP `RunRes
 21. **Success path.** On sandbox success (agent completed, including agent failure), the sandbox MUST:
    - (a) merge agent structured output into Result CR `status` fields per step kind (`publish_results/status.py`),
    - (a₁) populate `status.tokenUsage` on the Result CR with `inputTokens` and `outputTokens` from the provider's terminal `result` event (see `provider-contract.md` rule 7). When the provider reports zero tokens (SDK does not support usage reporting), both fields MUST be set to 0. The operator reads this field during result processing for run-level aggregation (see operator `sandbox-execution.md` rule 43.1 and `crd-api.md` rule 6e).
+   - (a₂) [PLANNED: OLS-3760] also populate the optional `tokenUsage` fields `reasoningTokens`, `toolTokens`, `skillTokens`, `peakInputTokens` and `model` from the terminal `result` event (`provider-contract.md` rule 7a). Optional counts that are `None` MUST be omitted, not written as 0; `model` is omitted when empty. Before publishing, clamp so that `reasoningTokens <= outputTokens`, `skillTokens <= toolTokens <= inputTokens` and `peakInputTokens <= inputTokens`. When no model call reported usage (including failure paths that publish zero input/output), `reasoningTokens`, `toolTokens`, `skillTokens` and `peakInputTokens` MUST be 0 so a failed invocation does not unset run-level aggregates (operator `sandbox-execution.md` rule 43.2).
    - (b) set `status.conditions` with `Started=True` and `Completed=True` (`Started.lastTransitionTime` = wall clock immediately before `run_agent_query()`; `Completed` = after agent returns),
    - (c) create the CR from `result-template` (metadata + spec) via the Kubernetes API,
    - (d) update the CR `status` subresource via the Kubernetes API,
@@ -120,6 +121,7 @@ The agent returns structured JSON via `run_agent_query()` (formerly HTTP `RunRes
 - `system-prompt` file as sole system-instructions carrier. [PLANNED: OLS-3491]
 - [PLANNED: OLS-3743] Replace `LIGHTSPEED_TIMEOUT_MS` with required operator-resolved agent timeout and max-turn limits; publish cooperative timeouts with the distinct `AgentTimeout` reason.
 - [PLANNED: OLS-3928] Treat DeepAgents tool-result inspection failure as a controlled sandbox failure without a Result CR.
+- [PLANNED: OLS-3760] Publish extended `status.tokenUsage` (reasoning, tool, skill, peak input, model). See rule 21 (a₂) and parent `what/token-usage.md`. Existing gap, unchanged: some failure paths report zero usage even after model calls were made.
 
 ## Verification
 
