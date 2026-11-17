@@ -577,6 +577,39 @@ def _debug_logs(spans: list[dict[str, Any]], *, prefixed: bool = True) -> str:
     return "\n".join(lines)
 
 
+def _exported_span_fields(exported: list[Any]) -> list[dict[str, Any]]:
+    """Render exported OTLP spans in the collector debug-exporter log shape."""
+
+    from opentelemetry.proto.trace.v1.trace_pb2 import Span, Status
+
+    from tests.helpers import attributes
+
+    spans: list[dict[str, Any]] = []
+    for span in exported:
+        fields: dict[str, Any] = {
+            "Trace ID": span.trace_id.hex(),
+            "Parent ID": span.parent_span_id.hex(),
+            "ID": span.span_id.hex(),
+            "Name": span.name,
+            "Kind": Span.SpanKind.Name(span.kind).removeprefix("SPAN_KIND_").title(),
+            "Status code": Status.StatusCode.Name(span.status.code)
+            .removeprefix("STATUS_CODE_")
+            .title(),
+            "attrs": attributes(span),
+        }
+        for key, timestamp in (
+            ("Start time", span.start_time_unix_nano),
+            ("End time", span.end_time_unix_nano),
+        ):
+            seconds, nanos = divmod(timestamp, 1_000_000_000)
+            fields[key] = (
+                datetime.fromtimestamp(seconds, UTC).strftime("%Y-%m-%d %H:%M:%S")
+                + f".{nanos:09d} +0000 UTC"
+            )
+        spans.append(fields)
+    return spans
+
+
 def _poll_once(monkeypatch: pytest.MonkeyPatch, logs: str) -> Mock:
     fetch = Mock(return_value=logs)
     monkeypatch.setattr(otel_verify, "fetch_otel_collector_logs", fetch)
@@ -1158,11 +1191,59 @@ async def test_empty_batch_schema_exports_single_generation_accepted_by_bdd_veri
 ) -> None:
     """Exercise actual batch parsing, graph, runner, OTLP encoding, and BDD polling offline."""
     from langchain_core.messages import AIMessage
-    from opentelemetry.proto.trace.v1.trace_pb2 import Span, Status
 
     from lightspeed_agentic.batch import read_batch_inputs
     from lightspeed_agentic.providers.deepagents import DeepAgentsProvider
     from tests.e2e.steps.then import assert_otel_traces_received
+    from tests.helpers import attributes, make_model_route, run_traced_query, scripted_model
+
+    for name, value in {
+        "query": "Name a primary color.",
+        "output-schema": "{}",
+        "context": "{}",
+        "result-template": "{}",
+    }.items():
+        (tmp_path / name).write_text(value)
+    inputs = read_batch_inputs(str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # The e2e verifier requires gen_ai.usage.* on the invoke_agent span, so the
+    # fake reports usage the way every real chat model does; the sandbox omits
+    # the attributes when a call reports nothing.
+    model = scripted_model(
+        [
+            AIMessage(
+                content="Blue is a primary color.",
+                usage_metadata={"input_tokens": 40, "output_tokens": 9, "total_tokens": 49},
+            )
+        ]
+    )
+    provider = DeepAgentsProvider(make_model_route(lambda *_args: model, model="requested-model"))
+    try:
+        result = await run_traced_query(provider, tmp_path, schema=inputs.output_schema)
+    finally:
+        await provider.aclose()
+    assert result.output == {"success": True, "summary": "Blue is a primary color."}
+    exported = wire_trace()
+    assert sorted(span.name for span in exported) == ["chat requested-model", "invoke_agent"]
+    root = next(span for span in exported if span.name == "invoke_agent")
+    assert attributes(root)["gen_ai.output.type"] == "json"
+    spans = _exported_span_fields(exported)
+    context = {"run_uid": "wire-run", "run_step": "analysis", "run_expects_shaping": False}
+    with monkeypatch.context() as polling:
+        _poll_once(polling, _debug_logs(spans))
+        polling.setattr(otel_verify.time, "monotonic", Mock(side_effect=[0, 0, 100]))
+        assert_otel_traces_received(context, Mock(namespace="namespace"), Mock())
+
+
+@pytest.mark.asyncio
+async def test_usage_less_trace_is_rejected_by_the_bdd_verifier(
+    wire_trace: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The verifier's usage alarm fires on a real trace whose model reported nothing."""
+    from langchain_core.messages import AIMessage
+
+    from lightspeed_agentic.batch import read_batch_inputs
+    from lightspeed_agentic.providers.deepagents import DeepAgentsProvider
     from tests.helpers import attributes, make_model_route, run_traced_query, scripted_model
 
     for name, value in {
@@ -1182,37 +1263,13 @@ async def test_empty_batch_schema_exports_single_generation_accepted_by_bdd_veri
         await provider.aclose()
     assert result.output == {"success": True, "summary": "Blue is a primary color."}
     exported = wire_trace()
-    assert sorted(span.name for span in exported) == ["chat requested-model", "invoke_agent"]
     root = next(span for span in exported if span.name == "invoke_agent")
-    assert attributes(root)["gen_ai.output.type"] == "json"
-    spans = []
-    for span in exported:
-        fields = {
-            "Trace ID": span.trace_id.hex(),
-            "Parent ID": span.parent_span_id.hex(),
-            "ID": span.span_id.hex(),
-            "Name": span.name,
-            "Kind": Span.SpanKind.Name(span.kind).removeprefix("SPAN_KIND_").title(),
-            "Status code": Status.StatusCode.Name(span.status.code)
-            .removeprefix("STATUS_CODE_")
-            .title(),
-            "attrs": attributes(span),
-        }
-        for key, timestamp in (
-            ("Start time", span.start_time_unix_nano),
-            ("End time", span.end_time_unix_nano),
-        ):
-            seconds, nanos = divmod(timestamp, 1_000_000_000)
-            fields[key] = (
-                datetime.fromtimestamp(seconds, UTC).strftime("%Y-%m-%d %H:%M:%S")
-                + f".{nanos:09d} +0000 UTC"
-            )
-        spans.append(fields)
-    context = {"run_uid": "wire-run", "run_step": "analysis", "run_expects_shaping": False}
-    with monkeypatch.context() as polling:
-        _poll_once(polling, _debug_logs(spans))
-        polling.setattr(otel_verify.time, "monotonic", Mock(side_effect=[0, 0, 100]))
-        assert_otel_traces_received(context, Mock(namespace="namespace"), Mock())
+
+    assert "gen_ai.usage.input_tokens" not in attributes(root)
+    with pytest.raises(AssertionError, match="Missing invocation usage"):
+        otel_verify.assert_trace_reconstructable(
+            _debug_logs(_exported_span_fields(exported)), "wire-run", expect_shaping=False
+        )
 
 
 @pytest.mark.parametrize("json_output_type", [False, True])

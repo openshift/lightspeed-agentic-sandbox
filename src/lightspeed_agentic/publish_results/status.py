@@ -279,6 +279,50 @@ def _sanitize_analysis_options(
     return options, errors
 
 
+def _build_token_usage(
+    *,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    reasoning_tokens: int | None,
+    tool_tokens: int | None,
+    peak_input_tokens: int | None,
+    response_model: str,
+) -> dict[str, Any] | None:
+    """Assemble tokenUsage, omitting unreported values and clamping to totals.
+
+    ``None`` means "never observed", which is omitted rather than published as
+    zero; only a counter that was actually reported can appear. When no counter
+    was observed at all, the whole record is omitted.
+    """
+    token_usage: dict[str, Any] = {}
+    if input_tokens is not None:
+        token_usage["inputTokens"] = max(0, input_tokens)
+    if output_tokens is not None:
+        token_usage["outputTokens"] = max(0, output_tokens)
+    # CRD validation requires non-negative counts, and each estimate is a subset
+    # of the total it is derived from.
+    if reasoning_tokens is not None:
+        reasoning = max(0, reasoning_tokens)
+        if output_tokens is not None:
+            reasoning = min(reasoning, max(0, output_tokens))
+        token_usage["reasoningTokens"] = reasoning
+    if tool_tokens is not None:
+        tool = max(0, tool_tokens)
+        if input_tokens is not None:
+            tool = min(tool, max(0, input_tokens))
+        token_usage["toolTokens"] = tool
+    if peak_input_tokens is not None:
+        peak = max(0, peak_input_tokens)
+        if input_tokens is not None:
+            peak = min(peak, max(0, input_tokens))
+        token_usage["peakInputTokens"] = peak
+    if not token_usage:
+        return None
+    if response_model:
+        token_usage["model"] = response_model
+    return token_usage
+
+
 def build_status(
     kind: str,
     agent_output: dict[str, Any],
@@ -286,8 +330,12 @@ def build_status(
     failure_reason: str | None = None,
     started_at: datetime,
     completed_at: datetime,
-    input_tokens: int = 0,
-    output_tokens: int = 0,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    reasoning_tokens: int | None = None,
+    tool_tokens: int | None = None,
+    peak_input_tokens: int | None = None,
+    response_model: str = "",
     timed_out: bool = False,
 ) -> dict[str, Any]:
     """Assemble a Result CR status dict from agent output and lifecycle metadata.
@@ -343,10 +391,16 @@ def build_status(
 
     _strip_empty_values(status)
 
-    status["tokenUsage"] = {
-        "inputTokens": input_tokens,
-        "outputTokens": output_tokens,
-    }
+    status["tokenUsage"] = _build_token_usage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        reasoning_tokens=reasoning_tokens,
+        tool_tokens=tool_tokens,
+        peak_input_tokens=peak_input_tokens,
+        response_model=response_model,
+    )
+    if status["tokenUsage"] is None:
+        del status["tokenUsage"]
     status["conditions"] = build_conditions(
         started_at=started_at,
         completed_at=completed_at,

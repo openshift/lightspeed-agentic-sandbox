@@ -452,7 +452,8 @@ async def test_azure_route_runs_native_skill_shell_mcp_inspection_and_shaping(
         assert isinstance(events[-1], ResultEvent)
         assert json.loads(events[-1].text) == result
         jsonschema.validate(json.loads(events[-1].text), schema)
-        assert (events[-1].input_tokens, events[-1].output_tokens) == (50, 10)
+        # Every model call counts: agent generations, classifiers and shaping.
+        assert (events[-1].input_tokens, events[-1].output_tokens) == (70, 14)
         generations = [
             span
             for span in span_exporter.get_finished_spans()

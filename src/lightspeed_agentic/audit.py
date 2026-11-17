@@ -150,9 +150,9 @@ class AuditLogger:
     def complete(
         self,
         *,
-        input_tokens: int,
-        output_tokens: int,
-        reasoning_tokens: int = 0,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        reasoning_tokens: int | None = None,
         span: Any = None,
     ) -> None:
         """Flush buffers, close open tool spans, and stamp usage on the inference span."""
@@ -166,9 +166,12 @@ class AuditLogger:
             tool_duration.labels(gen_ai_tool_name=tool_name).observe(time.monotonic() - start)
         self.close_pending_tools()
         if span is not None and span.is_recording():
-            span.set_attribute("gen_ai.usage.input_tokens", input_tokens)
-            span.set_attribute("gen_ai.usage.output_tokens", output_tokens)
-            if reasoning_tokens:
+            # Unreported counters are omitted rather than stamped as zero.
+            if input_tokens is not None:
+                span.set_attribute("gen_ai.usage.input_tokens", input_tokens)
+            if output_tokens is not None:
+                span.set_attribute("gen_ai.usage.output_tokens", output_tokens)
+            if reasoning_tokens is not None:
                 span.set_attribute("gen_ai.usage.reasoning.output_tokens", reasoning_tokens)
 
     def close_pending_tools(self) -> None:

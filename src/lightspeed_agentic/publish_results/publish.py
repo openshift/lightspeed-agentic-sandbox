@@ -123,8 +123,12 @@ def publish_agent_result(
     failure_reason: str | None = None,
     started_at: datetime,
     completed_at: datetime,
-    input_tokens: int = 0,
-    output_tokens: int = 0,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    reasoning_tokens: int | None = None,
+    tool_tokens: int | None = None,
+    peak_input_tokens: int | None = None,
+    response_model: str = "",
     timed_out: bool = False,
     api: CustomObjectsApi | None = None,
 ) -> None:
@@ -142,6 +146,10 @@ def publish_agent_result(
         completed_at=completed_at,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        reasoning_tokens=reasoning_tokens,
+        tool_tokens=tool_tokens,
+        peak_input_tokens=peak_input_tokens,
+        response_model=response_model,
         timed_out=timed_out,
     )
     publish_result_cr(template, status, api=api)

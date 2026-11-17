@@ -836,7 +836,7 @@ async def test_structured_output_shaping_reaches_anthropic_http_request(
             class _NoopCallback(BaseCallbackHandler):
                 def close_open(self, *_args: Any, **_kwargs: Any) -> None: ...
 
-            parsed, _in_tok, _out_tok = await _shape_structured_output(
+            parsed = await _shape_structured_output(
                 route,
                 {
                     "title": "ShapeOutput",
@@ -1017,7 +1017,7 @@ async def test_structured_output_shaping_coerces_incorrectly_typed_vertex_text(
             class _NoopCallback(BaseCallbackHandler):
                 def close_open(self, *_args: Any, **_kwargs: Any) -> None: ...
 
-            parsed, _in_tok, _out_tok = await _shape_structured_output(
+            parsed = await _shape_structured_output(
                 route,
                 ShapeModel,
                 "shape system prompt",

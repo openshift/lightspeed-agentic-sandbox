@@ -876,8 +876,6 @@ async def test_resolved_route_controls_all_model_roles(
     }
     result = next(event for event in events if isinstance(event, ResultEvent))
     assert result.text == '{"status": "ok"}'
-    assert result.input_tokens == 8
-    assert result.output_tokens == 10
     for client in clients:
         client.close.assert_called_once_with()
 
@@ -1160,7 +1158,7 @@ async def test_raw_shaping_validates_locally_without_rejecting_falsy_values(
         with pytest.raises(Unresolvable):
             await _shape_structured_output(route, schema, "sys", "ask", "answer", Mock())
     else:
-        result, _, _ = await _shape_structured_output(route, schema, "sys", "ask", "answer", Mock())
+        result = await _shape_structured_output(route, schema, "sys", "ask", "answer", Mock())
         assert result == parsed
 
 
@@ -1185,12 +1183,9 @@ async def test_schema_valid_agent_json_skips_the_shaping_model_call() -> None:
     create_model = Mock(return_value=model)
     route = make_model_route(create_model)
 
-    result, input_tokens, output_tokens = await _shape_structured_output(
-        route, schema, "sys", "ask", '{"ok": true}', Mock()
-    )
+    result = await _shape_structured_output(route, schema, "sys", "ask", '{"ok": true}', Mock())
 
     assert result == {"ok": True}
-    assert input_tokens == output_tokens == 0
     create_model.assert_not_called()
 
 
@@ -1220,7 +1215,7 @@ async def test_non_finite_or_unrepresentable_numbers_fall_through_to_shaping(
     model.with_structured_output.return_value = bound
     create_model = Mock(return_value=model)
 
-    result, _, _ = await _shape_structured_output(
+    result = await _shape_structured_output(
         make_model_route(create_model),
         schema,
         "sys",
@@ -1257,7 +1252,7 @@ async def test_deeply_nested_agent_json_falls_through_to_shaping() -> None:
     model.with_structured_output.return_value = bound
     create_model = Mock(return_value=model)
 
-    result, _, _ = await _shape_structured_output(
+    result = await _shape_structured_output(
         make_model_route(create_model),
         schema,
         "sys",
@@ -1305,7 +1300,7 @@ async def test_recursion_errors_in_validation_fall_back_and_retry(
         return original_validate(parsed, output_schema)
 
     monkeypatch.setattr(mod, "_validate_structured_output", recurse_twice)
-    result, _, _ = await mod._shape_structured_output(
+    result = await mod._shape_structured_output(
         make_model_route(Mock(return_value=model)),
         schema,
         "sys",
@@ -1356,12 +1351,9 @@ async def test_shaping_retries_parse_failure_once_and_accepts_valid_retry() -> N
     model.with_structured_output.return_value = bound
     route = make_model_route(Mock(return_value=model))
 
-    result, input_tokens, output_tokens = await _shape_structured_output(
-        route, schema, "sys", "ask", "agent report", Mock()
-    )
+    result = await _shape_structured_output(route, schema, "sys", "ask", "agent report", Mock())
 
     assert result == {"ok": True}
-    assert (input_tokens, output_tokens) == (7, 10)
     assert bound.ainvoke.await_count == 2
 
 
@@ -1394,7 +1386,7 @@ async def test_shaping_retries_non_finite_numeric_result() -> None:
     model = MagicMock()
     model.with_structured_output.return_value = bound
 
-    result, _, _ = await _shape_structured_output(
+    result = await _shape_structured_output(
         make_model_route(Mock(return_value=model)),
         schema,
         "sys",
@@ -1459,7 +1451,7 @@ async def test_shaping_prompt_requests_native_json_types_and_retries_invalid_out
     model.with_structured_output.return_value = bound
 
     async def shape() -> Any:
-        result, _, _ = await mod._shape_structured_output(
+        result = await mod._shape_structured_output(
             make_model_route(Mock(return_value=model), model="claude-sonnet-5"),
             schema_model,
             "sys",
@@ -1520,7 +1512,7 @@ async def test_shaping_retries_recursion_error_from_structured_parser() -> None:
     model = MagicMock()
     model.with_structured_output.return_value = bound
 
-    result, _, _ = await _shape_structured_output(
+    result = await _shape_structured_output(
         make_model_route(Mock(return_value=model)),
         {"type": "object", "properties": {"ok": {"type": "boolean"}}},
         "sys",
@@ -1590,8 +1582,6 @@ class TestEventMapping:
         result_events = [e for e in events if isinstance(e, ResultEvent)]
         assert len(result_events) == 1
         assert result_events[0].text == "Hello world"
-        assert result_events[0].input_tokens == 10
-        assert result_events[0].output_tokens == 5
 
     @pytest.mark.asyncio
     async def test_text_accumulates_across_chunks(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2003,8 +1993,6 @@ class TestEventMapping:
         for event in events:
             audit.process_event(event)
         result_event = next(event for event in events if isinstance(event, ResultEvent))
-        assert result_event.input_tokens == 11
-        assert result_event.output_tokens == 5
         audit.complete(
             input_tokens=result_event.input_tokens,
             output_tokens=result_event.output_tokens,
@@ -2237,8 +2225,6 @@ class TestEventMapping:
         result_events = [e for e in events if isinstance(e, ResultEvent)]
         assert len(result_events) == 1
         assert result_events[0].text == '{"status": "ok"}'
-        assert result_events[0].input_tokens == 8
-        assert result_events[0].output_tokens == 10
 
     @pytest.mark.asyncio
     async def test_two_phase_structured_output_with_thinking(
@@ -2312,8 +2298,6 @@ class TestEventMapping:
         result_events = [e for e in events if isinstance(e, ResultEvent)]
         assert len(result_events) == 1
         assert result_events[0].text == '{"status": "ok"}'
-        assert result_events[0].input_tokens == 8
-        assert result_events[0].output_tokens == 10
 
     @pytest.mark.asyncio
     async def test_shape_pass_uses_function_calling_on_bedrock(
@@ -3483,3 +3467,186 @@ async def test_native_source_evidence_is_independent_of_inspection_admission(
     assert ("APPROVED-SIBLING-SECRET" in compliance_copy) is capture_content
     if reject_result:
         assert ("REJECTED-RESULT-SECRET" in compliance_copy) is capture_content
+
+
+@pytest.mark.asyncio
+async def test_query_attaches_supplied_usage_collector_to_stream_callbacks() -> None:
+    """The runner's collector receives every streamed model callback."""
+    from langchain_core.messages import AIMessage
+
+    from lightspeed_agentic.usage import InvocationUsage
+
+    message = AIMessage(content="answer")
+    captured: dict[str, Any] = {}
+
+    async def stream(*_args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+        captured.update(kwargs)
+        yield (message, {"langgraph_node": "agent"})
+
+    mock_agent = MagicMock()
+    mock_agent.astream = stream
+    collector = InvocationUsage(route_model="claude-sonnet-4-6")
+    with _patch_sys_modules(
+        _mock_deepagents_modules(MagicMock(return_value=mock_agent), MagicMock())
+    ):
+        import importlib
+
+        import lightspeed_agentic.providers.deepagents as mod
+
+        importlib.reload(mod)
+        provider = mod.DeepAgentsProvider(make_model_route(MagicMock(return_value=MagicMock())))
+        await _collect_events(provider, _base_options(usage=collector))
+
+    assert collector in captured["config"]["callbacks"]
+
+
+@pytest.mark.asyncio
+async def test_query_totals_come_from_the_collector_when_chunks_carry_no_usage() -> None:
+    """The invocation collector, not streamed chunk metadata, is authoritative."""
+    from langchain_core.messages import AIMessage, AIMessageChunk
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    from lightspeed_agentic.usage import InvocationUsage
+
+    collector = InvocationUsage(route_model="claude-sonnet-4-6")
+    chunk = AIMessageChunk(content="answer", chunk_position="last")
+
+    async def mock_astream(*_args: Any, **_kwargs: Any) -> AsyncIterator[Any]:
+        collector.on_llm_end(
+            LLMResult(
+                generations=[
+                    [
+                        ChatGeneration(
+                            message=AIMessage(
+                                content="answer",
+                                usage_metadata={
+                                    "input_tokens": 100,
+                                    "output_tokens": 20,
+                                    "total_tokens": 120,
+                                },
+                            )
+                        )
+                    ]
+                ]
+            )
+        )
+        yield chunk, {"langgraph_node": "agent"}
+
+    mock_agent = MagicMock()
+    mock_agent.astream = mock_astream
+    with _deepagents_provider(MagicMock(return_value=mock_agent), MagicMock()) as provider:
+        events = await _collect_events(provider, _base_options(usage=collector))
+
+    result = events[-1]
+    assert isinstance(result, ResultEvent)
+    assert (result.input_tokens, result.output_tokens) == (100, 20)
+
+
+@pytest.mark.asyncio
+async def test_query_does_not_double_count_chunk_and_callback_usage() -> None:
+    """Chunk usage that disagrees with the callback is ignored, not summed."""
+    from langchain_core.messages import AIMessage, AIMessageChunk
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    from lightspeed_agentic.usage import InvocationUsage
+
+    collector = InvocationUsage(route_model="claude-sonnet-4-6")
+    chunk = AIMessageChunk(
+        content="answer",
+        chunk_position="last",
+        usage_metadata={"input_tokens": 999, "output_tokens": 999, "total_tokens": 1998},
+    )
+
+    async def mock_astream(*_args: Any, **_kwargs: Any) -> AsyncIterator[Any]:
+        collector.on_llm_end(
+            LLMResult(
+                generations=[
+                    [
+                        ChatGeneration(
+                            message=AIMessage(
+                                content="answer",
+                                usage_metadata={
+                                    "input_tokens": 100,
+                                    "output_tokens": 20,
+                                    "total_tokens": 120,
+                                },
+                            )
+                        )
+                    ]
+                ]
+            )
+        )
+        yield chunk, {"langgraph_node": "agent"}
+
+    mock_agent = MagicMock()
+    mock_agent.astream = mock_astream
+    with _deepagents_provider(MagicMock(return_value=mock_agent), MagicMock()) as provider:
+        events = await _collect_events(provider, _base_options(usage=collector))
+
+    result = events[-1]
+    assert isinstance(result, ResultEvent)
+    assert (result.input_tokens, result.output_tokens) == (100, 20)
+
+
+@pytest.mark.asyncio
+async def test_query_includes_structured_output_calls_in_collector_totals() -> None:
+    """Shaping calls reach the collector through the config callbacks."""
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    from lightspeed_agentic.usage import InvocationUsage
+
+    collector = InvocationUsage(route_model="claude-sonnet-4-6")
+    main_message = AIMessage(
+        content="agent answer",
+        usage_metadata={"input_tokens": 3, "output_tokens": 4, "total_tokens": 7},
+    )
+    format_model = MagicMock()
+    structured = MagicMock()
+
+    async def shape(*_args: Any, **_kwargs: Any) -> Any:
+        collector.on_llm_end(
+            LLMResult(
+                generations=[
+                    [
+                        ChatGeneration(
+                            message=AIMessage(
+                                content="shape",
+                                usage_metadata={
+                                    "input_tokens": 5,
+                                    "output_tokens": 6,
+                                    "total_tokens": 11,
+                                },
+                            )
+                        )
+                    ]
+                ]
+            )
+        )
+        return {"parsed": {"status": "ok"}, "raw": AIMessage(content="shape")}
+
+    structured.ainvoke = shape
+    format_model.with_structured_output.return_value = structured
+
+    async def mock_astream(*_args: Any, **_kwargs: Any) -> AsyncIterator[Any]:
+        collector.on_llm_end(LLMResult(generations=[[ChatGeneration(message=main_message)]]))
+        yield main_message, {"langgraph_node": "agent"}
+
+    mock_agent = MagicMock()
+    mock_agent.astream = mock_astream
+    create_model = Mock(side_effect=[MagicMock(), MagicMock(), format_model])
+    route = make_model_route(create_model, model="claude-sonnet-4-6")
+    with _deepagents_provider(
+        MagicMock(return_value=mock_agent), MagicMock(), model_route=route
+    ) as provider:
+        events = await _collect_events(
+            provider,
+            _base_options(
+                usage=collector,
+                output_schema={"type": "object", "properties": {"status": {"type": "string"}}},
+            ),
+        )
+
+    result = events[-1]
+    assert isinstance(result, ResultEvent)
+    assert (result.input_tokens, result.output_tokens) == (8, 10)

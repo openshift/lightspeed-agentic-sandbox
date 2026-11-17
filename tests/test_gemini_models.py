@@ -357,7 +357,8 @@ async def test_vertex_gemini_deepagent_inspects_file_before_model_delivery(
         assert "<tool_data" not in results[0].output
         assert isinstance(events[-1], ResultEvent)
         assert json.loads(events[-1].text) == {"sentinel": "gemini-file-sentinel"}
-        assert (events[-1].input_tokens, events[-1].output_tokens) == (30, 9)
+        # Every model call counts: agent generations, classifier and shaping.
+        assert (events[-1].input_tokens, events[-1].output_tokens) == (40, 12)
     inspections = [
         s for s in span_exporter.get_finished_spans() if s.name == "tool_result.inspection"
     ]
