@@ -219,6 +219,12 @@ def assert_trace_reconstructable(
         if name != "tool_result.inspection":
             assert span.attributes.get("agenticrun.uid") == run_uid, "Missing child run correlation"
             assert span.attributes.get("agenticrun.phase") == phase, "Wrong child phase"
+    usage_generations = generations
+    generations = [
+        span
+        for span in usage_generations
+        if not span.attributes.get("agenticrun.generation.auxiliary")
+    ]
     generations.sort(key=lambda span: _timestamp(span.fields["Start time"]))
     assert generations, "Missing model generations"
     next_generation_starts = {
@@ -325,9 +331,12 @@ def assert_trace_reconstructable(
         for key in ("gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens"):
             assert type(root.attributes.get(key)) is int, "Missing invocation usage"
             assert root.attributes[key] >= 0, "Negative invocation usage"
-            if all(key in span.attributes for span in generations):
-                assert root.attributes[key] == sum(span.attributes[key] for span in generations), (
-                    "Invocation/generation usage mismatch"
+            if all(key in span.attributes for span in usage_generations):
+                counts = {span.fields["ID"]: span.attributes[key] for span in usage_generations}
+                total = sum(counts.values())
+                assert root.attributes[key] == total, (
+                    f"Invocation/generation usage mismatch for {key}: "
+                    f"invocation={root.attributes[key]}, generation_sum={total}, spans={counts}"
                 )
 
 

@@ -2013,7 +2013,7 @@ requires-dist = [
     { name = "jsonschema", marker = "extra == 'e2e'", specifier = ">=4.26.0" },
     { name = "kubernetes", specifier = ">=32.0.0" },
     { name = "langchain", marker = "extra == 'deepagents'", specifier = ">=1.4.3,<2" },
-    { name = "langchain-anthropic", marker = "extra == 'deepagents'", specifier = ">=1.4.8" },
+    { name = "langchain-anthropic", marker = "extra == 'deepagents'", specifier = ">=1.6.0" },
     { name = "langchain-aws", marker = "extra == 'deepagents'", specifier = ">=1.6.2" },
     { name = "langchain-core", marker = "extra == 'deepagents'", specifier = ">=1.6.6,<2" },
     { name = "langchain-google-genai", marker = "extra == 'deepagents'", specifier = ">=4.4.0" },

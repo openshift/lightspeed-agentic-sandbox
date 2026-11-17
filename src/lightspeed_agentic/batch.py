@@ -250,6 +250,10 @@ def main() -> None:
             completed_at=completed_at,
             input_tokens=agent_result.input_tokens,
             output_tokens=agent_result.output_tokens,
+            reasoning_tokens=agent_result.reasoning_tokens,
+            tool_tokens=agent_result.tool_tokens,
+            peak_input_tokens=agent_result.peak_input_tokens,
+            response_model=agent_result.response_model,
             timed_out=agent_result.timed_out,
         )
         logger.info("status updated — exiting 0")

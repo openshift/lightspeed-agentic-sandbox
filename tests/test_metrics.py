@@ -67,6 +67,56 @@ async def test_run_records_token_usage() -> None:
 
 
 @pytest.mark.asyncio
+async def test_failed_run_records_observed_token_usage() -> None:
+    from collections.abc import AsyncIterator
+
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    from lightspeed_agentic.types import ProviderEvent, ProviderQueryOptions
+
+    class FailingAfterCallProvider(MockProvider):
+        async def query(self, options: ProviderQueryOptions) -> AsyncIterator[ProviderEvent]:
+            options.usage.on_llm_end(
+                LLMResult(
+                    generations=[
+                        [
+                            ChatGeneration(
+                                message=AIMessage(
+                                    content="partial",
+                                    usage_metadata={
+                                        "input_tokens": 120,
+                                        "output_tokens": 15,
+                                        "total_tokens": 135,
+                                    },
+                                    response_metadata={"model_name": "test-model"},
+                                )
+                            )
+                        ]
+                    ]
+                )
+            )
+            raise ValueError("provider failure")
+            yield  # pragma: no cover
+
+    labels_in = {
+        "gen_ai_token_type": "input",
+        "gen_ai_request_model": "test-model",
+        "gen_ai_provider_name": "mock",
+        "gen_ai_operation_name": "chat",
+    }
+    labels_out = {**labels_in, "gen_ai_token_type": "output"}
+    before_in_sum = _sample("gen_ai_client_token_usage_sum", labels_in)
+    before_out_sum = _sample("gen_ai_client_token_usage_sum", labels_out)
+
+    result = await _run(FailingAfterCallProvider())
+
+    assert result.output["success"] is False
+    assert _sample("gen_ai_client_token_usage_sum", labels_in) == before_in_sum + 120
+    assert _sample("gen_ai_client_token_usage_sum", labels_out) == before_out_sum + 15
+
+
+@pytest.mark.asyncio
 async def test_run_records_operation_duration() -> None:
     labels = {
         "gen_ai_request_model": "test-model",

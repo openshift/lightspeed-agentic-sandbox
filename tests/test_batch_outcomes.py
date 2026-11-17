@@ -266,9 +266,18 @@ def test_migrated_routes_preserve_batch_outcomes_events_limits_and_cleanup(
     assert all(client.close_count == 1 for client in clients)
     assert len(terminal_events) == 1
     terminal = terminal_events[0]
-    assert terminal.response_model == ""  # No observed response-model metadata in the script.
-    expected_usage = {"inputTokens": 3, "outputTokens": 2}
-    assert (terminal.input_tokens, terminal.output_tokens) == tuple(expected_usage.values())
+    # The script reports no response metadata, so the route model is the fallback key.
+    assert terminal.response_model == "offline-model"
+    # No reasoning details in the script, so reasoningTokens is omitted; the route
+    # model is the fallback when no response metadata is reported.
+    expected_usage = {
+        "inputTokens": 3,
+        "outputTokens": 2,
+        "toolTokens": 0,
+        "peakInputTokens": 3,
+        "model": "offline-model",
+    }
+    assert (terminal.input_tokens, terminal.output_tokens) == (3, 2)
     if outcome == "empty-terminal":
         assert terminal.text == ""
     else:
@@ -444,29 +453,34 @@ def test_completed_batch_publishes_exact_outcome(
     assert len(conditions) == 2
     times = [condition["lastTransitionTime"] for condition in conditions]
     assert datetime.fromisoformat(times[0]) <= datetime.fromisoformat(times[1])
-    expected = {
-        **fields,
-        "tokenUsage": {
-            "inputTokens": 3 if report_usage else 0,
-            "outputTokens": 2 if report_usage else 0,
+    expected = {**fields}
+    if report_usage:
+        # Reported usage keeps its observed counts; the estimates are measured
+        # values (no tool growth, peak = the single call's input).
+        expected["tokenUsage"] = {
+            "inputTokens": 3,
+            "outputTokens": 2,
+            "toolTokens": 0,
+            "peakInputTokens": 3,
+            "model": "offline-model",
+        }
+    # A main call that reported no usage publishes no counters at all.
+    expected["conditions"] = [
+        {
+            "type": "Started",
+            "status": "True",
+            "reason": "StepStarted",
+            "message": "Step started",
+            "lastTransitionTime": times[0],
         },
-        "conditions": [
-            {
-                "type": "Started",
-                "status": "True",
-                "reason": "StepStarted",
-                "message": "Step started",
-                "lastTransitionTime": times[0],
-            },
-            {
-                "type": "Completed",
-                "status": "True",
-                "reason": "Succeeded" if success else "Failed",
-                "message": "Step completed" if success else "Step failed",
-                "lastTransitionTime": times[1],
-            },
-        ],
-    }
+        {
+            "type": "Completed",
+            "status": "True",
+            "reason": "Succeeded" if success else "Failed",
+            "message": "Step completed" if success else "Step failed",
+            "lastTransitionTime": times[1],
+        },
+    ]
     if kind == "AnalysisResult":
         expected["actionRequired"] = "False"
     if kind in ("VerificationResult", "EscalationResult"):
@@ -572,10 +586,24 @@ def test_invalid_output_and_provider_errors_publish_failed_result(
     assert model_calls == expected_model_calls
     assert model_requests == expected_model_requests
     status = calls[1][1]["body"]["status"]
-    assert set(status) == {"failureReason", "tokenUsage", "conditions"}
     assert status["failureReason"] == message
-    # No terminal ResultEvent was emitted, so partial main-call usage is not fabricated as a total.
-    assert status["tokenUsage"] == {"inputTokens": 0, "outputTokens": 0}
+    # No terminal ResultEvent was emitted, so the failure forwards observed call usage.
+    # Only the main call reports usage; a main error reports none and shaping never
+    # invokes the model in this script.
+    if failure == "main-error":
+        # No call reported usage, so no counter is defined and the record is omitted.
+        assert set(status) == {"failureReason", "conditions"}
+        assert "tokenUsage" not in status
+    else:
+        assert set(status) == {"failureReason", "tokenUsage", "conditions"}
+        # Observed main-call usage is forwarded; reasoning details are unreported.
+        assert status["tokenUsage"] == {
+            "inputTokens": 3,
+            "outputTokens": 2,
+            "toolTokens": 0,
+            "peakInputTokens": 3,
+            "model": "offline-model",
+        }
     conditions = status["conditions"]
     assert [
         (condition["type"], condition["status"], condition["reason"]) for condition in conditions
@@ -822,11 +850,11 @@ def test_batch_interruption_preserves_outcome_and_closes_clients(
             assert [operation for operation, _ in calls] == ["create", "status"]
             assert calls[0][1]["body"] == template
             status = calls[1][1]["body"]["status"]
-            assert set(status) == {"conditions", "failureReason", "tokenUsage"}
+            # No scripted call reports usage, so the timeout publishes no counters.
+            assert set(status) == {"conditions", "failureReason"}
             assert status["failureReason"].startswith(
                 "Agent invocation exceeded timeout of 30s after "
             )
-            assert status["tokenUsage"] == {"inputTokens": 0, "outputTokens": 0}
             assert [(c["type"], c["status"], c["reason"]) for c in status["conditions"]] == [
                 ("Started", "True", "StepStarted"),
                 ("Completed", "True", "AgentTimeout"),

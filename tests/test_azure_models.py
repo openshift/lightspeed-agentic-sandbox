@@ -349,6 +349,7 @@ async def test_azure_shaping_preserves_version_schema_contract(
         bind_azure_output,
         create_azure_model,
     )
+    from lightspeed_agentic.usage import InvocationUsage
 
     schema = {
         "type": "object",
@@ -371,16 +372,18 @@ async def test_azure_shaping_preserves_version_schema_contract(
         translate_output_schema=partial(azure_structured_output_schema, api_version=version),
         bind_structured_output=bind_azure_output,
     )
-    result, input_tokens, output_tokens = await _shape_structured_output(
+    collector = InvocationUsage(route_model=route.model)
+    result = await _shape_structured_output(
         route,
         schema,
         "Return status",
         "query",
         "agent summary",
         _create_generation_callback(route, Context(), main_name=None),
+        usage=collector,
     )
     assert result == {"status": "ok", "variant": "example"}
-    assert (input_tokens, output_tokens) == (3, 2)
+    assert (collector.input_tokens, collector.output_tokens) == (3, 2)
     assert schema == original
     body = json.loads(azure_http.model_requests[0].content)
     assert "tools" not in body

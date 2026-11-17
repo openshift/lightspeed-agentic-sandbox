@@ -288,7 +288,12 @@ async def test_run_agent_query_traces_main_generations_and_raw_shape_response(
 
     spans = span_exporter.get_finished_spans()
     invocation = next(span for span in spans if span.name == "invoke_agent")
-    generations = [span for span in spans if span.name == "chat claude-trace-test"]
+    generations = [
+        span
+        for span in spans
+        if span.name == "chat claude-trace-test"
+        and not span.attributes.get("agenticrun.generation.auxiliary")
+    ]
     expected_task_parts = [
         {"type": "reasoning", "content": "think-first"},
         {"type": "text", "content": "say-second"},
@@ -433,7 +438,7 @@ async def test_generation_callback_falls_back_to_llm_output_metadata(
     ],
 )
 @pytest.mark.asyncio
-async def test_generation_callback_excludes_subagents_summarization_and_nostream(
+async def test_generation_callback_labels_subagents_summarization_and_nostream_as_auxiliary(
     metadata: dict[str, str],
     tags: list[str],
     span_exporter,
@@ -450,9 +455,9 @@ async def test_generation_callback_excludes_subagents_summarization_and_nostream
         config={"callbacks": [callback], "tags": tags, "metadata": metadata},
     )
 
-    assert [
-        span for span in span_exporter.get_finished_spans() if span.name == f"chat {_MODEL}"
-    ] == []
+    spans = [span for span in span_exporter.get_finished_spans() if span.name == f"chat {_MODEL}"]
+    assert len(spans) == 1
+    assert spans[0].attributes["agenticrun.generation.auxiliary"] is True
 
 
 @pytest.mark.asyncio

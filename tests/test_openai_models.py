@@ -334,7 +334,7 @@ async def test_native_openai_structured_output_sends_strict_schema_in_responses_
         },
     }
 
-    result, _input_tokens, _output_tokens = await _shape_structured_output(
+    result = await _shape_structured_output(
         route,
         schema,
         "Return a status.",
@@ -457,6 +457,7 @@ async def test_compatible_openai_shaping_preserves_schema_in_chat_completions_re
         _shape_structured_output,
     )
     from lightspeed_agentic.providers.model_router import resolve_model_route
+    from lightspeed_agentic.usage import InvocationUsage
 
     original = deepcopy(schema)
     route = resolve_model_route(
@@ -472,13 +473,15 @@ async def test_compatible_openai_shaping_preserves_schema_in_chat_completions_re
     )
     assert route is not None
 
-    result, input_tokens, output_tokens = await _shape_structured_output(
+    collector = InvocationUsage(route_model=route.model)
+    result = await _shape_structured_output(
         route,
         schema,
         "Return a status.",
         "How did it go?",
         "It went well.",
         _create_generation_callback(route, Context(), main_name=None),
+        usage=collector,
     )
 
     requests, sync_client, async_client = captured_openai_requests
@@ -499,7 +502,7 @@ async def test_compatible_openai_shaping_preserves_schema_in_chat_completions_re
     assert schema == original
     assert result["status"] == "ok"
     jsonschema.validate(result, original)
-    assert (input_tokens, output_tokens) == (3, 2)
+    assert (collector.input_tokens, collector.output_tokens) == (3, 2)
     assert sync_client.is_closed
     assert async_client.is_closed
 
@@ -519,6 +522,7 @@ async def test_compatible_shaping_binds_schema_on_unmodified_sdk_model(
         _shape_structured_output,
     )
     from lightspeed_agentic.providers.model_router import resolve_model_route
+    from lightspeed_agentic.usage import InvocationUsage
 
     route = resolve_model_route(
         model_family=ResolvedModelFamily(
@@ -541,16 +545,18 @@ async def test_compatible_shaping_binds_schema_on_unmodified_sdk_model(
         http_async_client=async_client,
     )
     route = replace(route, create_model=lambda _parameters, _reasoning: model)
-    result, input_tokens, output_tokens = await _shape_structured_output(
+    collector = InvocationUsage(route_model=route.model)
+    result = await _shape_structured_output(
         route,
         {"type": "object", "properties": {"status": {"type": "string"}}},
         "Return the status.",
         "How did it go?",
         "It went well.",
         _create_generation_callback(route, Context(), main_name=None),
+        usage=collector,
     )
     assert result == {"status": "ok"}
-    assert (input_tokens, output_tokens) == (3, 2)
+    assert (collector.input_tokens, collector.output_tokens) == (3, 2)
     assert len(requests) == 1
     assert sync_client.is_closed
     assert async_client.is_closed
@@ -919,11 +925,16 @@ async def test_native_openai_deepagent_reads_file_and_shapes_structured_result(
     assert "native-openai-file-sentinel" in results[0].output
     assert isinstance(events[-1], ResultEvent)
     assert json.loads(events[-1].text) == {"sentinel": "native-openai-file-sentinel"}
-    # Both streamed generations and the shaping call contribute exactly once.
-    assert (events[-1].input_tokens, events[-1].output_tokens) == (35, 9)
+    # Every model call contributes exactly once: both streamed generations, the
+    # shaping call, and the tool-result classifier when inspection is enabled.
+    expected_usage = (35, 9) if inspection_mode == "disabled" else (42, 12)
+    assert (events[-1].input_tokens, events[-1].output_tokens) == expected_usage
 
     generations = [
-        span for span in span_exporter.get_finished_spans() if span.name == "chat gpt-4.1-mini"
+        span
+        for span in span_exporter.get_finished_spans()
+        if span.name == "chat gpt-4.1-mini"
+        and not span.attributes.get("agenticrun.generation.auxiliary")
     ]
     assert [
         (
@@ -1145,7 +1156,7 @@ def _openai_chat_completion(
 @pytest.mark.parametrize("reasoning_field", ["reasoning_content", "reasoning"])
 @pytest.mark.parametrize(
     ("structured_output", "expected_usage", "expected_shape_count", "served_model"),
-    [(False, (60, 9), 0, "org/served-model"), (True, (65, 10), 1, "gpt-4-served-locally")],
+    [(False, (80, 13), 0, "org/served-model"), (True, (85, 14), 1, "gpt-4-served-locally")],
 )
 async def test_compatible_openai_deepagent_runs_skill_and_admitted_mcp_with_inspection(
     monkeypatch: pytest.MonkeyPatch,
@@ -1547,9 +1558,13 @@ async def test_compatible_openai_deepagent_runs_skill_and_admitted_mcp_with_insp
         assert events[-1].text == expected_answer
     assert os.environ["OPENAI_API_KEY"] == "ambient-key-must-not-win"
     assert os.environ["OPENAI_BASE_URL"] == "https://api.openai.com/v1"
+    # Totals cover every model call: agent generations, classifier and shaping.
     assert (events[-1].input_tokens, events[-1].output_tokens) == expected_usage
     generations = [
-        span for span in span_exporter.get_finished_spans() if span.name == f"chat {served_model}"
+        span
+        for span in span_exporter.get_finished_spans()
+        if span.name == f"chat {served_model}"
+        and not span.attributes.get("agenticrun.generation.auxiliary")
     ]
     expected_generations = [
         ("chatcmpl_tools_1", 10, 2, ["tool_calls"]),

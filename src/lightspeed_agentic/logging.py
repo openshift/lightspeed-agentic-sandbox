@@ -61,9 +61,11 @@ class EventLogger:
             case "result":
                 self._flush_thinking()
                 logger.info(
-                    "[provider:%s] result: tokens=%d",
+                    "[provider:%s] result: tokens=%s",
                     self._phase,
-                    event.input_tokens + event.output_tokens,
+                    (event.input_tokens or 0) + (event.output_tokens or 0)
+                    if event.input_tokens is not None or event.output_tokens is not None
+                    else "not_reported",
                 )
                 if event.text:
                     logger.info(
