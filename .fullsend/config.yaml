@@ -19,3 +19,25 @@ create_issues:
 inference:
     project: firefly-868139
     wif_provider: projects/275116376890/locations/global/workloadIdentityPools/uie-github-fullsend-inference/providers/gh-repo-1218143055
+
+agents:
+  - name: triage
+    source: harness/triage.yaml
+    model: google-vertex/gemini-3.8-flash
+  - name: code
+    source: harness/code.yaml
+    model: google-vertex/gemini-3.8-flash
+  - name: review
+    model: google-vertex/gemini-3.8-flash
+    trigger: >-
+      event.transition.kind == "comment_added"
+      && has(event.entity.linked_change_proposal)
+      && has(event.transition.comment.command)
+      && event.transition.comment.command == "/fs-review"
+      && event.actor.kind == "human"
+  - name: fix
+    model: google-vertex/gemini-3.8-flash
+  - name: retro
+    enabled: false
+  - name: prioritize
+    enabled: false
