@@ -43,8 +43,8 @@ jobs:
           fullsend poll \
             --input-driver jira-poll \
             --jira-url "${JIRA_BASE_URL}" \
-            --jira-project FRFLY \
-            --jql 'project = FRFLY AND labels = "repo:openshift/lightspeed-agentic-sandbox" AND statusCategory != Done ORDER BY updated DESC' \
+            --jira-project OLS \
+            --jql 'project = OLS AND labels = "repo:openshift/lightspeed-agentic-sandbox" AND statusCategory != Done ORDER BY updated DESC' \
             --target-repo "${TARGET_REPO}" \
             --output dispatches.json \
             --fullsend-dir .fullsend
