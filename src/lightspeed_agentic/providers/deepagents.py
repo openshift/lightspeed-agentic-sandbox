@@ -622,7 +622,11 @@ async def _shape_structured_output(
             "Use native JSON types: booleans for boolean fields, arrays for array fields, "
             "and objects for object fields. "
             "Never serialize an array or object as a string. "
-            "Base the field values only on the agent run output."
+            "Base the field values only on the agent run output. "
+            "Never invent placeholder entries the agent output does not contain — "
+            "in particular, never fabricate RBAC rules. When the agent output has no "
+            "data for a field, return an empty object or empty array rather than "
+            "guessing values."
         )
         retry_message = HumanMessage(
             content=(
