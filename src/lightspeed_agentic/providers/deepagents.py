@@ -166,7 +166,7 @@ def _content_block_value(block: Any, name: str) -> Any:
     return getattr(block, name, None)
 
 
-def _generation_parts(message: Any) -> list[dict[str, Any]]:
+def _generation_parts(message: Any, *, partial: bool = False) -> list[dict[str, Any]]:
     """Map observed chat content blocks to ordered GenAI output parts."""
     content_blocks = getattr(message, "content_blocks", None)
     parts: list[dict[str, Any]] = []
@@ -206,6 +206,15 @@ def _generation_parts(message: Any) -> list[dict[str, Any]]:
     content = getattr(message, "content", None)
     if not content_blocks and isinstance(content, str):
         parts.append({"type": "text", "content": content})
+    # Some streamed reasoning responses expose complete calls only in tool_calls.
+    recorded_ids = {part.get("id") for part in parts if part["type"] == "tool_call"}
+    for call in () if partial else getattr(message, "tool_calls", None) or []:
+        call_id = _content_block_value(call, "id")
+        name = _content_block_value(call, "name")
+        arguments = _content_block_value(call, "args")
+        if call_id and call_id not in recorded_ids and name and isinstance(arguments, dict):
+            parts.append({"type": "tool_call", "id": call_id, "name": name, "arguments": arguments})
+            recorded_ids.add(call_id)
     return parts
 
 
@@ -260,7 +269,9 @@ def _record_generation_result(
             message = getattr(generation, "message", None)
             if message is not None and not (partial and _is_error_metadata_only(message)):
                 generations.append((generation, message))
-                output_messages.append({"role": "assistant", "parts": _generation_parts(message)})
+                output_messages.append(
+                    {"role": "assistant", "parts": _generation_parts(message, partial=partial)}
+                )
 
     if output_messages:
         set_json_span_attribute(span, "gen_ai.output.messages", output_messages)
