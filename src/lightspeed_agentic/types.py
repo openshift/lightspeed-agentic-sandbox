@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from lightspeed_agentic.mcp import AdmittedMCPProviderServer
+    from lightspeed_agentic.usage import InvocationUsage
 
 MAX_TOOL_RETURN_CHARS = 32_000
 
@@ -61,9 +62,11 @@ class ToolResultEvent:
 class ResultEvent:
     type: Literal["result"] = field(default="result", init=False)
     text: str = ""
-    input_tokens: int = 0
-    output_tokens: int = 0
-    reasoning_tokens: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    tool_tokens: int | None = None
+    peak_input_tokens: int | None = None
     response_model: str = ""
 
 
@@ -88,6 +91,8 @@ class ProviderQueryOptions:
     reasoning_config: dict[str, Any] | None = None
     tool_output_inspection_enabled: bool = True
     deadline: float | None = None
+    # Invocation usage collector; the provider creates one when None.
+    usage: InvocationUsage | None = None
 
 
 class MCPInitializationError(RuntimeError):

@@ -437,7 +437,9 @@ async def test_inspection_rejection_retains_exported_source_but_suppresses_resul
     assert invocation.status.code == Status.STATUS_CODE_ERROR
     assert root["error.type"] == "ToolResultSafetyInspectionFailed"
     assert "gen_ai.output.messages" not in root
-    assert (root["gen_ai.usage.input_tokens"], root["gen_ai.usage.output_tokens"]) == (0, 0)
+    # Safety termination publishes no Result CR; the span still records observed usage
+    # (main 5/2 plus classifier 11/3).
+    assert (root["gen_ai.usage.input_tokens"], root["gen_ai.usage.output_tokens"]) == (16, 5)
     assert generation.status.code == Status.STATUS_CODE_UNSET
     generation_attrs = _attributes(generation)
     assert generation_attrs["gen_ai.response.id"] == "response-before-rejection"

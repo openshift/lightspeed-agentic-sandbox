@@ -103,3 +103,12 @@ def test_query_options_accepts_admitted_provider_servers():
     )
 
     assert opts.mcp_servers == [server]
+
+
+def test_result_event_extended_usage_defaults():
+    """Absent extended usage stays unset rather than zero-filled."""
+    e = ResultEvent(text="done")
+    assert e.reasoning_tokens is None
+    assert e.tool_tokens is None
+    assert e.peak_input_tokens is None
+    assert e.response_model == ""

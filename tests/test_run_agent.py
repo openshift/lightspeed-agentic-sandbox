@@ -7,21 +7,25 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from langchain_core.messages import ToolMessage
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import SpanKind, StatusCode
 
 from lightspeed_agentic.inspection.errors import ToolResultSafetyInspectionFailed
 from lightspeed_agentic.providers.tool_result_middleware import ToolResultInspectionMiddleware
 from lightspeed_agentic.run_agent import ContextFormatError, format_context_prefix, run_agent_query
 from lightspeed_agentic.types import (
+    MCPInitializationError,
     ProviderEvent,
     ProviderQueryOptions,
     ResultEvent,
     TextDeltaEvent,
     ThinkingDeltaEvent,
     ToolCallEvent,
+    ToolExecutionError,
     ToolResultEvent,
 )
 
@@ -553,6 +557,59 @@ async def test_run_agent_query_timeout(span_exporter) -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_agent_query_timeout_publishes_observed_usage(span_exporter) -> None:
+    """A call completed before the timeout keeps its usage instead of publishing zero."""
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    class TimedOutAfterCallProvider(MockProvider):
+        async def query(self, options: ProviderQueryOptions) -> AsyncIterator[ProviderEvent]:
+            options.usage.on_llm_end(
+                LLMResult(
+                    generations=[
+                        [
+                            ChatGeneration(
+                                message=AIMessage(
+                                    content="partial",
+                                    usage_metadata={
+                                        "input_tokens": 120,
+                                        "output_tokens": 15,
+                                        "total_tokens": 135,
+                                    },
+                                    response_metadata={"model_name": "test-model"},
+                                )
+                            )
+                        ]
+                    ]
+                )
+            )
+            await asyncio.sleep(30)
+            yield ResultEvent(text='{"success":true}')  # pragma: no cover
+
+    result = await run_agent_query(
+        TimedOutAfterCallProvider(),
+        prompt="test",
+        system_prompt="You are an AI agent.",
+        output_schema=None,
+        context=None,
+        skills_dir="/workspace",
+        model="test-model",
+        max_turns=200,
+        timeout_seconds=0.05,
+        audit_enabled=True,
+    )
+
+    assert result.timed_out is True
+    assert result.input_tokens == 120
+    assert result.output_tokens == 15
+    invocation_span = next(
+        span for span in span_exporter.get_finished_spans() if span.name == "invoke_agent"
+    )
+    assert invocation_span.attributes["gen_ai.usage.input_tokens"] == 120
+    assert invocation_span.attributes["gen_ai.usage.output_tokens"] == 15
+
+
+@pytest.mark.asyncio
 async def test_run_agent_query_empty_response(span_exporter) -> None:
     """Empty ResultEvent text is preserved and treated as agent failure."""
     result = await run_agent_query(
@@ -978,8 +1035,8 @@ async def test_run_agent_query_returns_token_counts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_agent_query_token_counts_zero_on_timeout() -> None:
-    """Token counts default to 0 when the agent times out (OLS-3994)."""
+async def test_run_agent_query_token_counts_unset_on_timeout() -> None:
+    """Counters stay unset when the agent times out without reporting usage."""
 
     class SlowProvider(MockProvider):
         async def query(self, _options: ProviderQueryOptions) -> AsyncIterator[ProviderEvent]:
@@ -997,8 +1054,9 @@ async def test_run_agent_query_token_counts_zero_on_timeout() -> None:
         max_turns=200,
         timeout_seconds=1,
     )
-    assert result.input_tokens == 0
-    assert result.output_tokens == 0
+    assert result.input_tokens is None
+    assert result.output_tokens is None
+    assert result.response_model == "test-model"
 
 
 @pytest.mark.asyncio
@@ -1020,3 +1078,203 @@ async def test_run_agent_query_token_counts_on_text_response() -> None:
     )
     assert result.input_tokens == 10
     assert result.output_tokens == 5
+
+
+def _observed_usage_result(
+    *,
+    input_tokens: int = 120,
+    output_tokens: int = 15,
+    reasoning_tokens: int | None = 6,
+    model: str = "served-model",
+) -> Any:
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    usage: dict[str, Any] = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+    }
+    if reasoning_tokens is not None:
+        usage["output_token_details"] = {"reasoning": reasoning_tokens}
+    return LLMResult(
+        generations=[
+            [
+                ChatGeneration(
+                    message=AIMessage(
+                        content="partial",
+                        usage_metadata=usage,
+                        response_metadata={"model_name": model},
+                    )
+                )
+            ]
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_agent_query_copies_extended_usage_from_terminal_event() -> None:
+    """The terminal event supplies every extended usage field to the batch result."""
+    provided = ResultEvent(
+        text='{"success": true, "summary": "done"}',
+        input_tokens=80,
+        output_tokens=40,
+        reasoning_tokens=7,
+        tool_tokens=12,
+        peak_input_tokens=55,
+        response_model="served-model",
+    )
+
+    result = await run_agent_query(
+        MockProvider(events=[provided]),
+        prompt="test",
+        system_prompt="You are an AI agent.",
+        output_schema=None,
+        context=None,
+        skills_dir="/workspace",
+        model="test-model",
+        max_turns=200,
+        timeout_seconds=300,
+    )
+
+    assert result.input_tokens == 80
+    assert result.output_tokens == 40
+    assert result.reasoning_tokens == 7
+    assert result.tool_tokens == 12
+    assert result.peak_input_tokens == 55
+    assert result.response_model == "served-model"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_query_preserves_absent_usage() -> None:
+    """A provider that reports nothing leaves every counter unset, not zero."""
+    result = await run_agent_query(
+        MockProvider(events=[ResultEvent(text='{"success": true, "summary": "done"}')]),
+        prompt="test",
+        system_prompt="You are an AI agent.",
+        output_schema=None,
+        context=None,
+        skills_dir="/workspace",
+        model="test-model",
+        max_turns=200,
+        timeout_seconds=300,
+    )
+
+    assert result.input_tokens is None
+    assert result.output_tokens is None
+    assert result.reasoning_tokens is None
+    assert result.tool_tokens is None
+    assert result.peak_input_tokens is None
+    assert result.response_model == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        ToolExecutionError(tool_name="execute", error_type="RuntimeError"),
+        MCPInitializationError(server_names=("sentinel",), error_type="RuntimeError"),
+        RuntimeError("provider failure"),
+    ],
+    ids=["tool", "mcp", "generic"],
+)
+async def test_run_agent_query_failure_publishes_observed_usage(
+    span_exporter, error: BaseException
+) -> None:
+    """A provider that reports usage before failing keeps those totals."""
+
+    class ObservedUsageThenFailureProvider(MockProvider):
+        async def query(self, options: ProviderQueryOptions) -> AsyncIterator[ProviderEvent]:
+            options.usage.on_llm_end(_observed_usage_result())
+            raise error
+            yield  # pragma: no cover
+
+    result = await run_agent_query(
+        ObservedUsageThenFailureProvider(),
+        prompt="test",
+        system_prompt="You are an AI agent.",
+        output_schema=None,
+        context=None,
+        skills_dir="/workspace",
+        model="test-model",
+        max_turns=200,
+        timeout_seconds=300,
+        audit_enabled=True,
+    )
+
+    assert result.output["success"] is False
+    assert result.output["summary"].startswith("Agent error:")
+    assert result.timed_out is False
+    assert result.input_tokens == 120
+    assert result.output_tokens == 15
+    assert result.reasoning_tokens == 6
+    assert result.tool_tokens is None
+    assert result.peak_input_tokens is None
+    assert result.response_model == "served-model"
+
+    invocation_span = next(
+        span for span in span_exporter.get_finished_spans() if span.name == "invoke_agent"
+    )
+    assert invocation_span.attributes["gen_ai.usage.input_tokens"] == 120
+    assert invocation_span.attributes["gen_ai.usage.output_tokens"] == 15
+    assert invocation_span.attributes["gen_ai.usage.reasoning.output_tokens"] == 6
+
+
+@pytest.mark.asyncio
+async def test_run_agent_query_failure_without_usage_publishes_no_counters() -> None:
+    """A failure that reported nothing publishes no counters at all."""
+
+    class FailureWithoutUsageProvider(MockProvider):
+        async def query(self, _options: ProviderQueryOptions) -> AsyncIterator[ProviderEvent]:
+            raise RuntimeError("provider failure")
+            yield  # pragma: no cover
+
+    result = await run_agent_query(
+        FailureWithoutUsageProvider(),
+        prompt="test",
+        system_prompt="You are an AI agent.",
+        output_schema=None,
+        context=None,
+        skills_dir="/workspace",
+        model="test-model",
+        max_turns=200,
+        timeout_seconds=300,
+    )
+
+    assert result.input_tokens is None
+    assert result.output_tokens is None
+    assert result.reasoning_tokens is None
+    assert result.tool_tokens is None
+    assert result.peak_input_tokens is None
+
+
+@pytest.mark.asyncio
+async def test_run_agent_query_omits_unreported_usage_from_the_span(
+    span_exporter: InMemorySpanExporter,
+) -> None:
+    """The invocation span carries usage attributes only for reported counters."""
+
+    class FailureWithoutUsageProvider(MockProvider):
+        async def query(self, _options: ProviderQueryOptions) -> AsyncIterator[ProviderEvent]:
+            raise RuntimeError("provider failure")
+            yield  # pragma: no cover
+
+    await run_agent_query(
+        FailureWithoutUsageProvider(),
+        prompt="test",
+        system_prompt="You are an AI agent.",
+        output_schema=None,
+        context=None,
+        skills_dir="/workspace",
+        model="test-model",
+        max_turns=200,
+        timeout_seconds=300,
+        audit_enabled=True,
+    )
+
+    invocation_span = next(
+        span for span in span_exporter.get_finished_spans() if span.name == "invoke_agent"
+    )
+    assert "gen_ai.usage.input_tokens" not in invocation_span.attributes
+    assert "gen_ai.usage.output_tokens" not in invocation_span.attributes
+    assert "gen_ai.usage.reasoning.output_tokens" not in invocation_span.attributes

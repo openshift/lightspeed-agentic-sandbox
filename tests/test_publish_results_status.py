@@ -358,14 +358,130 @@ class TestBuildStatusTokenUsage:
         )
         assert status["tokenUsage"] == {"inputTokens": 500, "outputTokens": 200}
 
-    def test_token_usage_defaults_to_zero(self) -> None:
+    def test_token_usage_is_omitted_when_nothing_was_reported(self) -> None:
         status = build_status(
             "ExecutionResult",
             {"success": True, "actionsTaken": []},
             started_at=_dt(),
             completed_at=_dt(),
         )
-        assert status["tokenUsage"] == {"inputTokens": 0, "outputTokens": 0}
+        assert "tokenUsage" not in status
+
+    def test_token_usage_extended_fields_present(self) -> None:
+        status = build_status(
+            "ExecutionResult",
+            {"success": True, "actionsTaken": []},
+            started_at=_dt(),
+            completed_at=_dt(),
+            input_tokens=500,
+            output_tokens=200,
+            reasoning_tokens=30,
+            tool_tokens=120,
+            peak_input_tokens=450,
+            response_model="served-model",
+        )
+        assert status["tokenUsage"] == {
+            "inputTokens": 500,
+            "outputTokens": 200,
+            "reasoningTokens": 30,
+            "toolTokens": 120,
+            "peakInputTokens": 450,
+            "model": "served-model",
+        }
+
+    def test_token_usage_omits_unreported_optional_fields(self) -> None:
+        status = build_status(
+            "ExecutionResult",
+            {"success": True, "actionsTaken": []},
+            started_at=_dt(),
+            completed_at=_dt(),
+            input_tokens=500,
+            output_tokens=200,
+            reasoning_tokens=None,
+            tool_tokens=None,
+            peak_input_tokens=None,
+            response_model="",
+        )
+        assert status["tokenUsage"] == {"inputTokens": 500, "outputTokens": 200}
+
+    def test_token_usage_explicit_zero_reasoning_is_published(self) -> None:
+        status = build_status(
+            "ExecutionResult",
+            {"success": True, "actionsTaken": []},
+            started_at=_dt(),
+            completed_at=_dt(),
+            input_tokens=0,
+            output_tokens=0,
+            reasoning_tokens=0,
+            tool_tokens=0,
+            peak_input_tokens=0,
+        )
+        assert status["tokenUsage"] == {
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "reasoningTokens": 0,
+            "toolTokens": 0,
+            "peakInputTokens": 0,
+        }
+
+    def test_token_usage_omits_unreported_totals(self) -> None:
+        status = build_status(
+            "ExecutionResult",
+            {"success": True, "actionsTaken": []},
+            started_at=_dt(),
+            completed_at=_dt(),
+            input_tokens=500,
+            output_tokens=None,
+            peak_input_tokens=450,
+            response_model="served-model",
+        )
+        assert status["tokenUsage"] == {
+            "inputTokens": 500,
+            "peakInputTokens": 450,
+            "model": "served-model",
+        }
+
+    def test_token_usage_clamps_negative_estimates_to_zero(self) -> None:
+        status = build_status(
+            "ExecutionResult",
+            {"success": True, "actionsTaken": []},
+            started_at=_dt(),
+            completed_at=_dt(),
+            input_tokens=10,
+            output_tokens=5,
+            reasoning_tokens=-1,
+            tool_tokens=-2,
+            peak_input_tokens=-3,
+        )
+        assert status["tokenUsage"] == {
+            "inputTokens": 10,
+            "outputTokens": 5,
+            "reasoningTokens": 0,
+            "toolTokens": 0,
+            "peakInputTokens": 0,
+        }
+
+    def test_token_usage_clamps_each_extended_field(self) -> None:
+        status = build_status(
+            "ExecutionResult",
+            {"success": True, "actionsTaken": []},
+            started_at=_dt(),
+            completed_at=_dt(),
+            input_tokens=100,
+            output_tokens=50,
+            reasoning_tokens=80,
+            tool_tokens=150,
+            peak_input_tokens=700,
+            response_model="served-model",
+        )
+        assert status["tokenUsage"] == {
+            "inputTokens": 100,
+            "outputTokens": 50,
+            "reasoningTokens": 50,
+            "toolTokens": 100,
+            "peakInputTokens": 100,
+            "model": "served-model",
+        }
 
     def test_token_usage_zero_when_provider_reports_no_usage(self) -> None:
         status = build_status(
