@@ -18,6 +18,84 @@ from .helpers import TEST_WORKFLOW_MAX_TURNS, make_model_route
 _MODEL = "claude-sonnet-4-6"
 
 
+@pytest.mark.parametrize("in_content", [False, True])
+def test_generation_records_reasoning_and_complete_tool_call_once(in_content: bool) -> None:
+    from langchain_core.messages import AIMessage
+
+    from lightspeed_agentic.providers.deepagents import _generation_parts
+
+    call = {"type": "tool_call", "id": "call_replay", "name": "lookup_status", "args": {}}
+    message = AIMessage(
+        content=[{"type": "reasoning", "reasoning": "Check status first."}]
+        + ([call] if in_content else []),
+        tool_calls=[call],
+        response_metadata={"output_version": "v1"},
+    )
+
+    assert _generation_parts(message) == [
+        {"type": "reasoning", "content": "Check status first."},
+        {"type": "tool_call", "id": "call_replay", "name": "lookup_status", "arguments": {}},
+    ]
+
+
+def test_streamed_openai_reasoning_and_split_tool_call_are_traced_once() -> None:
+    from langchain_core.messages import AIMessageChunk
+    from langchain_openai import ChatOpenAI
+
+    from lightspeed_agentic.providers.deepagents import _generation_parts
+    from lightspeed_agentic.providers.models.openai import _chat_model_with_observed_metadata
+
+    model = _chat_model_with_observed_metadata(ChatOpenAI)(
+        model="gemma", api_key="unused", output_version="v1", use_responses_api=False
+    )
+    deltas = [
+        {"role": "assistant", "reasoning_content": "Check status first."},
+        {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_replay",
+                    "type": "function",
+                    "function": {"name": "lookup_status", "arguments": ""},
+                }
+            ]
+        },
+        {"tool_calls": [{"index": 0, "function": {"arguments": '{"scope":'}}]},
+        {"tool_calls": [{"index": 0, "function": {"arguments": '"local"}'}}]},
+        {},
+    ]
+    chunks = []
+    for index, delta in enumerate(deltas):
+        chunk = model._convert_chunk_to_generation_chunk(
+            {
+                "id": "replay",
+                "model": "gemma",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": delta,
+                        "finish_reason": "tool_calls" if index == len(deltas) - 1 else None,
+                    }
+                ],
+            },
+            AIMessageChunk,
+            {},
+        )
+        assert chunk is not None
+        chunk.message.response_metadata["output_version"] = "v1"
+        chunks.append(chunk)
+    message = (chunks[0] + chunks[1:]).message
+    assert _generation_parts(message) == [
+        {"type": "reasoning", "content": "Check status first."},
+        {
+            "type": "tool_call",
+            "id": "call_replay",
+            "name": "lookup_status",
+            "arguments": {"scope": "local"},
+        },
+    ]
+
+
 @pytest.mark.parametrize("thinking", ["", "observed Vertex reasoning"])
 def test_vertex_native_thinking_block_retains_observed_text_and_order(thinking: str) -> None:
     from langchain_core.messages import AIMessage

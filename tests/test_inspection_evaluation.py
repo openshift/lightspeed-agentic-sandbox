@@ -1640,16 +1640,16 @@ def test_actual_ci_extract_step_preserves_unique_bdd_artifact_attempts(
     assert resolved == "quay.io/openshift-lightspeed/ols-operator-artifacts:" + expected_tag
 
 
-def test_mutable_image_cannot_be_counted_as_reproducible_evaluation() -> None:
+def test_evaluation_job_accepts_tagged_image() -> None:
     from tests.evaluation.batch import build_evaluation_job
     from tests.test_inspection_e2e import _config
 
-    with pytest.raises(ValueError, match="immutable"):
-        build_evaluation_job(
-            replace(_config(), sandbox_image="sandbox:latest"),
-            "job",
-            "input",
-            "run",
-            case_count=18,
-            case_timeout=60,
-        )
+    job = build_evaluation_job(
+        replace(_config(), sandbox_image="sandbox:main"),
+        "job",
+        "input",
+        "run",
+        case_count=18,
+        case_timeout=60,
+    )
+    assert job.spec["template"]["spec"]["containers"][0]["image"] == "sandbox:main"

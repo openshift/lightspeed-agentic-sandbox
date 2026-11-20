@@ -200,3 +200,31 @@ spec:
         value: main
       - name: pathInRepo
         value: .tekton/integration-tests/pipelines/sandbox-integration-test-pipeline.yaml
+---
+apiVersion: appstudio.redhat.com/v1beta2
+kind: IntegrationTestScenario
+metadata:
+  name: sandbox-integration-vllm-openai-compatible
+  namespace: crt-nshift-lightspeed-tenant
+  labels:
+    test.appstudio.openshift.io/optional: "true"
+spec:
+  application: ols
+  contexts:
+    - description: Sandbox integration test — live vLLM tool-result inspection
+      name: component_lightspeed-agentic-sandbox
+  params:
+    - name: provider
+      value: vllm-openai-compatible
+    - name: credential-secret
+      value: vllm-openai-compatible
+  resolverRef:
+    resolver: git
+    resourceKind: pipeline
+    params:
+      - name: url
+        value: https://github.com/openshift/lightspeed-agentic-sandbox
+      - name: revision
+        value: main
+      - name: pathInRepo
+        value: .tekton/integration-tests/pipelines/sandbox-integration-test-pipeline.yaml
