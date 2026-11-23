@@ -249,6 +249,18 @@ Rules 50–67 define the broader target for [OLS-4434](https://redhat.atlassian.
 
 67. **Scope limits.** This ticket consolidates existing provider routes and DeepAgents tools; it does not add model families/providers, promise support for every feature of every vendor API, recreate ADK/OpenAI Agents tools, introduce a model gateway, expand Classic OLS safety, or change authorization/approval/RBAC policy. Provider-specific model/API behavior remains only where necessary to preserve the required contracts above.
 
+## Shared Execution Core [PLANNED: OLS-4671]
+
+Workspace contract: `.ai/spec/what/unified-execution-core.md`. Decision: [0004](../decisions/0004-consume-shared-agent-core.md). These rules are not implemented.
+
+68. **Ownership move.** The DeepAgents adapter, model router and integrations, cloud credentials, MCP client, inspection, wrapping, redaction, summarization handling, usage accounting, GenAI tracing, reasoning configuration, structured-output shaping and the cooperative agent timeout MUST move to the shared core library (`lightspeed-agent-core`, placeholder name). The rules in this file continue to define their batch behavior; they are implemented by the core and verified through the sandbox.
+69. **Pure refactor.** Switching to the core MUST NOT change batch behavior, operator inputs, environment variables, readiness, Result CR content, termination-log handling, or telemetry shape. The existing offline and live suites MUST pass unchanged before the switch merges.
+70. **Batch-only responsibilities stay.** `/input/` handling, readiness, batch lifecycle and deadlines, MCP tool admission (`mcp-tool-rbac.md`), Result CR publishing and termination-log handling stay in the sandbox.
+71. **Chat-only capabilities stay disabled.** The sandbox MUST NOT enable the core's approval middleware, turn-limit continuation middleware, or tool retries. `max_turns` keeps mapping to LangGraph `recursion_limit` with failure on exceed (rule 11).
+72. **Context management unchanged.** Batch keeps DeepAgents eviction and summarization as configured today (default thresholds and the safety-wrapped summarizer, which become the core's implementation for both profiles). Batch has no cross-run history: it passes no conversation thread and uses no checkpointer, and the core's chat-only quota gate is not installed. Any core default the sandbox did not use before MUST be disabled for batch.
+73. **Dependency.** The sandbox MUST consume the core as a hash-pinned HTTPS direct-URL requirement to its GitHub release sdist (no git or wheel URLs), with only the provider extras for its supported routes. It MUST add the core's build backend to `.konflux/requirements-build.txt`, and `scripts/konflux_resolve.py` MUST emit the direct-URL line. Batch MUST NOT install chat-only extras such as WatsonX.
+74. **Future harness changes.** After the move, agent behavior changes are made in the core repository. Changes to this file's rules require a matching core change and a core version bump in the sandbox.
+
 ### Consolidation Verification Matrix [PLANNED: OLS-4434]
 
 Every route in rule 51 requires the applicable checks below. Tests MUST select routes by hosting backend/model family independently of the single harness name. Offline checks use mocked/scripted models and no live credentials; live tests run the consolidated release candidate as batch Jobs on OpenShift.
@@ -323,6 +335,7 @@ Implementation verification starts with existing `make test`, `make lint`, depen
 
 ## Planned Changes
 
+- [PLANNED: OLS-4671] Move the agent implementation into the shared execution core as a pure refactor; the sandbox remains the batch entry point. See rules 68–74 and decision 0004.
 - [PLANNED: OLS-4434] Consolidate every supported provider route on one DeepAgents harness with native DeepAgents tools/skills, admitted MCP tools, shared safety, and preserved model/API contracts. See rules 50–67 and the consolidation verification matrix.
 - Parity improvements across providers (tools, streaming, structured output edge cases). [PLANNED: OLS-3047–OLS-3053]
 - BYOK and RAG integration hooks without breaking the thin-adapter rule. [PLANNED: OLS-3054–OLS-3057]
