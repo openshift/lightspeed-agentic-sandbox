@@ -71,6 +71,20 @@ case "${PROVIDER}" in
     GOOGLE_CLOUD_PROJECT=$(python3 -c "import json; print(json.load(open('${CRED_PATH}'))['project_id'])")
     export GOOGLE_CLOUD_PROJECT
     ;;
+  vllm-openai-compatible)
+    for key in token endpoint model; do
+        if [[ ! -s "${CRED_DIR}/${key}" ]]; then
+            echo "error: missing vLLM credential setting: ${key}" >&2
+            exit 1
+        fi
+    done
+    export OPENAI_PROVIDER_KEY_PATH="${CRED_PATH}"
+    OPENAI_BASE_URL=$(<"${CRED_DIR}/endpoint")
+    OPENAI_MODEL=$(<"${CRED_DIR}/model")
+    : "${OPENAI_BASE_URL:?Missing vLLM endpoint}" "${OPENAI_MODEL:?Missing vLLM model}"
+    export OPENAI_BASE_URL OPENAI_MODEL
+    unset OPENAI_API_KEY
+    ;;
   openai-agents)
     if [ ! -f "${CRED_PATH}" ]; then
         echo "error: credential file not found at ${CRED_PATH}" >&2
@@ -204,7 +218,44 @@ if [ -n "${OPERATOR_REPO:-}" ]; then
 fi
 echo "runner: credentials configured for ${PROVIDER}, starting batch e2e (namespace=${E2E_NAMESPACE})"
 test_exit=0
-bash scripts/e2e-containers.sh "${PROVIDER}" || test_exit=$?
+if [[ "${PROVIDER}" == "vllm-openai-compatible" ]]; then
+    export ARTIFACT_DIR E2E_REQUIRE_VLLM_ROUTE=1
+    python3 - <<'PY' > "${ARTIFACT_DIR}/vllm-expected-route.txt"
+import os
+from urllib.parse import urlsplit
+
+endpoint = urlsplit(os.environ['OPENAI_BASE_URL'])
+if (endpoint.scheme != 'https' or not endpoint.hostname or endpoint.username is not None
+    or endpoint.hostname.rstrip('.').lower() == 'api.openai.com'
+    or endpoint.query or endpoint.fragment):
+    raise SystemExit('vLLM requires a custom HTTPS base URL without userinfo, query, or fragment')
+print('route=openai-compatible')
+print('runtime=deepagents')
+print('api=chat-completions')
+print('model=' + os.environ['OPENAI_MODEL'])
+print('image=' + os.environ['SANDBOX_IMAGE'])
+PY
+    bash scripts/e2e-containers.sh openai-agents -k test_tool_result_inspection_bdd \
+        "--junitxml=${ARTIFACT_DIR}/junit_e2e.xml" --tb=short || test_exit=$?
+    if [[ "${test_exit}" -eq 0 ]]; then
+        python3 - "${ARTIFACT_DIR}/junit_e2e.xml" <<'PY' || test_exit=$?
+import sys
+import xml.etree.ElementTree as ET
+
+expected = {
+    'test_mcp_tool_output_is_inspected_before_the_model_uses_it',
+    'test_malicious_mcp_tool_output_is_rejected_before_model_use',
+}
+cases = list(ET.parse(sys.argv[1]).iter('testcase'))
+if len(cases) != 2 or {case.get('name') for case in cases} != expected or any(
+    case.find(tag) is not None for case in cases for tag in ('skipped', 'failure', 'error')
+):
+    sys.exit('vLLM acceptance requires both inspection scenarios to pass without skips')
+PY
+    fi
+else
+    bash scripts/e2e-containers.sh "${PROVIDER}" || test_exit=$?
+fi
 echo "runner: native checks exit=${native_checks_exit}; BDD exit=${test_exit}"
 if [ "${native_checks_exit}" -ne 0 ]; then
     exit "${native_checks_exit}"

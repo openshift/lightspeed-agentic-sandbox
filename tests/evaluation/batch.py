@@ -150,8 +150,6 @@ def build_evaluation_job(
     case_timeout: float,
 ) -> V1Job:
     """Reuse credential/TLS mounts, but keep corpus/runner outside the shipped image."""
-    if not re.search(r"@sha256:[0-9a-f]{64}$", config.sandbox_image):
-        raise ValueError("Evaluation requires an immutable SANDBOX_IMAGE digest")
     if case_count < 1 or not math.isfinite(case_timeout) or case_timeout <= 0:
         raise ValueError("Evaluation requires cases and a finite positive timeout")
     labels = {

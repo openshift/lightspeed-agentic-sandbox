@@ -71,3 +71,21 @@ make verify-hermetic-requirements      # check package coverage; version skew is
 Review and commit all changed lockfiles, requirements, and Tekton files together.
 See [AGENTS.md](AGENTS.md#konflux-hermetic-builds) for the build inputs,
 prerequisites, and instructions for adding dependencies.
+
+## Live vLLM integration scenario (OLS-4640)
+
+Provision the `vllm-openai-compatible` Secret in the Konflux tenant namespace before enabling `sandbox-integration-vllm-openai-compatible`. Set `token` to the bearer credential, `endpoint` to the custom HTTPS OpenAI-compatible base URL ending in `/v1`, and `model` to the served tool-calling model ID (tested with `redhataigemma-4-31b-it-fp8-blo`). Rotate the token through the CI secret store, never through Git. The ephemeral cluster must be able to reach the endpoint with TLS verification enabled.
+
+The scenario uses the candidate snapshot image and runs only the benign and malicious MCP inspection tests through the `openai-agents` entry. Both must pass without skips. The existing artifact uploader collects the pytest log, JUnit XML, image reference and route/model summary.
+
+For a local reproduction on a dev cluster, configure `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_API_KEY` and `OPERATOR_REPO` (the base URL ending in `/v1`, the served model ID, the bearer token, and the local operator checkout path, respectively), then run:
+
+```bash
+export E2E_REQUIRE_VLLM_ROUTE=1
+export ARTIFACT_DIR="$(mktemp -d)"
+bash scripts/e2e-containers.sh openai-agents -k test_tool_result_inspection_bdd --tb=short
+```
+
+Use `SANDBOX_IMAGE` to select the candidate image. Confirm both tests pass without
+skips and `ARTIFACT_DIR` contains `vllm-benign-observed.txt` and
+`vllm-malicious-observed.txt`. Konflux checks the no-skips requirement automatically.

@@ -145,6 +145,8 @@ a labeled batch Job in `E2E_NAMESPACE` (default `openshift-lightspeed`) using
 
 #### Custom LLM endpoints (vLLM, local services, etc.)
 
+**Live vLLM acceptance (OLS-4640):** The Konflux `vllm-openai-compatible` lane reuses the `openai-agents` harness entry with a dedicated CI Secret (`token`, `endpoint`, `model`). It uses the candidate sandbox image and the shared DeepAgents OpenAI-compatible Chat Completions route. Both existing MCP inspection scenarios must pass: benign sentinel and correlated inspection telemetry, and malicious fail-closed behavior and correlated inspection telemetry. Skips and missing results do not count as acceptance. Retain JUnit results, logs, the candidate image identity, and sanitized route/model configuration. See the repository README for setup and local reproduction.
+
 The harness supports custom OpenAI-compatible endpoints (vLLM, local deployments,
 internal services) via environment variables. No positional model arguments needed.
 
@@ -251,7 +253,7 @@ BDD scenario, separate from these focused MCP enforcement checks.
 revision/SHA256 and strict validation. An ordinary scenario in
 `inspection_evaluation.feature` uses the existing BDD cluster clients, provider
 configuration, credentials, TLS mounts, and artifact directory to launch the
-classifier-only Job. A small worker is ConfigMap-mounted into the digest-pinned
+classifier-only Job. A small worker is ConfigMap-mounted into the selected
 sandbox image and calls production TLS initialization before resolving the model,
 then reuses route/readiness, classifier factory, shared inspector,
 chunking/retry/deadline policy, and client cleanup. It does not execute a main agent

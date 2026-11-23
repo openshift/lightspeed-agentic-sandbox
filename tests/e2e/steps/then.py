@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 from typing import Any
 
+import httpx
 import jsonschema
 from kubernetes.client import ApiException, CoreV1Api, CustomObjectsApi  # type: ignore[import-untyped]
 from pytest_bdd import then
 
 from tests.e2e.analysis_schemas import ANALYSIS_WITH_COMPONENTS_SCHEMA
 from tests.e2e.analysis_tokens import assert_skill_tokens_in_response
-from tests.e2e.batch_runner import KIND_TO_PLURAL, STEP_TO_KIND
+from tests.e2e.batch_runner import KIND_TO_PLURAL, STEP_TO_KIND, fetch_job_pod_logs
 from tests.e2e.k8s_constants import CRD_GROUP, CRD_VERSION
 from tests.e2e.mock_mcp_server import MCP_FAIL_SENTINEL
 from tests.e2e.otel_verify import (
@@ -25,6 +28,24 @@ from tests.e2e.suite_setup import BatchE2EConfig
 
 # SHA-256 of empty string — models sometimes fabricate this instead of running echo-token.sh
 _EMPTY_STRING_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+
+def _assert_vllm_route(
+    context: dict[str, Any], core_api: CoreV1Api, namespace: str, scenario: str
+) -> None:
+    if os.environ.get("E2E_REQUIRE_VLLM_ROUTE") != "1":
+        return
+    endpoint = str(httpx.URL(os.environ["OPENAI_BASE_URL"].rstrip("/") + "/chat/completions"))
+    logs = fetch_job_pod_logs(core_api, namespace, context["batch_job_name"], tail_lines=None)
+    assert re.search(r"^INFO __main__: provider=deepagents model=", logs, re.MULTILINE), (
+        "Sandbox job did not report the DeepAgents runtime"
+    )
+    assert re.search(rf'HTTP Request: POST {re.escape(endpoint)} "HTTP/\S+ 200\b', logs), (
+        "No successful Chat Completions request to the configured endpoint in sandbox logs"
+    )
+    (Path(os.environ["ARTIFACT_DIR"]) / f"vllm-{scenario}-observed.txt").write_text(
+        "runtime=deepagents\napi=chat-completions\nhttp_status=200\n", encoding="utf-8"
+    )
 
 
 def _analysis_status_subset(body: dict[str, Any]) -> dict[str, Any]:
@@ -140,6 +161,7 @@ def assert_otel_tool_result_inspection_received(
     k8s_core_client: CoreV1Api,
 ) -> None:
     """Assert generation, source, inspection, and shaping evidence is reconstructable."""
+    _assert_vllm_route(bdd_context, k8s_core_client, batch_e2e_config.namespace, "benign")
     run_uid = _require_run_uid(bdd_context)
     wait_for_otel_tool_result_inspection(
         k8s_core_client,
@@ -159,6 +181,7 @@ def assert_otel_malicious_tool_result_inspection_received(
     k8s_core_client: CoreV1Api,
 ) -> None:
     """Assert rejected-source evidence survives without later generations or output."""
+    _assert_vllm_route(bdd_context, k8s_core_client, batch_e2e_config.namespace, "malicious")
     run_uid = _require_run_uid(bdd_context)
     wait_for_otel_tool_result_inspection(
         k8s_core_client,
