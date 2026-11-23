@@ -415,20 +415,25 @@ async def test_inspection_rejection_retains_exported_source_but_suppresses_resul
     spans = _exported_spans(otlp_requests)
     assert sorted(span.name for span in spans) == [
         "chat requested-model",
+        "chat requested-model",
         "execute_tool read_file",
         "invoke_agent",
         "tool_result.inspection",
     ]
     invocation = next(span for span in spans if span.name == "invoke_agent")
     source = next(span for span in spans if span.name == "execute_tool read_file")
-    generation = next(span for span in spans if span.name == "chat requested-model")
+    generations = [span for span in spans if span.name == "chat requested-model"]
+    classifier = next(
+        span for span in generations if _attributes(span).get("agenticrun.generation.auxiliary")
+    )
+    generation = next(span for span in generations if span is not classifier)
     inspection = next(span for span in spans if span.name == "tool_result.inspection")
     assert invocation.trace_id.hex() == "0123456789abcdef0123456789abcdef"
     assert invocation.parent_span_id.hex() == "0123456789abcdef"
-    for span in (source, generation, inspection):
+    for span in (source, generation, classifier, inspection):
         assert span.trace_id == invocation.trace_id
         assert span.parent_span_id == invocation.span_id
-    for span in (invocation, source, generation):
+    for span in (invocation, source, generation, classifier):
         attrs = _attributes(span)
         assert attrs["agenticrun.uid"] == "rejected-run"
         assert attrs["agenticrun.phase"] == "analysis"
@@ -437,7 +442,11 @@ async def test_inspection_rejection_retains_exported_source_but_suppresses_resul
     assert invocation.status.code == Status.STATUS_CODE_ERROR
     assert root["error.type"] == "ToolResultSafetyInspectionFailed"
     assert "gen_ai.output.messages" not in root
-    assert (root["gen_ai.usage.input_tokens"], root["gen_ai.usage.output_tokens"]) == (0, 0)
+    # Safety termination publishes no Result CR; the span still records observed usage
+    # (main 5/2 plus classifier 11/3).
+    assert (root["gen_ai.usage.input_tokens"], root["gen_ai.usage.output_tokens"]) == (16, 5)
+    for key in ("gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens"):
+        assert root[key] == sum(_attributes(span)[key] for span in generations)
     assert generation.status.code == Status.STATUS_CODE_UNSET
     generation_attrs = _attributes(generation)
     assert generation_attrs["gen_ai.response.id"] == "response-before-rejection"

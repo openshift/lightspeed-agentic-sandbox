@@ -43,8 +43,20 @@ from lightspeed_agentic.types import (
     ToolResultEvent,
     stringify,
 )
+from lightspeed_agentic.usage import (
+    InvocationUsage,
+    MainCallSnapshot,
+    message_from_response,
+    model_name_from_message,
+    peak_input_tokens_from_main_calls,
+    reasoning_tokens_from_usage,
+    summarize_usage,
+    tool_tokens_from_main_calls,
+)
 
 if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
+
     from lightspeed_agentic.providers.model_router import ResolvedModelRoute
 
 # Harness SDK imports (deepagents, langchain-*, MCP) stay inside functions.
@@ -151,13 +163,6 @@ def _resolve_field_type(schema: dict[str, Any], name: str) -> Any:
             ),
         ]
     return field_type
-
-
-def _usage_from_message(msg: Any) -> tuple[int, int]:
-    usage = getattr(msg, "usage_metadata", None)
-    if not usage:
-        return 0, 0
-    return usage.get("input_tokens", 0), usage.get("output_tokens", 0)
 
 
 def _content_block_value(block: Any, name: str) -> Any:
@@ -324,11 +329,24 @@ def _record_generation_result(
             break
 
 
+def _usage_log_fields(usage: Any) -> tuple[Any, Any, Any]:
+    """Input, output and reasoning fields; unknown values are never zero-filled."""
+    if not isinstance(usage, Mapping):
+        return ("not_reported", "not_reported", "not_reported")
+    reasoning = reasoning_tokens_from_usage(usage)
+    return (
+        int(usage.get("input_tokens", 0) or 0),
+        int(usage.get("output_tokens", 0) or 0),
+        "not_reported" if reasoning is None else reasoning,
+    )
+
+
 def _create_generation_callback(
     model_route: ResolvedModelRoute,
     parent_context: Context,
     *,
     main_name: str | None,
+    usage: InvocationUsage | None = None,
 ) -> Any:
     """Capture model generations and redacted tool executions."""
     from langchain_core.callbacks import AsyncCallbackHandler
@@ -342,6 +360,49 @@ def _create_generation_callback(
             self._model = model_route.model
             self._provider = model_route.telemetry_provider
             self._main_name = main_name
+            self._usage = usage or InvocationUsage(route_model=model_route.model)
+            self._pending_main_messages: dict[UUID, tuple[Any, ...]] = {}
+
+        @property
+        def main_calls(self) -> list[MainCallSnapshot]:
+            """Main-agent call snapshots retained on the invocation collector."""
+            return self._usage.main_calls
+
+        @property
+        def tool_tokens(self) -> int | None:
+            """Estimated input tokens from appended tool results (includes skills)."""
+            return tool_tokens_from_main_calls(self.main_calls)
+
+        @property
+        def peak_input_tokens(self) -> int | None:
+            """Largest single main-agent call input, ``None`` without main calls."""
+            return peak_input_tokens_from_main_calls(self.main_calls)
+
+        def _is_main_call(self, tags: list[str], metadata: dict[str, Any]) -> bool:
+            return (
+                metadata.get("lc_agent_name") == self._main_name
+                and "nostream" not in tags
+                and metadata.get("lc_source") != "summarization"
+            )
+
+        def _logs_turn(self, tags: list[str], metadata: dict[str, Any]) -> bool:
+            """Structured-output shaping contributes totals but is not a main turn."""
+            return self._is_main_call(tags, metadata) and "structured_output" not in tags
+
+        def _record_main_call(self, messages: tuple[Any, ...], response: Any) -> None:
+            message = message_from_response(response)
+            usage = getattr(message, "usage_metadata", None)
+            model = model_name_from_message(message, self._model)
+            input_tokens, output_tokens, reasoning = _usage_log_fields(usage)
+            logger.info(
+                "[provider:usage] input_tokens=%s output_tokens=%s reasoning_tokens=%s model=%s",
+                input_tokens,
+                output_tokens,
+                reasoning,
+                model,
+            )
+            if isinstance(usage, Mapping):
+                self._usage.record_main_call(messages, response)
 
         async def on_chat_model_start(
             self,
@@ -354,22 +415,21 @@ def _create_generation_callback(
             metadata: dict[str, Any] | None = None,
             **kwargs: Any,
         ) -> None:
-            del serialized, messages, parent_run_id, kwargs
+            del serialized, parent_run_id, kwargs
             tags = tags or []
             metadata = metadata or {}
-            if (
-                metadata.get("lc_agent_name") != self._main_name
-                or "nostream" in tags
-                or metadata.get("lc_source") == "summarization"
-            ):
-                return
-
-            self._spans[run_id] = start_generation_span(
+            is_main = self._is_main_call(tags, metadata)
+            if self._logs_turn(tags, metadata) and messages:
+                self._pending_main_messages[run_id] = tuple(messages[0])
+            span = start_generation_span(
                 "chat",
                 self._model,
                 self._provider,
                 parent_context=self._parent_context,
             )
+            if not is_main:
+                span.set_attribute("agenticrun.generation.auxiliary", True)
+            self._spans[run_id] = span
 
         async def on_llm_end(
             self,
@@ -379,6 +439,9 @@ def _create_generation_callback(
             **kwargs: Any,
         ) -> None:
             del kwargs
+            messages = self._pending_main_messages.pop(run_id, None)
+            if messages is not None:
+                self._record_main_call(messages, response)
             span = self._spans.pop(run_id, None)
             if span is None:
                 return
@@ -396,10 +459,26 @@ def _create_generation_callback(
         ) -> None:
             from langchain_core.outputs import LLMResult
 
+            messages = self._pending_main_messages.pop(run_id, None)
             span = self._spans.pop(run_id, None)
+            response = kwargs.get("response")
+            if messages is not None:
+                message = message_from_response(response)
+                message_usage = getattr(message, "usage_metadata", None)
+                input_tokens, output_tokens, reasoning = _usage_log_fields(message_usage)
+                logger.info(
+                    "[provider:usage] input_tokens=%s output_tokens=%s reasoning_tokens=%s "
+                    "model=%s partial=true error_type=%s",
+                    input_tokens,
+                    output_tokens,
+                    reasoning,
+                    model_name_from_message(message, self._model),
+                    type(error).__name__,
+                )
+                if isinstance(message_usage, Mapping):
+                    self._usage.on_llm_error(error, run_id=run_id, response=response)
             if span is None:
                 return
-            response = kwargs.get("response")
             try:
                 if isinstance(response, LLMResult):
                     _record_generation_result(span, response, partial=True)
@@ -581,7 +660,8 @@ async def _shape_structured_output(
     generation_callback: Any,
     *,
     prepared_schema: Any | None = None,
-) -> tuple[Any, int, int]:
+    usage: InvocationUsage | None = None,
+) -> Any:
     """Use valid agent JSON directly; otherwise shape the output with one retry.
 
     The initial agent call is not schema-constrained, so its text is accepted only
@@ -604,7 +684,7 @@ async def _shape_structured_output(
     else:
         try:
             # This fast path creates no shaping model and contributes no shaping tokens.
-            return _validate_structured_output(agent_output, validation_schema), 0, 0
+            return _validate_structured_output(agent_output, validation_schema)
         except (ValueError, RecursionError):
             # JSON syntax alone is insufficient; invalid data falls through to shaping.
             pass
@@ -647,25 +727,26 @@ async def _shape_structured_output(
             SystemMessage(content=system_prompt),
             HumanMessage(content=shape_content),
         ]
-        # Count both calls if a malformed response requires the single retry.
-        input_tokens = output_tokens = 0
+        # Both calls reach the invocation collector if the retry is needed.
+        shape_callbacks = [generation_callback]
+        if usage is not None:
+            shape_callbacks.append(usage)
+        shape_config: RunnableConfig = {
+            "callbacks": shape_callbacks,
+            "tags": ["structured_output"],
+        }
         # Network/provider errors propagate; parser recursion and response/schema errors retry.
         for attempt in range(2):
             try:
                 result = await structured.ainvoke(
                     shape_messages,
-                    config={"callbacks": [generation_callback]},
+                    config=shape_config,
                 )
             except RecursionError:
                 if attempt == 1:
                     raise
                 shape_messages[1] = retry_message
                 continue
-            in_tok, out_tok = _usage_from_message(
-                result.get("raw") if isinstance(result, dict) else None
-            )
-            input_tokens += in_tok
-            output_tokens += out_tok
             try:
                 if not isinstance(result, dict) or "parsed" not in result:
                     raise ValueError("Structured output response is missing parsed output")
@@ -678,7 +759,7 @@ async def _shape_structured_output(
                     raise
                 shape_messages[1] = retry_message
                 continue
-            return parsed, input_tokens, output_tokens
+            return parsed
         raise AssertionError("structured output retry loop did not return or raise")
     except BaseException as exc:
         # Mark any open generation spans with the actual failure before cleanup.
@@ -706,12 +787,10 @@ def _process_ai_message(
     msg: Any,
     *,
     include_tool_calls: bool = True,
-) -> tuple[list[ProviderEvent], str, int, int]:
-    """Map one AIMessage chunk to provider events and token deltas."""
+) -> tuple[list[ProviderEvent], str]:
+    """Map one AIMessage chunk to provider events and text."""
     events: list[ProviderEvent] = _tool_call_events(msg) if include_tool_calls else []
     text_delta = ""
-    input_tokens = 0
-    output_tokens = 0
 
     for block in getattr(msg, "content_blocks", []):
         btype = block["type"] if isinstance(block, dict) else getattr(block, "type", "")
@@ -740,12 +819,7 @@ def _process_ai_message(
     ):
         events.append(ContentBlockStopEvent())
 
-    usage = getattr(msg, "usage_metadata", None)
-    if usage:
-        input_tokens = usage.get("input_tokens", 0)
-        output_tokens = usage.get("output_tokens", 0)
-
-    return events, text_delta, input_tokens, output_tokens
+    return events, text_delta
 
 
 class DeepAgentsProvider(AgentProvider):
@@ -915,10 +989,16 @@ class DeepAgentsProvider(AgentProvider):
                 except Exception as exc:
                     raise ToolResultSafetyInspectionFailed() from exc
 
+            usage = (
+                options.usage
+                if options.usage is not None
+                else InvocationUsage(route_model=self._model_route.model)
+            )
             generation_callback = _create_generation_callback(
                 self._model_route,
                 parent_context,
                 main_name=agent_kwargs.get("name"),
+                usage=usage,
             )
             tool_results_by_signature: dict[tuple[str, str, str, str], deque[ToolResultEvent]] = (
                 defaultdict(deque)
@@ -1017,12 +1097,10 @@ class DeepAgentsProvider(AgentProvider):
                 "configurable": {"thread_id": thread_id},
                 "recursion_limit": options.max_turns,
             }
-            stream_config["callbacks"] = [generation_callback]
+            stream_config["callbacks"] = [generation_callback, usage]
             result_text = ""
             thinking_active = False
             pending_tool_results: list[tuple[str, str, str, Any, ToolResultEvent]] = []
-            total_input_tokens = 0
-            total_output_tokens = 0
             pending_tool_call_chunk: Any | None = None
             input_state = {"messages": [{"role": "user", "content": options.prompt}]}
 
@@ -1088,7 +1166,7 @@ class DeepAgentsProvider(AgentProvider):
                             for event in flush_pending_tool_calls():
                                 yield event
 
-                    events, text_delta, in_tok, out_tok = _process_ai_message(
+                    events, text_delta = _process_ai_message(
                         msg,
                         include_tool_calls=include_tool_calls,
                     )
@@ -1109,8 +1187,6 @@ class DeepAgentsProvider(AgentProvider):
                         yield ContentBlockStopEvent()
                         thinking_active = False
                     result_text += text_delta
-                    total_input_tokens += in_tok
-                    total_output_tokens += out_tok
 
                 elif msg.type in ("tool", "ToolMessageChunk"):
                     for event in flush_pending_tool_calls():
@@ -1151,7 +1227,7 @@ class DeepAgentsProvider(AgentProvider):
                 await _close_model_clients(classifier_model)
 
         if schema_model is not None:
-            structured, in_tok, out_tok = await _shape_structured_output(
+            structured = await _shape_structured_output(
                 self._model_route,
                 schema_model,
                 options.system_prompt,
@@ -1159,13 +1235,17 @@ class DeepAgentsProvider(AgentProvider):
                 result_text,
                 generation_callback,
                 prepared_schema=prepared_schema,
+                usage=usage,
             )
             result_text = stringify(structured)
-            total_input_tokens += in_tok
-            total_output_tokens += out_tok
 
+        summary = summarize_usage(usage, usage.main_calls, self._model_route.model)
         yield ResultEvent(
             text=result_text,
-            input_tokens=total_input_tokens,
-            output_tokens=total_output_tokens,
+            input_tokens=summary.input_tokens,
+            output_tokens=summary.output_tokens,
+            reasoning_tokens=summary.reasoning_tokens,
+            tool_tokens=summary.tool_tokens,
+            peak_input_tokens=summary.peak_input_tokens,
+            response_model=summary.model,
         )

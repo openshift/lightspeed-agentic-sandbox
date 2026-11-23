@@ -30,6 +30,7 @@ from lightspeed_agentic.types import (
     ProviderQueryOptions,
     ToolExecutionError,
 )
+from lightspeed_agentic.usage import InvocationUsage, QueryUsage, summarize_usage
 
 logger = logging.getLogger("lightspeed_agentic")
 
@@ -39,8 +40,12 @@ class AgentResult:
     """Wraps agent output dict with token counts for Result CR publishing."""
 
     output: dict[str, Any] = field(default_factory=dict)
-    input_tokens: int = 0
-    output_tokens: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    tool_tokens: int | None = None
+    peak_input_tokens: int | None = None
+    response_model: str = ""
     timed_out: bool = False
 
 
@@ -196,9 +201,40 @@ async def run_agent_query(
 
     start_time = time.monotonic()
     text = ""
-    input_tokens = 0
-    output_tokens = 0
-    reasoning_tokens = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    tool_tokens: int | None = None
+    peak_input_tokens: int | None = None
+    response_model = ""
+    usage = InvocationUsage(route_model=model)
+
+    def _observed_usage() -> QueryUsage:
+        """Usage observed so far, for failure paths without a terminal event."""
+        return summarize_usage(usage, usage.main_calls, model)
+
+    def _stamp_observed_usage(observed: QueryUsage) -> None:
+        audit_logger.complete(
+            input_tokens=observed.input_tokens,
+            output_tokens=observed.output_tokens,
+            reasoning_tokens=observed.reasoning_tokens,
+            span=agent_span,
+        )
+
+    def _failure_result(
+        observed: QueryUsage, *, summary: str, timed_out: bool = False
+    ) -> AgentResult:
+        return AgentResult(
+            output={"success": False, "summary": summary},
+            input_tokens=observed.input_tokens,
+            output_tokens=observed.output_tokens,
+            reasoning_tokens=observed.reasoning_tokens,
+            tool_tokens=observed.tool_tokens,
+            peak_input_tokens=observed.peak_input_tokens,
+            response_model=observed.model,
+            timed_out=timed_out,
+        )
+
     span_attrs: dict[str, Any] = {
         "gen_ai.operation.name": "invoke_agent",
         "gen_ai.request.model": model,
@@ -228,7 +264,7 @@ async def run_agent_query(
     span_ctx = trace.set_span_in_context(agent_span)
     audit_logger.set_parent_context(span_ctx)
 
-    def _record_metrics(*, in_tokens: int, out_tokens: int, elapsed: float) -> None:
+    def _record_metrics(*, in_tokens: int | None, out_tokens: int | None, elapsed: float) -> None:
         if in_tokens:
             token_usage.labels(
                 gen_ai_token_type="input",  # noqa: S106
@@ -254,6 +290,7 @@ async def run_agent_query(
 
         async def run() -> None:
             nonlocal text, input_tokens, output_tokens, reasoning_tokens
+            nonlocal tool_tokens, peak_input_tokens, response_model
             token = otel_context.attach(span_ctx)
             try:
                 result = provider.query(
@@ -267,6 +304,7 @@ async def run_agent_query(
                         reasoning_config=reasoning_config,
                         tool_output_inspection_enabled=tool_output_inspection_enabled,
                         deadline=time.monotonic() + timeout_seconds,
+                        usage=usage,
                     )
                 )
                 async for event in result:
@@ -287,6 +325,9 @@ async def run_agent_query(
                         input_tokens = event.input_tokens
                         output_tokens = event.output_tokens
                         reasoning_tokens = event.reasoning_tokens
+                        tool_tokens = event.tool_tokens
+                        peak_input_tokens = event.peak_input_tokens
+                        response_model = event.response_model
                         break
             finally:
                 otel_context.detach(token)
@@ -298,21 +339,12 @@ async def run_agent_query(
         agent_span.set_attribute("error.type", "timeout")
         agent_span.set_status(StatusCode.ERROR, "agent run failed")
         elapsed = time.monotonic() - start_time
-        audit_logger.complete(
-            input_tokens=0,
-            output_tokens=0,
-            span=agent_span,
-        )
         timeout_msg = (
             f"Agent invocation exceeded timeout of {timeout_seconds}s after {elapsed:.1f}s"
         )
-        return AgentResult(
-            output={
-                "success": False,
-                "summary": timeout_msg,
-            },
-            timed_out=True,
-        )
+        observed = _observed_usage()
+        _stamp_observed_usage(observed)
+        return _failure_result(observed, summary=timeout_msg, timed_out=True)
     except asyncio.CancelledError as exc:
         agent_span.set_attribute("error.type", type(exc).__name__)
         agent_span.set_status(StatusCode.ERROR, "agent run failed")
@@ -320,47 +352,37 @@ async def run_agent_query(
         raise
     except Exception as exc:
         event_logger.flush()
+        observed = _observed_usage()
+        _stamp_observed_usage(observed)
         if isinstance(exc, ToolResultSafetyInspectionFailed):
             agent_span.set_attribute("error.type", type(exc).__name__)
             agent_span.set_status(StatusCode.ERROR, "agent run failed")
-            audit_logger.complete(
-                input_tokens=0,
-                output_tokens=0,
-                span=agent_span,
-            )
             raise
         agent_span.set_attribute("error.type", type(exc).__name__)
         agent_span.set_status(StatusCode.ERROR, "agent run failed")
-        audit_logger.complete(
-            input_tokens=0,
-            output_tokens=0,
-            span=agent_span,
-        )
         if isinstance(exc, ToolExecutionError):
             logger.error(
                 "[agent] tool execution failed tool=%s error_type=%s",
                 exc.tool_name,
                 exc.error_type,
             )
-            return AgentResult(output={"success": False, "summary": f"Agent error: {exc}"})
+            return _failure_result(observed, summary=f"Agent error: {exc}")
         if isinstance(exc, MCPInitializationError):
             logger.error(
                 "[agent] MCP initialization failed servers=%s error_type=%s",
                 ",".join(exc.server_names),
                 exc.error_type,
             )
-            return AgentResult(output={"success": False, "summary": f"Agent error: {exc}"})
+            return _failure_result(observed, summary=f"Agent error: {exc}")
         if isinstance(exc, MCPToolNameCollisionError):
             logger.error(
                 "[agent] MCP tool name collision servers=%s tool=%s reason=duplicate_tool_name",
                 ",".join(exc.server_names),
                 exc.tool_name,
             )
-            return AgentResult(output={"success": False, "summary": f"Agent error: {exc}"})
+            return _failure_result(observed, summary=f"Agent error: {exc}")
         logger.exception("[agent] query error")
-        return AgentResult(
-            output={"success": False, "summary": f"Agent error: {exc}"},
-        )
+        return _failure_result(observed, summary=f"Agent error: {exc}")
     else:
         if not text:
             agent_span.set_attribute("error.type", "empty_response")
@@ -375,6 +397,10 @@ async def run_agent_query(
                 output={"success": False, "summary": "Agent returned empty response"},
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                reasoning_tokens=reasoning_tokens,
+                tool_tokens=tool_tokens,
+                peak_input_tokens=peak_input_tokens,
+                response_model=response_model,
             )
 
         try:
@@ -403,6 +429,10 @@ async def run_agent_query(
                 },
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                reasoning_tokens=reasoning_tokens,
+                tool_tokens=tool_tokens,
+                peak_input_tokens=peak_input_tokens,
+                response_model=response_model,
             )
 
         logger.info("[agent] query complete (text response)")
@@ -410,11 +440,16 @@ async def run_agent_query(
             output={"success": True, "summary": text},
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+            tool_tokens=tool_tokens,
+            peak_input_tokens=peak_input_tokens,
+            response_model=response_model,
         )
     finally:
         agent_span.end()
+        observed = _observed_usage()
         _record_metrics(
-            in_tokens=input_tokens,
-            out_tokens=output_tokens,
+            in_tokens=input_tokens if input_tokens is not None else observed.input_tokens,
+            out_tokens=output_tokens if output_tokens is not None else observed.output_tokens,
             elapsed=time.monotonic() - start_time,
         )
