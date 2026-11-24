@@ -453,7 +453,7 @@ def test_job_uses_pinned_runtime_image_and_mounts_evaluator_without_runtime_chan
     assert env["LIGHTSPEED_AUDIT_ENABLED"] == "false"
 
 
-def _framed_records(*, end: bool = True, extra: str = "") -> str:
+def _framed_records(*, end: bool = True, extra: str = "", **runtime: object) -> str:
     metadata = {
         "record_type": "metadata",
         "route": "openai",
@@ -471,6 +471,7 @@ def _framed_records(*, end: bool = True, extra: str = "") -> str:
         "reasoning": None,
         "tools": False,
         "history": False,
+        **runtime,
     }
     case = {
         "record_type": "case",
@@ -496,6 +497,28 @@ def _framed_records(*, end: bool = True, extra: str = "") -> str:
     if end:
         lines.append('INSPECTION_EVAL {"record_type":"end","case_count":1,"exit_code":0}')
     return "\n".join(lines)
+
+
+def test_mantle_corpus_protocol_accepts_runtime_metadata() -> None:
+    from tests.evaluation.batch import parse_evaluation
+
+    report = parse_evaluation(
+        [_case()],
+        _framed_records(
+            route="bedrock/mantle",
+            provider="aws.bedrock",
+            hosting="bedrock",
+            model="openai.gpt-6-luna",
+            auth_mode="aws_sigv4",
+            region="us-east-1",
+        ),
+        job_succeeded=True,
+        container_exit_code=0,
+        image_id="sandbox@sha256:" + "b" * 64,
+    )
+    assert report["operational_success"] is True
+    assert report["runtime"]["route"] == "bedrock/mantle"
+    assert report["metrics"]["evaluated"] == 1
 
 
 def test_full_false_positive_measurement_is_not_an_invented_accuracy_failure() -> None:

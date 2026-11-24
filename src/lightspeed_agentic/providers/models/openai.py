@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from operator import itemgetter
 from typing import TYPE_CHECKING, Any, cast
 
+import httpx
+
+from lightspeed_agentic.config import BedrockCredentialSource, BedrockProviderParameters
+from lightspeed_agentic.providers.cloud_credentials import create_bedrock_credentials
+from lightspeed_agentic.tls import create_async_http_client, create_http_client
+
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Generator
+
     from langchain_core.language_models import BaseChatModel, LanguageModelInput
     from langchain_core.runnables import Runnable
 
@@ -124,6 +133,74 @@ def create_native_openai_model(
         model_type=ChatOpenAI,
         use_responses_api=True,
         model_options=_responses_reasoning_kwargs(reasoning_config),
+    )
+
+
+class MantleAuth(httpx.Auth):
+    """Sign each request with current AWS credentials instead of an OpenAI key."""
+
+    requires_request_body = True
+
+    def __init__(self, credentials: Any, region: str) -> None:
+        self.credentials = credentials
+        self.region = region
+
+    def auth_flow(self, request: httpx.Request) -> Generator[httpx.Request, httpx.Response, None]:
+        self._sign(request, self.credentials.get_frozen_credentials())
+        yield request
+
+    async def async_auth_flow(
+        self, request: httpx.Request
+    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        await request.aread()
+        credentials = await asyncio.to_thread(self.credentials.get_frozen_credentials)
+        self._sign(request, credentials)
+        yield request
+
+    def _sign(self, request: httpx.Request, credentials: Any) -> None:
+        from botocore.auth import SigV4Auth  # type: ignore[import-untyped]
+        from botocore.awsrequest import AWSRequest  # type: ignore[import-untyped]
+
+        request.headers.pop("Authorization", None)
+        signed = AWSRequest(
+            method=request.method,
+            url=str(request.url),
+            data=request.content,
+            headers={"Content-Type": request.headers.get("Content-Type", "application/json")},
+        )
+        SigV4Auth(credentials, "bedrock", self.region).add_auth(signed)
+        request.headers.update(dict(signed.headers))
+
+
+def create_mantle_openai_model(
+    parameters: ModelParameters, reasoning_config: dict[str, Any] | None = None
+) -> BaseChatModel:
+    """Construct the OpenAI model without requiring OpenAI credentials."""
+    from langchain_openai import ChatOpenAI
+
+    source, provider = parameters.credentials, parameters.provider
+    if not isinstance(source, BedrockCredentialSource) or not isinstance(
+        provider, BedrockProviderParameters
+    ):
+        raise ValueError("Mantle requires configured AWS Bedrock credentials")
+    region = provider.region
+    endpoint = (parameters.base_url or f"https://bedrock-mantle.{region}.api.aws").rstrip("/")
+    url = httpx.URL(endpoint)
+    if url.scheme != "https" or not url.host or url.userinfo or url.query or url.fragment:
+        raise ValueError("Mantle requires an HTTPS endpoint without credentials, query or fragment")
+    if not endpoint.endswith("/openai/v1"):
+        endpoint += "/openai/v1"
+    auth = MantleAuth(create_bedrock_credentials(source, region), region)
+    return ChatOpenAI(
+        model=parameters.model,
+        api_key="unused",  # type: ignore[arg-type]
+        base_url=endpoint,
+        use_responses_api=True,
+        output_version="responses/v1",
+        max_completion_tokens=parameters.max_output_tokens,
+        http_client=create_http_client(auth=auth),
+        http_async_client=create_async_http_client(auth=auth),
+        **_responses_reasoning_kwargs(reasoning_config),
     )
 
 

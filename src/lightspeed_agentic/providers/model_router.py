@@ -177,6 +177,27 @@ def resolve_model_route(
                         translate_output_schema=anthropic_tool_schema,
                         bind_structured_output=bind_anthropic_output,
                     )
+                case "bedrock" if effective_model.startswith("openai."):
+                    from lightspeed_agentic.providers.models.openai import (
+                        create_mantle_openai_model,
+                        native_openai_structured_output_schema,
+                    )
+
+                    return ResolvedModelRoute(
+                        route="bedrock/mantle",
+                        model=effective_model,
+                        create_model=create_mantle_openai_model,
+                        model_parameters=ModelParameters(
+                            model=effective_model,
+                            base_url=base_url,
+                            provider=model_family.provider,
+                            credentials=model_family.credentials,
+                        ),
+                        telemetry_provider="aws.bedrock",
+                        structured_output_method="json_schema",
+                        structured_output_schema_mode="raw_json_schema",
+                        translate_output_schema=native_openai_structured_output_schema,
+                    )
                 case "bedrock":
                     return ResolvedModelRoute(
                         route="bedrock/anthropic",

@@ -228,3 +228,31 @@ spec:
         value: main
       - name: pathInRepo
         value: .tekton/integration-tests/pipelines/sandbox-integration-test-pipeline.yaml
+---
+apiVersion: appstudio.redhat.com/v1beta2
+kind: IntegrationTestScenario
+metadata:
+  name: sandbox-integration-openai-bedrock-mantle
+  namespace: crt-nshift-lightspeed-tenant
+  labels:
+    test.appstudio.openshift.io/optional: "true"
+spec:
+  application: ols
+  contexts:
+    - description: Sandbox integration test — OpenAI via Bedrock Mantle + DeepAgents
+      name: component_lightspeed-agentic-sandbox
+  params:
+    - name: provider
+      value: openai-bedrock-mantle
+    - name: credential-secret
+      value: bedrock-apitoken
+  resolverRef:
+    resolver: git
+    resourceKind: pipeline
+    params:
+      - name: url
+        value: https://github.com/openshift/lightspeed-agentic-sandbox
+      - name: revision
+        value: main
+      - name: pathInRepo
+        value: .tekton/integration-tests/pipelines/sandbox-integration-test-pipeline.yaml

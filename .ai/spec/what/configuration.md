@@ -245,7 +245,7 @@ OPENAI_API_KEY: <token-or-placeholder>
 
 - Input files and env vars carry query, schema, and context; provider name and model are environment-driven. [PLANNED: OLS-3743] Agent timeout and maximum turns are required environment values resolved by the operator, not sandbox defaults.
 - Optional Python extras gate provider SDK installation. `deepagents` supplies the shared harness and Anthropic/Bedrock/Vertex model integrations; `openai` includes that harness plus native/custom OpenAI and Azure integrations. `all` combines both. The obsolete ADK-only `gemini` extra is removed; Gemini models remain supported through `deepagents`. The image recipe installs `all`; local dependency changes require separate Konflux/Tekton regeneration, and the current snapshots exclude the retired harness dependencies.
-- Bedrock resolves to family `anthropic` and the `bedrock/anthropic` model route, using `ChatAnthropicBedrock` through DeepAgents. When Bedrock support for other model families is needed, a `modelProvider` field should be added to the `AWSBedrockConfig` CRD (similar to `googleCloudVertex.modelProvider`).
+- The Bedrock model router selects `bedrock/mantle` for model IDs beginning with `openai.`. Mantle uses the OpenAI Responses API under `/openai/v1` at `LIGHTSPEED_PROVIDER_URL`, defaulting to `https://bedrock-mantle.<resolved-region>.api.aws`. A configured URL already ending in `/openai/v1` is used as-is. Requests use the AWS credentials from rule 9b; no OpenAI API key is required. Other model IDs retain the `bedrock/anthropic` route via `ChatAnthropicBedrock`.
 - [PLANNED: OLS-3472] Gemma 4 compatibility is scoped to a vLLM OpenAI-compatible API. The sandbox does not install RHOAI, provision GPUs, or load model weights.
 
 ## Verification

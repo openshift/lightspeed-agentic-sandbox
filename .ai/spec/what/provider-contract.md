@@ -213,6 +213,7 @@ Rules 50–67 define the broader target for [OLS-4434](https://redhat.atlassian.
     | Vertex / Anthropic | Anthropic on Vertex with project, region, and Google credentials |
     | Vertex / Google | Gemini on Vertex with project, region, and Google credentials |
     | Bedrock / Anthropic | Existing Anthropic route, model or inference-profile identifier, region, static keys or STS assume-role |
+    | Bedrock / OpenAI Mantle | `openai.*` model ID, OpenAI Responses API, AWS SigV4 with static keys or STS assume-role; no OpenAI API key |
     | Native OpenAI | Native OpenAI endpoint and existing Responses API behavior |
     | Azure OpenAI | Deployment, endpoint, API-version-dependent Responses/Chat Completions behavior, API key or Entra ID |
     | OpenAI-compatible / vLLM | Configured endpoint and unchanged model identifier, Chat Completions, existing non-native structured-output behavior |
