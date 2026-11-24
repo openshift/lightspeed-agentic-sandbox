@@ -130,6 +130,7 @@ def publish_agent_result(
     peak_input_tokens: int | None = None,
     response_model: str = "",
     timed_out: bool = False,
+    step_limit_recovered: bool = False,
     api: CustomObjectsApi | None = None,
 ) -> None:
     """Assemble status from schema-driven agent output and publish the Result CR."""
@@ -152,6 +153,16 @@ def publish_agent_result(
         response_model=response_model,
         timed_out=timed_out,
     )
+    if step_limit_recovered:
+        status["conditions"].append(
+            {
+                "type": "ResultMayBeIncomplete",
+                "status": "True",
+                "reason": "StepLimitReached",
+                "message": "The agent reached its step limit. This result may be incomplete.",
+                "lastTransitionTime": status["conditions"][-1]["lastTransitionTime"],
+            }
+        )
     publish_result_cr(template, status, api=api)
 
 

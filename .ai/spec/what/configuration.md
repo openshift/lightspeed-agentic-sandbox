@@ -25,7 +25,7 @@ Anthropic routes and the Vertex/Google Gemini route use the shared DeepAgents ha
     | `LIGHTSPEED_PROVIDER_API_VERSION` | When provider=`azure` | API version |
     | `LIGHTSPEED_REASONING_CONFIG` | No | JSON-serialized reasoning config from `Agent.spec.reasoningConfig`. When absent, SDK defaults apply. |
     | `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` | Yes [PLANNED: OLS-3743] | Whole-agent invocation budget resolved from the selected Agent step timeout or the operator default. |
-    | `LIGHTSPEED_AGENT_MAX_TURNS` | Yes [PLANNED: OLS-3743] | Provider iteration cap resolved from `Agent.spec.maxTurns` or the operator default of 200. |
+    | `LIGHTSPEED_AGENT_MAX_TURNS` | Yes [PLANNED: OLS-3743] | LangGraph step cap (not a model-call cap), resolved from `Agent.spec.maxTurns` or the operator default of 200. Exhaustion may trigger one separate finalization call without action tools. |
     | `LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED` | No [PLANNED: OLS-3928] | Enable DeepAgents tool-result inspection. Default: `true`. |
 
     Credentials are mounted via `envFrom` (all secret keys as env vars) AND as files at `/var/run/secrets/llm-credentials/`.

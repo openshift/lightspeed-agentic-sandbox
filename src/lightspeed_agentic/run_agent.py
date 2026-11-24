@@ -47,6 +47,7 @@ class AgentResult:
     peak_input_tokens: int | None = None
     response_model: str = ""
     timed_out: bool = False
+    step_limit_recovered: bool = False
 
 
 class ContextFormatError(ValueError):
@@ -207,6 +208,7 @@ async def run_agent_query(
     tool_tokens: int | None = None
     peak_input_tokens: int | None = None
     response_model = ""
+    step_limit_recovered = False
     usage = InvocationUsage(route_model=model)
 
     def _observed_usage() -> QueryUsage:
@@ -290,7 +292,7 @@ async def run_agent_query(
 
         async def run() -> None:
             nonlocal text, input_tokens, output_tokens, reasoning_tokens
-            nonlocal tool_tokens, peak_input_tokens, response_model
+            nonlocal tool_tokens, peak_input_tokens, response_model, step_limit_recovered
             token = otel_context.attach(span_ctx)
             try:
                 result = provider.query(
@@ -328,6 +330,7 @@ async def run_agent_query(
                         tool_tokens = event.tool_tokens
                         peak_input_tokens = event.peak_input_tokens
                         response_model = event.response_model
+                        step_limit_recovered = event.step_limit_recovered
                         break
             finally:
                 otel_context.detach(token)
@@ -433,6 +436,7 @@ async def run_agent_query(
                 tool_tokens=tool_tokens,
                 peak_input_tokens=peak_input_tokens,
                 response_model=response_model,
+                step_limit_recovered=step_limit_recovered,
             )
 
         logger.info("[agent] query complete (text response)")
@@ -444,6 +448,7 @@ async def run_agent_query(
             tool_tokens=tool_tokens,
             peak_input_tokens=peak_input_tokens,
             response_model=response_model,
+            step_limit_recovered=step_limit_recovered,
         )
     finally:
         agent_span.end()

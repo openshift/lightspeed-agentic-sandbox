@@ -350,6 +350,34 @@ def test_batch_max_turns_reaches_real_graph_recursion_limit(
     assert status["conditions"][-1]["reason"] == "Succeeded"
 
 
+def test_batch_preserves_step_limit_recovery_advisory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lightspeed_agentic.providers.deepagents import DeepAgentsProvider
+    from lightspeed_agentic.types import ResultEvent
+
+    async def recovered_query(_self: Any, _options: Any) -> AsyncIterator[Any]:
+        yield ResultEvent(
+            text='{"success": true, "summary": "Recovered findings"}',
+            step_limit_recovered=True,
+        )
+
+    monkeypatch.setattr(DeepAgentsProvider, "query", recovered_query)
+    _, calls = _run_scripted_batch(
+        tmp_path,
+        monkeypatch,
+        kind="ExecutionResult",
+        schema={},
+        create_model=lambda *_args, **_kwargs: None,
+    )
+    status = calls[1][1]["body"]["status"]
+    conditions = {condition["type"]: condition for condition in status["conditions"]}
+    assert "failureReason" not in status
+    assert conditions["Completed"]["reason"] == "Succeeded"
+    assert conditions["ResultMayBeIncomplete"]["status"] == "True"
+    assert conditions["ResultMayBeIncomplete"]["reason"] == "StepLimitReached"
+
+
 @pytest.mark.parametrize("success", [True, False], ids=["success", "domain-failure"])
 @pytest.mark.parametrize("report_usage", [True, False], ids=["usage", "no-usage"])
 @pytest.mark.parametrize(

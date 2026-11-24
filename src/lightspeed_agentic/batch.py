@@ -255,6 +255,7 @@ def main() -> None:
             peak_input_tokens=agent_result.peak_input_tokens,
             response_model=agent_result.response_model,
             timed_out=agent_result.timed_out,
+            step_limit_recovered=agent_result.step_limit_recovered,
         )
         logger.info("status updated — exiting 0")
     except ToolResultSafetyInspectionFailed:

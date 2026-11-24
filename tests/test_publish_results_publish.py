@@ -190,6 +190,23 @@ class TestPublishAgentResult:
         assert status["actionRequired"] == "True"
         assert status["conditions"][1]["reason"] == "Succeeded"
 
+    def test_step_limit_advisory_preserves_success(self) -> None:
+        api = MagicMock()
+        publish_agent_result(
+            _TEMPLATE,
+            _AGENT_OUTPUT,
+            started_at=_dt(),
+            completed_at=_dt(),
+            step_limit_recovered=True,
+            api=api,
+        )
+        status = api.replace_namespaced_custom_object_status.call_args.kwargs["body"]["status"]
+        conditions = {condition["type"]: condition for condition in status["conditions"]}
+        assert conditions["Completed"]["reason"] == "Succeeded"
+        assert conditions["ResultMayBeIncomplete"]["status"] == "True"
+        assert conditions["ResultMayBeIncomplete"]["reason"] == "StepLimitReached"
+        assert status["options"] == _AGENT_OUTPUT["options"]
+
     def test_token_usage_propagated_to_status(self) -> None:
         api = MagicMock()
         publish_agent_result(
