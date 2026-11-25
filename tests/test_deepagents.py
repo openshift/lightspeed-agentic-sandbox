@@ -778,6 +778,89 @@ async def test_provider_routes_skills_virtual_and_keeps_default_physical(
     assert backend.read("inside.txt").file_data["content"] == "INSIDE_CONTENT"
 
 
+def test_startup_input_dir_matches_batch_mount() -> None:
+    from lightspeed_agentic.batch import INPUT_DIR
+    from lightspeed_agentic.providers.deepagents import STARTUP_INPUT_DIR
+
+    assert STARTUP_INPUT_DIR == INPUT_DIR
+
+
+def _tool_call(name: str, call_id: str, **args: Any) -> dict[str, Any]:
+    return {"name": name, "args": args, "id": call_id, "type": "tool_call"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delegate", [False, True])
+async def test_agent_file_tools_cannot_read_or_discover_startup_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    delegate: bool,
+) -> None:
+    ai_message = pytest.importorskip("langchain_core.messages").AIMessage
+    # Given startup inputs mounted with kubelet's ConfigMap layout: real files in
+    # a hidden timestamped directory, reached through ..data and top-level symlinks.
+    input_dir = tmp_path / "input"
+    real_dir = input_dir / "..2026_11_23_22_48_48.3433774126"
+    real_dir.mkdir(parents=True)
+    for name in ("query", "system-prompt", "context"):
+        (real_dir / name).write_text("PROMPT_MARKER you are an analysis agent\n")
+        (input_dir / name).symlink_to(f"..data/{name}")
+    (input_dir / "..data").symlink_to(real_dir.name)
+    notes = tmp_path / "notes.txt"
+    notes.write_text("PROMPT_MARKER in an ordinary file\n")
+    monkeypatch.setattr("lightspeed_agentic.providers.deepagents.STARTUP_INPUT_DIR", str(input_dir))
+
+    # When the agent tries every file-tool route to those inputs.
+    calls = [
+        _read_file_call("read-query", f"{input_dir}/query"),
+        _read_file_call("read-data", f"{input_dir}/..data/query"),
+        _read_file_call("read-real", f"{real_dir}/system-prompt"),
+        _read_file_call("read-context", f"{real_dir}/context"),
+        _tool_call("ls", "ls-input", path=str(input_dir)),
+        _tool_call("ls", "ls-parent", path=str(tmp_path)),
+        _tool_call("glob", "glob-query", pattern="**/query", path=str(tmp_path)),
+        _tool_call("grep", "grep-marker", pattern="PROMPT_MARKER", path=str(tmp_path)),
+    ]
+    responses = [ai_message(content="", tool_calls=calls), ai_message(content="Done.")]
+    if delegate:
+        responses.insert(
+            0,
+            ai_message(
+                content="",
+                tool_calls=[
+                    _tool_call(
+                        "task",
+                        "delegate",
+                        description="Inspect the input files.",
+                        subagent_type="general-purpose",
+                    )
+                ],
+            ),
+        )
+        responses.append(ai_message(content="Delegated."))
+    model, model_inputs = _capturing_fake_chat_model(responses)
+    provider = _real_deepagents_provider(monkeypatch, model)
+    await _collect_events(
+        provider, _base_options(cwd=str(tmp_path), tool_output_inspection_enabled=False)
+    )
+    delivered = {
+        message.tool_call_id: str(message.content)
+        for messages in model_inputs
+        for message in messages
+        if message.type == "tool"
+    }
+
+    # Then no route returns their content or reveals their paths.
+    for call_id in ("read-query", "read-data", "read-real", "read-context"):
+        assert "permission denied" in delivered[call_id]
+        assert "PROMPT_MARKER" not in delivered[call_id]
+    for call_id in ("ls-input", "ls-parent", "glob-query", "grep-marker"):
+        assert str(input_dir) not in delivered[call_id]
+    # And ordinary files outside the inputs stay listed and searchable.
+    assert "notes.txt" in delivered["ls-parent"]
+    assert "notes.txt" in delivered["grep-marker"]
+
+
 @pytest.mark.asyncio
 async def test_provider_offloads_artifacts_to_home_not_skills_root(
     monkeypatch: pytest.MonkeyPatch,

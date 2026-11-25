@@ -64,6 +64,32 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Mount point of the operator-rendered step inputs; must match batch.INPUT_DIR.
+STARTUP_INPUT_DIR = "/input"
+
+
+def _startup_input_isolation(input_dir: str) -> tuple[str, Any, list[Any]]:
+    """Return a route and deny rules that keep startup inputs out of file tools.
+
+    batch.py reads these files directly at startup; the agent has no use for
+    them. DeepAgents only allows permissions with an execution backend when
+    every rule is scoped to a CompositeBackend route, so the directory is
+    routed to an empty backend and then denied. ``**`` does not match dot-named
+    entries, so ``..*`` patterns cover kubelet's hidden ConfigMap directories
+    (``..data``, ``..<timestamp>``) that hold the real files.
+    """
+    from deepagents.backends import StateBackend
+    from deepagents.middleware.filesystem import FilesystemPermission
+
+    prefix = f"{input_dir.rstrip('/')}/"
+    empty = StateBackend()
+    rule = FilesystemPermission(
+        operations=["read", "write"],
+        paths=[prefix, f"{prefix}**", f"{prefix}..*", f"{prefix}..*/**"],
+        mode="deny",
+    )
+    return prefix, empty, [rule]
+
 
 _JSON_SCHEMA_TYPE_MAP: dict[str, type[Any]] = {
     "string": str,
@@ -964,9 +990,12 @@ class DeepAgentsProvider(AgentProvider):
             # shell needs (deepagents #3050/#3762 pattern). The default backend keeps
             # physical paths for general work; artifacts stay in the agent home.
             skills_backend = FilesystemBackend(root_dir=skills_root, virtual_mode=True)
+            input_route, input_backend, input_permissions = _startup_input_isolation(
+                STARTUP_INPUT_DIR
+            )
             backend = CompositeBackend(
                 default=local_backend,
-                routes={"/skills/": skills_backend},
+                routes={"/skills/": skills_backend, input_route: input_backend},
                 artifacts_root=os.path.join(os.environ.get("HOME", "/home/agent"), ".deepagents"),
             )
 
@@ -982,6 +1011,7 @@ class DeepAgentsProvider(AgentProvider):
                 "model": chat_model,
                 "backend": backend,
                 "system_prompt": f"{options.system_prompt}\n{instruction}",
+                "permissions": input_permissions,
             }
 
             if options.tool_output_inspection_enabled:
