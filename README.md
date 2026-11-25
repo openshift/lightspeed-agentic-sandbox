@@ -13,15 +13,26 @@ Local development uses `uv`. Run `make install` for dev dependencies,
 
 The retired Google ADK and OpenAI Agents harness libraries are removed from
 `pyproject.toml`, `uv.lock`, and the generated Konflux inputs. Use the `deepagents`
-extra for Anthropic/Bedrock/Vertex models, `openai` for the shared harness plus
-OpenAI/Azure integrations, or `all` for every supported model integration. The obsolete ADK-only `gemini` extra is
-removed; Vertex Gemini remains supported through `deepagents`.
+extra for Anthropic (including on Bedrock) and Vertex models, `openai` for the
+shared harness plus OpenAI integrations (including Azure and Bedrock Mantle), or
+`all` for every supported model integration. The obsolete ADK-only `gemini`
+extra is removed; Vertex Gemini remains supported through `deepagents`.
 
 Konflux runtime/bootstrap/build requirements and both Tekton binary package
 lists are regenerated for the active dependency set. Run `make test`,
 `make verify`, and `uv pip check` to check the local environment and hermetic
 package coverage. Version skew between the independently resolved graphs is
 reported as warnings; missing packages and orphans fail verification.
+
+## OpenAI models on AWS Bedrock Mantle
+
+Set `LIGHTSPEED_PROVIDER=bedrock` and `LIGHTSPEED_MODEL=openai.gpt-6-luna`.
+Set `LIGHTSPEED_PROVIDER_REGION` if needed; it defaults to `AWS_REGION` or
+`us-east-1`. The sandbox uses `https://bedrock-mantle.<region>.api.aws` unless
+`LIGHTSPEED_PROVIDER_URL` specifies a Mantle gateway. It sends Responses API
+requests under `/openai/v1` using the existing Bedrock IAM credentials; no
+OpenAI API key is required. Anthropic model IDs continue to use the existing
+Bedrock route.
 
 ## Detecting Unused Dependencies
 

@@ -2076,3 +2076,71 @@ def test_openai_model_module_import_does_not_load_optional_sdk() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.asyncio
+async def test_mantle_async_signing_refreshes_credentials_off_event_loop() -> None:
+    from threading import get_ident
+    from types import SimpleNamespace
+
+    from lightspeed_agentic.providers.models.openai import MantleAuth
+
+    event_loop_thread = get_ident()
+    snapshots: list[int] = []
+
+    def snapshot() -> SimpleNamespace:
+        snapshots.append(get_ident())
+        return SimpleNamespace(
+            access_key="test-access",
+            secret_key="test-key",  # noqa: S106
+            token=f"token-{len(snapshots)}",
+        )
+
+    tokens = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        tokens.append(request.headers["X-Amz-Security-Token"])
+        return httpx.Response(200)
+
+    auth = MantleAuth(SimpleNamespace(get_frozen_credentials=snapshot), "us-east-1")
+    async with httpx.AsyncClient(auth=auth, transport=httpx.MockTransport(handle)) as client:
+        for _ in range(2):
+            await client.post("https://mantle.example.test/openai/v1/responses", json={})
+
+    assert tokens == ["token-1", "token-2"]
+    assert len(snapshots) == 2
+    assert all(thread != event_loop_thread for thread in snapshots)
+
+
+def test_mantle_sends_signed_responses_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lightspeed_agentic.config import BedrockCredentialSource, BedrockProviderParameters
+    from lightspeed_agentic.providers.models import openai
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert str(request.url) == "https://mantle.example.test/openai/v1/responses"
+        assert json.loads(request.content)["model"] == "openai.gpt-6-luna"
+        authorization = request.headers["Authorization"]
+        assert authorization.startswith("AWS4-HMAC-SHA256 Credential=test-access/")
+        assert "/us-west-2/bedrock/aws4_request" in authorization
+        assert request.headers["X-Amz-Security-Token"] == "test-session"
+        return httpx.Response(200, json={"id": "resp_test", "output": []})
+
+    monkeypatch.setattr(
+        openai,
+        "create_http_client",
+        lambda **kwargs: httpx.Client(transport=httpx.MockTransport(handle), **kwargs),
+    )
+    model = openai.create_mantle_openai_model(
+        ModelParameters(
+            model="openai.gpt-6-luna",
+            base_url="https://mantle.example.test/",
+            provider=BedrockProviderParameters(region="us-west-2"),
+            credentials=BedrockCredentialSource(
+                access_key_id="test-access",
+                secret_access_key="test-secret",  # noqa: S106
+                session_token="test-session",  # noqa: S106
+            ),
+        )
+    )
+    model.root_client.responses.create(model="openai.gpt-6-luna", input="test")  # type: ignore[attr-defined]

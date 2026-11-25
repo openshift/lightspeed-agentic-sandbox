@@ -598,6 +598,24 @@ def test_cloud_anthropic_routes_preserve_region_defaults(
     assert route.model_parameters.provider == expected_provider
 
 
+@pytest.mark.parametrize(
+    ("model", "expected_route"),
+    [
+        ("openai.gpt-6-luna", "bedrock/mantle"),
+        ("global.anthropic.claude-haiku-5-5", "bedrock/anthropic"),
+    ],
+)
+def test_bedrock_route_selects_api_by_model(
+    monkeypatch: pytest.MonkeyPatch, model: str, expected_route: str
+) -> None:
+    from lightspeed_agentic.providers.model_router import resolve_model_route
+
+    monkeypatch.setenv("LIGHTSPEED_PROVIDER", "bedrock")
+    monkeypatch.setenv("LIGHTSPEED_MODEL", model)
+
+    assert resolve_model_route().route == expected_route
+
+
 def test_vertex_route_uses_typed_settings_and_file_readiness(tmp_path: Path) -> None:
     from lightspeed_agentic.config import (
         VertexCredentialSource,

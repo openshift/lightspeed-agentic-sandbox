@@ -331,6 +331,13 @@ fi
 provider="$1"
 shift || true
 
+# Mantle uses the same Bedrock Job and credentials, with an OpenAI model ID.
+if [[ "${provider}" == "openai-bedrock-mantle" ]]; then
+    provider=anthropic-bedrock-deepagents
+    export ANTHROPIC_BEDROCK_MODEL="${MANTLE_OPENAI_MODEL:-openai.gpt-6-luna}"
+    set -- "-k" "test_run_with_flat_schema_and_required_fields" "$@"
+fi
+
 # Resolve model from environment variables only
 # Each provider has its own env var: OPENAI_MODEL, GEMINI_MODEL, ANTHROPIC_MODEL, ANTHROPIC_BEDROCK_MODEL
 model_override=""

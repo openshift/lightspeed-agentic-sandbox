@@ -88,6 +88,7 @@ class RuntimeMetadata(BaseModel):
         "vertex/google",
         "vertex/anthropic",
         "bedrock/anthropic",
+        "bedrock/mantle",
     ]
     provider: str
     hosting: Literal["openai", "azure", "anthropic", "vertex", "bedrock"]

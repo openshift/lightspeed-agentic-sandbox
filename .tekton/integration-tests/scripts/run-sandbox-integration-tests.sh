@@ -28,7 +28,7 @@ set -euo pipefail
 trap 'exit 130' INT
 trap 'echo "error: $0 line $LINENO: command \"$BASH_COMMAND\" exited with status $?" >&2' ERR
 
-PROVIDER="${1:?Usage: $0 <provider> (anthropic-vertex-deepagents|anthropic-bedrock-deepagents|gemini-vertex-adk|openai-agents|anthropic-deepagents|azure-openai-agents)}"
+PROVIDER="${1:?Usage: $0 <provider> (anthropic-vertex-deepagents|anthropic-bedrock-deepagents|openai-bedrock-mantle|gemini-vertex-adk|openai-agents|anthropic-deepagents|azure-openai-agents)}"
 CRED_DIR="/var/run/credentials"
 CRED_PATH="${CRED_DIR}/token"
 
@@ -47,7 +47,7 @@ case "${PROVIDER}" in
     ANTHROPIC_VERTEX_PROJECT_ID=$(python3 -c "import json; print(json.load(open('${CRED_PATH}'))['project_id'])")
     export ANTHROPIC_VERTEX_PROJECT_ID
     ;;
-  anthropic-bedrock-deepagents)
+  anthropic-bedrock-deepagents|openai-bedrock-mantle)
     if [ ! -f "${CRED_DIR}/aws_access_key_id" ] || [ ! -f "${CRED_DIR}/aws_secret_access_key" ]; then
         echo "error: bedrock credentials not found under ${CRED_DIR}" >&2
         exit 1
@@ -252,6 +252,20 @@ if len(cases) != 2 or {case.get('name') for case in cases} != expected or any(
 ):
     sys.exit('vLLM acceptance requires both inspection scenarios to pass without skips')
 PY
+    fi
+elif [[ "${PROVIDER}" == "openai-bedrock-mantle" ]]; then
+    bash scripts/e2e-containers.sh "${PROVIDER}" \
+        "--junitxml=${ARTIFACT_DIR}/junit_e2e.xml" --tb=short || test_exit=$?
+    if [[ "${test_exit}" -eq 0 ]]; then
+        python3 - "${ARTIFACT_DIR}/junit_e2e.xml" <<'PYTHON' || test_exit=$?
+import sys
+import xml.etree.ElementTree as ET
+
+cases = list(ET.parse(sys.argv[1]).iter('testcase'))
+if (len(cases) != 1 or cases[0].get('name') != 'test_run_with_flat_schema_and_required_fields'
+    or any(cases[0].find(tag) is not None for tag in ('skipped', 'failure', 'error'))):
+    sys.exit('Mantle acceptance requires the structured output scenario to pass without skips')
+PYTHON
     fi
 else
     bash scripts/e2e-containers.sh "${PROVIDER}" || test_exit=$?

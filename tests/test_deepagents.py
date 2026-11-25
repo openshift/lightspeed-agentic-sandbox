@@ -743,6 +743,7 @@ async def test_close_model_clients_closes_only_initialized_clients() -> None:
         ("vertex/anthropic", "gcp.vertex_ai", "json_schema"),
         ("vertex/google", "gcp.vertex_ai", "json_schema"),
         ("openai", "openai", "json_schema"),
+        ("bedrock/mantle", "aws.bedrock", "json_schema"),
         ("openai-compatible", "openai", "json_schema"),
         ("bedrock/anthropic", "aws.bedrock", "function_calling"),
     ],
@@ -828,6 +829,14 @@ async def test_resolved_route_controls_all_model_roles(
         "additionalProperties": False,
     }
 
+    if route_id == "bedrock/mantle":
+        from lightspeed_agentic.providers.model_router import resolve_model_route
+
+        monkeypatch.setenv("LIGHTSPEED_PROVIDER", "bedrock")
+        monkeypatch.setenv("LIGHTSPEED_MODEL", "openai.gpt-6-luna")
+        route = replace(resolve_model_route(), create_model=create_model)
+        schema["properties"]["nullable"] = {"type": ["string", "null"]}
+
     with _patch_sys_modules(_mock_deepagents_modules(create_agent, MagicMock())):
         provider = mod.DeepAgentsProvider(route)
         create_model.assert_not_called()
@@ -858,7 +867,11 @@ async def test_resolved_route_controls_all_model_roles(
     assert "response_format" not in create_agent.call_args.kwargs
     format_model.with_structured_output.assert_called_once()
     shaping_schema = format_model.with_structured_output.call_args.args[0]
-    if route_id == "openai":
+    if route_id in {"openai", "bedrock/mantle"}:
+        if route_id == "bedrock/mantle":
+            assert shaping_schema["schema"]["properties"]["nullable"] == {
+                "type": ["string", "null"],
+            }
         assert shaping_schema["name"] == "structured_output"
         assert shaping_schema["strict"] is True
         assert shaping_schema["schema"]["properties"]["status"] == {"type": "string"}
