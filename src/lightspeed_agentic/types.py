@@ -68,6 +68,7 @@ class ResultEvent:
     tool_tokens: int | None = None
     peak_input_tokens: int | None = None
     response_model: str = ""
+    step_limit_recovered: bool = False
 
 
 ProviderEvent = (

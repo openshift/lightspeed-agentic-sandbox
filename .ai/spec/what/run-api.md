@@ -52,6 +52,10 @@ When `context` is non-empty, `format_context_prefix()` prepends a block to `quer
 
 16. **`approvedOption`.** When present, include title, diagnosis root cause, remediation plan description, reversible flag, and optional actions (command, type, description) within approved-remediation banners. When `approvedOption` or other expanded fields are present but malformed, `format_context_prefix()` MUST fail with a clear `Invalid context: …` message; `run_agent_query()` returns `success=false` with that summary (agent failure path, rule 22) and MUST NOT invoke the LLM.
 
+### Step-limit recovery (OLS-4998)
+
+If LangGraph reaches its step limit and one finalization call produces schema-valid output, publish the result under the normal outcome rules. Reaching the limit alone does not fail the run. Add `ResultMayBeIncomplete=True` with reason `StepLimitReached` to the Result CR's existing `status.conditions`; do not change the model output schema or CRD. If recovery is unavailable or fails, preserve the original step-limit failure. Console rendering of the advisory is a separate follow-up.
+
 ### Agent output shaping
 
 The agent returns structured JSON via `run_agent_query()` (formerly HTTP `RunResponse` shaping):

@@ -9,6 +9,7 @@ import sys
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import UTC
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar, Literal
@@ -279,6 +280,153 @@ async def test_real_agent_enforces_caller_recursion_limit_without_success_result
 
     assert len(model_inputs) <= 2
     assert not any(isinstance(event, ResultEvent) for event in events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("valid_recovery", [True, False])
+async def test_real_agent_attempts_structured_recovery_at_step_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, valid_recovery: bool
+) -> None:
+    from langchain_core.messages import AIMessage
+    from langgraph.errors import GraphRecursionError
+
+    source = tmp_path / "budget.txt"
+    source.write_text("Budget fixture.\n")
+    model, _ = _capturing_fake_chat_model(
+        [
+            AIMessage(
+                content="Partial finding", tool_calls=[_read_file_call("first", str(source))]
+            ),
+            AIMessage(content="", tool_calls=[_read_file_call("second", str(source))]),
+            AIMessage(content="Done."),
+        ]
+    )
+    provider = _real_deepagents_provider(monkeypatch, model)
+    finalizer = AsyncMock(return_value={"summary": "Recovered"})
+    if not valid_recovery:
+        finalizer.side_effect = ValueError("invalid result")
+    monkeypatch.setattr(
+        "lightspeed_agentic.providers.deepagents._shape_structured_output", finalizer
+    )
+    options = _base_options(
+        cwd=str(tmp_path),
+        max_turns=2,
+        tool_output_inspection_enabled=False,
+        output_schema={"type": "object", "properties": {"summary": {"type": "string"}}},
+    )
+
+    async def collect() -> list[Any]:
+        return [event async for event in provider.query(options)]
+
+    if valid_recovery:
+        result = (await collect())[-1]
+        assert isinstance(result, ResultEvent)
+        assert result.step_limit_recovered
+        assert json.loads(result.text) == {"summary": "Recovered"}
+    else:
+        with pytest.raises(GraphRecursionError):
+            await collect()
+    finalizer.assert_awaited_once()
+    assert finalizer.await_args.kwargs["recovering"] is True
+    assert "Partial finding" in finalizer.await_args.args[4]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["accepted", "pending", "rejected", "invalid-original-schema"])
+async def test_step_limit_recovery_publishes_inspected_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str
+) -> None:
+    from datetime import datetime
+
+    from langchain_core.messages import AIMessage
+
+    from lightspeed_agentic.providers.deepagents import DeepAgentsProvider
+    from lightspeed_agentic.publish_results.publish import publish_agent_result
+
+    source = tmp_path / "budget.txt"
+    source.write_text("ACCEPTED_BUDGET_EVIDENCE\n")
+    model, _ = _capturing_fake_chat_model(
+        [
+            AIMessage(
+                content="Partial finding", tool_calls=[_read_file_call("first", str(source))]
+            ),
+            AIMessage(content="", tool_calls=[_read_file_call("second", str(source))]),
+            AIMessage(content="Done."),
+        ]
+    )
+    bound = MagicMock()
+    bound.ainvoke = AsyncMock(
+        return_value={
+            "parsed": {
+                "summary": "Recovered",
+                "count": 0 if case == "invalid-original-schema" else 1,
+            }
+        }
+    )
+    shaper = MagicMock()
+    shaper.with_structured_output.return_value = bound
+    provider = DeepAgentsProvider(make_model_route(Mock(side_effect=[model, MagicMock(), shaper])))
+    from langgraph.errors import GraphRecursionError
+
+    from lightspeed_agentic.inspection.errors import ToolResultSafetyInspectionFailed
+
+    inspect = AsyncMock()
+    if case == "rejected":
+        inspect.side_effect = ToolResultSafetyInspectionFailed()
+    monkeypatch.setattr("lightspeed_agentic.inspection.inspector.inspect_tool_result", inspect)
+    options = _base_options(
+        cwd=str(tmp_path),
+        max_turns=3 if case == "pending" else 4,
+        tool_output_inspection_enabled=True,
+        output_schema={
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "count": {"type": "integer", "minimum": 1},
+            },
+            "required": ["summary", "count"],
+        },
+    )
+    if case == "invalid-original-schema":
+        with pytest.raises(GraphRecursionError):
+            await _collect_events(provider, options)
+        bound.ainvoke.assert_awaited_once()
+        return
+    if case != "accepted":
+        error = GraphRecursionError if case == "pending" else ToolResultSafetyInspectionFailed
+        with pytest.raises(error):
+            await _collect_events(provider, options)
+        bound.ainvoke.assert_not_awaited()
+        return
+    events = await _collect_events(provider, options)
+    result = events[-1]
+    assert isinstance(result, ResultEvent)
+    assert result.step_limit_recovered
+    inspect.assert_awaited()
+    bound.ainvoke.assert_awaited_once()
+    prompt = bound.ainvoke.await_args.args[0][-1].content
+    assert "ACCEPTED_BUDGET_EVIDENCE" in prompt
+    assert 'source="read_file"' in prompt
+    assert str(source) in prompt
+
+    api = MagicMock()
+    now = datetime.now(UTC)
+    publish_agent_result(
+        {
+            "apiVersion": "agentic.openshift.io/v1alpha1",
+            "kind": "AnalysisResult",
+            "metadata": {"name": "recovered", "namespace": "test"},
+        },
+        json.loads(result.text),
+        started_at=now,
+        completed_at=now,
+        step_limit_recovered=result.step_limit_recovered,
+        api=api,
+    )
+    status = api.replace_namespaced_custom_object_status.call_args.kwargs["body"]["status"]
+    conditions = {condition["type"]: condition for condition in status["conditions"]}
+    assert conditions["Completed"]["reason"] == "Succeeded"
+    assert conditions["ResultMayBeIncomplete"]["reason"] == "StepLimitReached"
 
 
 @pytest.mark.asyncio
@@ -1503,6 +1651,35 @@ async def test_shaping_prompt_requests_native_json_types_and_retries_invalid_out
     if raises_error:
         retry_messages = bound.ainvoke.await_args_list[1].args[0]
         assert "previous response could not be parsed" in retry_messages[1].content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("valid", [True, False])
+async def test_step_limit_finalizer_validates_without_retry(valid: bool) -> None:
+    from lightspeed_agentic.providers.deepagents import _shape_structured_output
+
+    bound = MagicMock()
+    bound.ainvoke = AsyncMock(return_value={"parsed": {"ok": True if valid else "invalid"}})
+    model = MagicMock()
+    model.with_structured_output.return_value = bound
+
+    async def finalize() -> Any:
+        return await _shape_structured_output(
+            make_model_route(Mock(return_value=model)),
+            {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]},
+            "system",
+            "task",
+            "partial evidence",
+            Mock(),
+            recovering=True,
+        )
+
+    if valid:
+        assert await finalize() == {"ok": True}
+    else:
+        with pytest.raises(ValueError, match="does not match configured schema"):
+            await finalize()
+    bound.ainvoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
