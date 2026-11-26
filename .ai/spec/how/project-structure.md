@@ -30,6 +30,8 @@ Do not maintain a duplicate path inventory here.
 
 ## Dependency Organization
 
+> [PLANNED: OLS-4671] Provider extras move to the shared core library; this project depends on the core (hash-pinned sdist direct URL) with the batch routes' extras. See [provider-contract.md rule 73](../what/provider-contract.md#shared-execution-core-planned-ols-4671).
+
 The project uses optional extras to gate provider SDKs:
 
 | Extra | Packages |

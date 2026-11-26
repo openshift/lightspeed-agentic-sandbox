@@ -123,6 +123,7 @@ sandbox release through existing deployment controls.
   Agents tool implementations are intentionally not preserved.
 - Consolidation can change native trace shape, tool names, timing, and iteration
   semantics; compatibility evidence is required, not assumed.
+- [PLANNED: OLS-4671] The "no Classic OLS migration" scope below is superseded by [0004](0004-consume-shared-agent-core.md): this harness moves into the shared core used by chat and batch; the route, tool and safety decisions here remain.
 - No operator/CRD change, Classic OLS migration, proxy service, new model family,
   or additional tool system is included.
 - This is a planned contract. It does not establish successful builds, live

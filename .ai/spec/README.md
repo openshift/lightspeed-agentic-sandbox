@@ -38,6 +38,7 @@ These specs define the behavioral rules and codebase navigation for the lightspe
 | [0001-tool-output-boundary.md](decisions/0001-tool-output-boundary.md) | DeepAgents-only SAFE-02 boundaries, trust instruction, and model/event separation |
 | [0002-sdk-native-skills-route.md](decisions/0002-sdk-native-skills-route.md) | DeepAgents virtual `/skills/` route and SDK-provided host-path mapping for native shell execution (OLS-4413) |
 | [0003-single-deepagents-harness.md](decisions/0003-single-deepagents-harness.md) | Historical OLS-4434 decision for consolidating model routes on DeepAgents; Anthropic, Vertex/Google, native/custom OpenAI, and Azure use it; Vertex/OpenAI support is removed; route-specific live acceptance remains |
+| [0004-consume-shared-agent-core.md](decisions/0004-consume-shared-agent-core.md) | [PLANNED: OLS-4671] Move the agent implementation into the shared execution core library; the sandbox stays the batch entry point (pure refactor) |
 
 ## Scope
 
