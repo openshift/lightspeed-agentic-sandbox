@@ -26,9 +26,11 @@ agents:
     model: google-vertex/gemini-3.8-flash
   - name: code
     source: harness/code.yaml
-    model: google-vertex/gemini-3.8-flash
+    model: opus
+    effort: high
   - name: review
-    model: google-vertex/gemini-3.8-flash
+    model: opus
+    effort: high
     trigger: >-
       event.transition.kind == "comment_added"
       && has(event.entity.linked_change_proposal)
