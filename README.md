@@ -9,7 +9,7 @@ Local development uses `uv`. Run `make install` for dev dependencies,
 `make install-all` for all providers plus e2e extras, and `make lock` to refresh
 `uv.lock` after dependency changes.
 
-## Python dependencies
+## Dependency management
 
 The retired Google ADK and OpenAI Agents harness libraries are removed from
 `pyproject.toml`, `uv.lock`, and the generated Konflux inputs. Use the `deepagents`
