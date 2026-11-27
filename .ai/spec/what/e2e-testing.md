@@ -103,6 +103,12 @@ belongs in unit tests.
 Do **not** duplicate behavioral rules here. When adding a scenario, update the
 relevant `what/` spec Verification table first, then the feature file.
 
+## LiteLLM Proxy compatibility [PLANNED: OLS-3663]
+
+Run the existing sandbox E2E suite in an additional Konflux scenario with the same candidate sandbox image, test cases, and expectations. Replace the direct LLM endpoint with a disposable LiteLLM Proxy fixture; leave existing direct-provider and vLLM scenarios unchanged. The sandbox receives only the proxy credentials, with no direct-provider fallback.
+
+The scenario defaults to a digest-pinned proxy image. Override `LITELLM_PROXY_IMAGE` per run to test another version without rebuilding the sandbox.
+
 ## Harness
 
 ### Layout
