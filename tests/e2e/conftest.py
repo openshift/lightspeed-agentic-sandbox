@@ -30,6 +30,7 @@ from tests.e2e.suite_setup import (
 from steps.given import *  # noqa: F403 — step fixtures must be in conftest namespace
 from steps.when import *  # noqa: F403
 from steps.inspection_evaluation import *  # noqa: F403
+from steps.rbac import *  # noqa: F403
 from steps.then import *  # noqa: F403
 
 
