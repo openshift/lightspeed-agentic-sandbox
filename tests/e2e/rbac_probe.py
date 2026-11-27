@@ -16,12 +16,13 @@ from typing import Any
 from kubernetes.client import (  # type: ignore[import-untyped]
     ApiClient,
     ApiException,
-    AuthenticationV1Api,
+    AuthenticationV1TokenRequest,
     Configuration,
     CoreV1Api,
     CustomObjectsApi,
     V1ObjectMeta,
     V1Secret,
+    V1TokenRequestSpec,
 )
 
 from tests.e2e.k8s_constants import CRD_GROUP, CRD_VERSION
@@ -42,17 +43,17 @@ def create_sa_api_client(
 
     The token is short-lived (600 s) and never logged.
     """
-    auth_api = AuthenticationV1Api(admin_client)
-    token_resp = auth_api.create_namespaced_service_account_token(
+    core_api = CoreV1Api(admin_client)
+    token_resp = core_api.create_namespaced_service_account_token(
         name=sa_name,
         namespace=namespace,
-        body={
-            "apiVersion": "authentication.k8s.io/v1",
-            "kind": "TokenRequest",
-            "spec": {"expirationSeconds": 600},
-        },
+        body=AuthenticationV1TokenRequest(
+            api_version="authentication.k8s.io/v1",
+            kind="TokenRequest",
+            spec=V1TokenRequestSpec(expiration_seconds=600),
+        ),
     )
-    token: str = token_resp.status.token
+    token: str = token_resp.status.token if token_resp.status and token_resp.status.token else ""
 
     src = admin_client.configuration
     cfg = Configuration()
