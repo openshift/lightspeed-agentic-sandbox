@@ -1,4 +1,9 @@
-"""Readiness checks for provider credentials."""
+"""Readiness checks for provider credentials.
+
+The checks run at startup and are surfaced by the readiness endpoint. Each
+check returns a human readable status string: ``"ok"`` on success, or a
+short ``"error: ..."`` description naming the failing credential.
+"""
 
 from __future__ import annotations
 
@@ -141,7 +146,11 @@ def run_readiness_checks(
     model_family: ResolvedModelFamily,
     model_route: ResolvedModelRoute | None = None,
 ) -> tuple[bool, dict[str, str]]:
-    """Return overall readiness and per-check status strings."""
+    """Return overall readiness and per-check status strings.
+
+    The boolean is true only when every check reports ``"ok"``; the mapping
+    keys are stable identifiers suitable for logging and status responses.
+    """
     checks = {
         "provider_env": check_provider_env(
             model_family.expected_envs, model_family.credential_file_envs
