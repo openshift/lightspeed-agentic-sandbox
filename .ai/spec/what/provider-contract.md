@@ -324,6 +324,10 @@ Implementation verification starts with existing `make test`, `make lint`, depen
 
 ## Planned Changes
 
+### LiteLLM Proxy compatibility [PLANNED: OLS-3663]
+
+Use the existing OpenAI-compatible Chat Completions route with a customer-managed LiteLLM Proxy. Configure the proxy's HTTPS `/v1` endpoint, a proxy key, and a model alias. LiteLLM owns upstream routing and credentials. No new provider type, operator-managed proxy, or direct-provider fallback is required. See [E2E coverage](e2e-testing.md#litellm-proxy-compatibility-planned-ols-3663).
+
 - [PLANNED: OLS-4434] Consolidate every supported provider route on one DeepAgents harness with native DeepAgents tools/skills, admitted MCP tools, shared safety, and preserved model/API contracts. See rules 50–67 and the consolidation verification matrix.
 - Parity improvements across providers (tools, streaming, structured output edge cases). [PLANNED: OLS-3047–OLS-3053]
 - BYOK and RAG integration hooks without breaking the thin-adapter rule. [PLANNED: OLS-3054–OLS-3057]
