@@ -213,25 +213,55 @@ def _check_anthropic_vertex_deepagents() -> ProviderCredentialStatus:
     )
 
 
+def _read_optional_bedrock_credential(
+    env_keys: tuple[str, ...], file_name: str
+) -> str | None:
+    for key in env_keys:
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+
+    path = os.path.join(KONFLUX_CREDENTIAL_DIR, file_name)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = handle.read().strip()
+    except OSError:
+        return None
+    return value or None
+
+
 def _read_bedrock_aws_env() -> dict[str, str] | None:
     access = os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
     secret = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
-    if access and secret:
-        return {"AWS_ACCESS_KEY_ID": access, "AWS_SECRET_ACCESS_KEY": secret}
 
-    access_path = os.path.join(KONFLUX_CREDENTIAL_DIR, "aws_access_key_id")
-    secret_path = os.path.join(KONFLUX_CREDENTIAL_DIR, "aws_secret_access_key")
-    if os.path.isfile(access_path) and os.path.isfile(secret_path):
-        try:
-            with open(access_path, encoding="utf-8") as handle:
-                access = handle.read().strip()
-            with open(secret_path, encoding="utf-8") as handle:
-                secret = handle.read().strip()
-        except OSError:
-            return None
-        if access and secret:
-            return {"AWS_ACCESS_KEY_ID": access, "AWS_SECRET_ACCESS_KEY": secret}
-    return None
+    if not (access and secret):
+        access_path = os.path.join(KONFLUX_CREDENTIAL_DIR, "aws_access_key_id")
+        secret_path = os.path.join(KONFLUX_CREDENTIAL_DIR, "aws_secret_access_key")
+        if os.path.isfile(access_path) and os.path.isfile(secret_path):
+            try:
+                with open(access_path, encoding="utf-8") as handle:
+                    access = handle.read().strip()
+                with open(secret_path, encoding="utf-8") as handle:
+                    secret = handle.read().strip()
+            except OSError:
+                return None
+    if not (access and secret):
+        return None
+
+    env_vars = {"AWS_ACCESS_KEY_ID": access, "AWS_SECRET_ACCESS_KEY": secret}
+    session_token = _read_optional_bedrock_credential(
+        ("AWS_SESSION_TOKEN",), "aws_session_token"
+    )
+    if session_token:
+        env_vars["AWS_SESSION_TOKEN"] = session_token
+    role_arn = _read_optional_bedrock_credential(
+        ("BEDROCK_ROLE_ARN", "AWS_ROLE_ARN"), "role_arn"
+    )
+    if role_arn:
+        env_vars["BEDROCK_ROLE_ARN"] = role_arn
+    return env_vars
 
 
 def _check_anthropic_bedrock_deepagents() -> ProviderCredentialStatus:
@@ -259,11 +289,14 @@ def _check_anthropic_bedrock_deepagents() -> ProviderCredentialStatus:
     env_vars = {**aws_env, "CLAUDE_CODE_USE_BEDROCK": "1"}
     if not os.environ.get("AWS_REGION"):
         env_vars["AWS_REGION"] = os.environ.get("CLOUD_ML_REGION", "us-east-1")
+    reason = "AWS Bedrock credentials (bedrock-apitoken or env)"
+    if aws_env.get("BEDROCK_ROLE_ARN"):
+        reason = "AWS Bedrock credentials with role_arn (bedrock-apitoken or env)"
     return ProviderCredentialStatus(
         name,
         True,
         "env",
-        "AWS Bedrock credentials (bedrock-apitoken or env)",
+        reason,
         env_vars=env_vars,
     )
 

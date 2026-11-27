@@ -127,6 +127,46 @@ class TestAnthropicBedrockDeepagents:
         assert status.env_vars["AWS_REGION"] == "us-east-1"
         assert "bedrock-apitoken" in status.reason
 
+    def test_konflux_bedrock_sts_mount_includes_role_and_session_token(
+        self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+        monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+        monkeypatch.delenv("BEDROCK_ROLE_ARN", raising=False)
+        monkeypatch.delenv("AWS_ROLE_ARN", raising=False)
+        (cred_dir / "aws_access_key_id").write_text("AKIAMOUNT\n", encoding="utf-8")
+        (cred_dir / "aws_secret_access_key").write_text("mount-secret\n", encoding="utf-8")
+        (cred_dir / "aws_session_token").write_text("source-session\n", encoding="utf-8")
+        (cred_dir / "role_arn").write_text(
+            "arn:aws:iam::123456789012:role/e2e-bedrock\n", encoding="utf-8"
+        )
+
+        status = creds.detect_credentials(creds.PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS)
+
+        assert status.available
+        assert status.env_vars["AWS_ACCESS_KEY_ID"] == "AKIAMOUNT"
+        assert status.env_vars["AWS_SECRET_ACCESS_KEY"] == "mount-secret"  # noqa: S105
+        assert status.env_vars["AWS_SESSION_TOKEN"] == "source-session"  # noqa: S105
+        assert status.env_vars["BEDROCK_ROLE_ARN"] == "arn:aws:iam::123456789012:role/e2e-bedrock"
+        assert "role_arn" in status.reason
+
+    def test_bedrock_sts_env_includes_role_and_session_token(
+        self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert cred_dir.is_dir()
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIATEST")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret-value")
+        monkeypatch.setenv("AWS_SESSION_TOKEN", "source-session")
+        monkeypatch.setenv("BEDROCK_ROLE_ARN", "arn:aws:iam::123456789012:role/e2e-bedrock")
+
+        status = creds.detect_credentials(creds.PROVIDER_ANTHROPIC_BEDROCK_DEEPAGENTS)
+
+        assert status.available
+        assert status.env_vars["AWS_SESSION_TOKEN"] == "source-session"  # noqa: S105
+        assert status.env_vars["BEDROCK_ROLE_ARN"] == "arn:aws:iam::123456789012:role/e2e-bedrock"
+        assert "role_arn" in status.reason
+
     def test_missing_credentials(self, cred_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         assert not list(cred_dir.iterdir())
         monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
